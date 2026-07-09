@@ -78,39 +78,24 @@ h1, h2, h3 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 .btn-ghost { background: transparent; color: var(--text-dim); border-color: var(--border); }
 .btn-ghost:hover { border-color: var(--gold); color: var(--text); }
 
-/* Signature element: a small, honest stand-in for the real dashboard --
-   built from the same card/stamp language as the app itself, not a stock
-   screenshot, so it stays true to what the app actually looks like
-   without claiming to be a literal capture of it. */
-.hero-preview { display: flex; justify-content: center; }
+/* Real screenshot in the same tilted-card frame the hand-drawn mockup used
+   to occupy -- honest now instead of a stand-in, since the app has changed
+   enough over time that the old approximation had drifted out of sync. */
+.hero-preview { display: flex; flex-direction: column; align-items: center; gap: 14px; }
 .preview-frame {
-  width: 100%; max-width: 380px; background: var(--surface);
-  border: 1px solid var(--border); border-radius: 14px; padding: 18px;
+  width: 100%; max-width: 420px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 14px; padding: 10px;
   box-shadow: 0 24px 60px rgba(0,0,0,0.45);
   transform: rotate(1.2deg);
+  overflow: hidden;
 }
-.preview-titlebar { display: flex; flex-direction: column; gap: 2px; margin-bottom: 16px; }
-.preview-eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.12em; color: var(--text-dim); }
-.preview-coopname { font-family: 'Roboto Slab', serif; font-weight: 700; font-size: 18px; color: var(--gold); }
-.preview-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
-.preview-stat { background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 10px 8px; text-align: center; }
-.preview-stat-label { font-size: 10px; color: var(--text-dim); margin-bottom: 4px; }
-.preview-stat-value { font-family: 'Roboto Slab', serif; font-weight: 700; font-size: 20px; }
-.preview-stat-value-sage { color: var(--sage); }
-.preview-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
-.preview-chip {
-  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
-  padding: 4px 9px; border-radius: 20px; color: #1E1712;
+.preview-screenshot { display: block; width: 100%; height: auto; border-radius: 8px; }
+.preview-gallery-link {
+  background: none; border: none; color: var(--text-dim); font-family: 'Inter', sans-serif;
+  font-size: 12.5px; font-weight: 600; cursor: pointer; padding: 4px 8px;
+  transition: color 0.15s;
 }
-.preview-chip-gold { background: var(--gold); }
-.preview-chip-sage { background: var(--sage); }
-.preview-chip-slate { background: var(--slate); }
-.preview-chip-text { font-size: 12px; color: var(--text-dim); }
-.preview-ledger-lines {
-  margin-top: 14px; height: 46px;
-  background-image: repeating-linear-gradient(to bottom, transparent, transparent 13px, var(--border) 13px, var(--border) 14px);
-  opacity: 0.6;
-}
+.preview-gallery-link:hover { color: var(--gold); }
 
 /* ---------- dividers & sections ---------- */
 
@@ -183,10 +168,56 @@ h1, h2, h3 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 .site-footer-links a { color: var(--text-dim); text-decoration: none; }
 .site-footer-links a:hover { color: var(--gold); }
 
+/* ---------- screenshot gallery ---------- */
+
+.gallery-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(20, 16, 13, 0.94);
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; visibility: hidden; transition: opacity 0.2s ease;
+}
+.gallery-overlay.open { opacity: 1; visibility: visible; }
+.gallery-stage { max-width: min(1000px, 92vw); max-height: 88vh; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.gallery-img { max-width: 100%; max-height: 74vh; border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+.gallery-caption { display: flex; align-items: center; gap: 14px; color: var(--text-dim); font-size: 13.5px; text-align: center; }
+.gallery-counter { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim); opacity: 0.7; white-space: nowrap; }
+.gallery-close, .gallery-nav {
+  position: fixed; background: var(--surface-raised); border: 1px solid var(--border); color: var(--text);
+  width: 44px; height: 44px; border-radius: 50%; font-size: 20px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: border-color 0.15s;
+}
+.gallery-close:hover, .gallery-nav:hover { border-color: var(--gold); }
+.gallery-close { top: 20px; right: 20px; }
+.gallery-nav { top: 50%; transform: translateY(-50%); font-size: 26px; }
+.gallery-prev { left: 20px; }
+.gallery-next { right: 20px; }
+@media (max-width: 640px) {
+  .gallery-nav { width: 38px; height: 38px; }
+  .gallery-prev { left: 8px; }
+  .gallery-next { right: 8px; }
+  .gallery-close { top: 12px; right: 12px; }
+}
+
+/* ---------- android ---------- */
+
+.android-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 24px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
+}
+.android-card-main { flex: 1 1 380px; }
+.android-card-main p { font-size: 14px; color: var(--text-dim); margin: 0; }
+.android-download { flex: 0 0 auto; }
+
+/* ---------- scroll reveal ---------- */
+
+.reveal { opacity: 0; transform: translateY(16px); transition: opacity 0.5s ease, transform 0.5s ease; }
+.reveal-in { opacity: 1; transform: none; }
+
 /* ---------- accessibility ---------- */
 
 a:focus-visible, .btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   .btn-primary:hover { transform: none; }
+  .reveal { opacity: 1; transform: none; transition: none; }
 }

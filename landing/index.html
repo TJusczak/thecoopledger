@@ -29,6 +29,7 @@
     <nav class="topnav">
       <a href="#what-it-tracks">What it tracks</a>
       <a href="#how-it-works">How it works</a>
+      <a href="#android">Android</a>
       <a href="#self-host">Self-host</a>
       <a href="#faq">FAQ</a>
       <a href="https://github.com/TJusczak/thecoopledger" class="topnav-github">GitHub ↗</a>
@@ -42,7 +43,7 @@
     <div class="hero-inner">
       <div class="hero-copy">
         <div class="eyebrow">Free &amp; open source</div>
-        <h1>Track your flock.<br>Keep it yours.</h1>
+        <h1>Track your flock.</h1>
         <p class="hero-sub">Birds, eggs, income and expenses, supply inventory, hatching, and bedding — running the moment you open it, with nothing to sign up for. Your data stays on your own device unless you choose to sync it somewhere.</p>
         <div class="hero-ctas">
           <a href="/app/" class="btn btn-primary">Open the app →</a>
@@ -51,36 +52,11 @@
         <div class="hero-fineprint">No account for local use. Works offline once loaded. Install it like a real app on desktop or Android.</div>
       </div>
 
-      <div class="hero-preview" aria-hidden="true">
+      <div class="hero-preview">
         <div class="preview-frame">
-          <div class="preview-titlebar">
-            <span class="preview-eyebrow">EST. THIS MORNING</span>
-            <span class="preview-coopname">🐔 Back Forty Coop</span>
-          </div>
-          <div class="preview-stats">
-            <div class="preview-stat">
-              <div class="preview-stat-label">Eggs today</div>
-              <div class="preview-stat-value">7</div>
-            </div>
-            <div class="preview-stat">
-              <div class="preview-stat-label">Active birds</div>
-              <div class="preview-stat-value">14</div>
-            </div>
-            <div class="preview-stat">
-              <div class="preview-stat-label">This month</div>
-              <div class="preview-stat-value preview-stat-value-sage">+$42</div>
-            </div>
-          </div>
-          <div class="preview-row">
-            <span class="preview-chip preview-chip-gold">Layer Feed — 32 lb</span>
-            <span class="preview-chip preview-chip-sage">Full</span>
-          </div>
-          <div class="preview-row">
-            <span class="preview-chip preview-chip-slate">Batch</span>
-            <span class="preview-chip-text">Spring Cornish Cross · 22 birds</span>
-          </div>
-          <div class="preview-ledger-lines" aria-hidden="true"></div>
+          <img src="screenshots/hero-flock.webp" alt="The Coop Ledger's flock tracking screen, showing individual birds with photos, breeds, and ages" class="preview-screenshot">
         </div>
+        <button type="button" class="preview-gallery-link" id="openGalleryBtn">📸 See more screenshots of the real app</button>
       </div>
     </div>
   </section>
@@ -145,6 +121,22 @@
           <p>Run your own copy on a home server or NAS with a single Docker command, then connect any device to it with an invite code. Data lives on your server, syncs automatically in the background, and keeps working offline in between — changes push out the next time a connection's available.</p>
           <p class="path-note">Nobody's server but your own. Self-hosting is free, and covered below.</p>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="divider" aria-hidden="true"></div>
+
+  <section class="section" id="android">
+    <div class="section-inner">
+      <div class="eyebrow">Android</div>
+      <h2>A direct-download Android app, if you'd rather not use the browser</h2>
+      <div class="android-card">
+        <div class="android-card-main">
+          <p>This is the same app, wrapped as a standalone Android package (built with Bubblewrap) instead of something you install from a browser tab. It points at <code>thecoopledger.com</code> just like the web app does, so it works the same way — local-only or synced, your choice.</p>
+          <p class="section-lede" style="margin:10px 0 0">Since it isn't distributed through the Play Store, Android will show an "unknown source" warning during install — that's expected for any app installed this way, not a sign something's wrong. You'll need to allow it explicitly to continue. <strong style="color:var(--text)">Google Play, F-Droid, and other stores are planned</strong> for a more familiar install path down the road.</p>
+        </div>
+        <a href="TheCoopLedger.apk" class="btn btn-primary android-download" download>⬇ Download APK</a>
       </div>
     </div>
   </section>
@@ -230,6 +222,88 @@
     </div>
   </div>
 </footer>
+
+<div class="gallery-overlay" id="galleryOverlay" aria-hidden="true">
+  <button type="button" class="gallery-close" id="galleryClose" aria-label="Close">✕</button>
+  <button type="button" class="gallery-nav gallery-prev" id="galleryPrev" aria-label="Previous screenshot">‹</button>
+  <div class="gallery-stage">
+    <img src="" alt="" id="galleryImg" class="gallery-img">
+    <div class="gallery-caption">
+      <span id="galleryCaptionText"></span>
+      <span class="gallery-counter" id="galleryCounter"></span>
+    </div>
+  </div>
+  <button type="button" class="gallery-nav gallery-next" id="galleryNext" aria-label="Next screenshot">›</button>
+</div>
+
+<script>
+(function () {
+  var screenshots = [
+    { src: "screenshots/dashboard-cards.webp", caption: "Coop overview — active birds, this month's value, and what's running low" },
+    { src: "screenshots/dashboard-stats.webp", caption: "Flock size, egg production, and spend trends over time" },
+    { src: "screenshots/flock.webp", caption: "Individual birds and batches, with photos, breeds, and ages" },
+    { src: "screenshots/eggs.webp", caption: "Daily egg counts with running totals and value" },
+    { src: "screenshots/inventory.webp", caption: "Feed and bedding on hand, with photos of the actual products" },
+    { src: "screenshots/finances.webp", caption: "Every expense and sale, categorized, with a running balance" },
+    { src: "screenshots/bedding.webp", caption: "Bedding freshness by area, clean-out vs. top-off" }
+  ];
+  var current = 0;
+  var overlay = document.getElementById("galleryOverlay");
+  var img = document.getElementById("galleryImg");
+  var captionText = document.getElementById("galleryCaptionText");
+  var counter = document.getElementById("galleryCounter");
+
+  function show(i) {
+    current = (i + screenshots.length) % screenshots.length;
+    var shot = screenshots[current];
+    img.src = shot.src;
+    img.alt = shot.caption;
+    captionText.textContent = shot.caption;
+    counter.textContent = (current + 1) + " / " + screenshots.length;
+  }
+  function open(i) {
+    show(i || 0);
+    overlay.classList.add("open");
+    overlay.setAttribute("aria-hidden", "false");
+    document.body.style.overflow = "hidden";
+  }
+  function close() {
+    overlay.classList.remove("open");
+    overlay.setAttribute("aria-hidden", "true");
+    document.body.style.overflow = "";
+  }
+
+  var openBtn = document.getElementById("openGalleryBtn");
+  if (openBtn) openBtn.addEventListener("click", function () { open(0); });
+  document.getElementById("galleryClose").addEventListener("click", close);
+  document.getElementById("galleryPrev").addEventListener("click", function () { show(current - 1); });
+  document.getElementById("galleryNext").addEventListener("click", function () { show(current + 1); });
+  overlay.addEventListener("click", function (e) { if (e.target === overlay) close(); });
+  document.addEventListener("keydown", function (e) {
+    if (!overlay.classList.contains("open")) return;
+    if (e.key === "Escape") close();
+    else if (e.key === "ArrowLeft") show(current - 1);
+    else if (e.key === "ArrowRight") show(current + 1);
+  });
+
+  // Subtle reveal-on-scroll for sections -- a light fade/rise as each one
+  // enters view, once, rather than every scroll pass. Skipped entirely for
+  // anyone who's asked their OS/browser to reduce motion.
+  if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches && "IntersectionObserver" in window) {
+    var revealTargets = document.querySelectorAll(".section, .hero-preview");
+    revealTargets.forEach(function (el) { el.classList.add("reveal"); });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("reveal-in");
+          io.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.12 });
+    revealTargets.forEach(function (el) { io.observe(el); });
+  }
+})();
+</script>
 
 </body>
 </html>
