@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-110";
+const APP_VERSION = "2026.07.06-111";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -324,7 +324,7 @@ async function loadCoops() {
 // talks to the server directly for now, unchanged -- this is deliberately a
 // single proven slice before the same pattern gets extended to the rest.
 const LOCAL_DB_NAME = "coopLedgerLocalDB";
-const LOCAL_DB_VERSION = 6;
+const LOCAL_DB_VERSION = 7;
 const LOCAL_STORES = ["coops", "birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "activity_log", "supply_products"];
 let _localDbPromise = null;
 
@@ -359,6 +359,7 @@ function openLocalDb() {
       // folder every time (though write permission itself still needs
       // re-confirming each session -- browsers don't persist that part).
       if (!db.objectStoreNames.contains("sync_folder")) db.createObjectStore("sync_folder", { keyPath: "key" });
+      if (!db.objectStoreNames.contains("undo_history")) db.createObjectStore("undo_history", { keyPath: "key" });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -406,6 +407,70 @@ async function refreshPendingPhotoUrls() {
 /** The photo to actually display for a bird: a queued-but-not-yet-uploaded
  * local photo takes priority (it's the newest one), falling back to
  * whatever's already on the server. */
+/** CSS position string for a photo's stored crop/reframe offset -- shared by
+ * birds and supply_products, the only two resources with their own photo.
+ * Defaults to centered, so any photo without a stored position (which is
+ * every photo that existed before this feature) displays exactly as it
+ * always did. Used as both object-position (on <img> tags) and
+ * background-position (on CSS background-image usages) -- the percentage
+ * semantics are identical between the two, so one stored value serves both. */
+function photoPosition(record) {
+  const x = (record && record.photo_pos_x != null) ? record.photo_pos_x : 50;
+  const y = (record && record.photo_pos_y != null) ? record.photo_pos_y : 50;
+  return `${x}% ${y}%`;
+}
+
+/** Drag-to-reframe UI for a photo that's already been uploaded (or is about
+ * to be) -- resource/id identify which record to save the position onto,
+ * aspectRatio shapes the frame to match wherever the photo actually
+ * displays (square for birds, 3:4 for supply products), and onSaved (if
+ * given) runs after a successful save so the caller can refresh whatever
+ * it's showing. Works from a live photo URL, whether that's an already
+ * -uploaded server photo or a fresh local object URL for one not saved yet. */
+function openPhotoRepositionModal(photoUrl, initialX, initialY, aspectRatio, onSave) {
+  const html = `
+    <div class="form-head">Reposition photo</div>
+    <div class="dim" style="font-size:12px;margin-bottom:12px">Drag to reframe -- this only changes what shows in cards, the original photo itself is never altered.</div>
+    <div id="cropFrame" class="photo-crop-frame" style="aspect-ratio:${aspectRatio};background-image:url('${photoUrl}');background-position:${initialX}% ${initialY}%"></div>
+    <div class="modal-actions">
+      <button class="btn btn-confirm" id="saveCropBtn">✓ Save position</button>
+      <button class="btn ghost" id="resetCropBtn">Reset to center</button>
+    </div>
+  `;
+  openModal(html);
+  let posX = initialX, posY = initialY, dragging = false, startClientX, startClientY, startPosX, startPosY;
+  const frame = document.getElementById("cropFrame");
+
+  const clamp = (v) => Math.max(0, Math.min(100, v));
+  const startDrag = (clientX, clientY) => { dragging = true; startClientX = clientX; startClientY = clientY; startPosX = posX; startPosY = posY; frame.classList.add("dragging"); };
+  const moveDrag = (clientX, clientY) => {
+    if (!dragging) return;
+    const rect = frame.getBoundingClientRect();
+    // Dragging right should reveal more of the image's left side (the
+    // familiar "grab the photo and slide it" feel), which means DEcreasing
+    // the position percentage -- hence subtracting the delta rather than adding it.
+    posX = clamp(startPosX - ((clientX - startClientX) / rect.width) * 100);
+    posY = clamp(startPosY - ((clientY - startClientY) / rect.height) * 100);
+    frame.style.backgroundPosition = `${posX}% ${posY}%`;
+  };
+  const endDrag = () => { dragging = false; frame.classList.remove("dragging"); };
+
+  frame.addEventListener("mousedown", (e) => { e.preventDefault(); startDrag(e.clientX, e.clientY); });
+  window.addEventListener("mousemove", (e) => moveDrag(e.clientX, e.clientY));
+  window.addEventListener("mouseup", endDrag);
+  frame.addEventListener("touchstart", (e) => { const t = e.touches[0]; startDrag(t.clientX, t.clientY); }, { passive: true });
+  frame.addEventListener("touchmove", (e) => { const t = e.touches[0]; moveDrag(t.clientX, t.clientY); }, { passive: true });
+  frame.addEventListener("touchend", endDrag);
+
+  document.getElementById("resetCropBtn").addEventListener("click", () => {
+    posX = 50; posY = 50;
+    frame.style.backgroundPosition = "50% 50%";
+  });
+  document.getElementById("saveCropBtn").addEventListener("click", async () => {
+    await onSave(posX, posY);
+  });
+}
+
 function birdPhotoUrl(bird) {
   return pendingPhotoUrls[bird.id] || (bird.photo ? mediaUrl(bird.photo) : null);
 }
@@ -2303,16 +2368,12 @@ function renderProductsSection() {
                   const inStock = STATE.supplies.filter(s => s.product_id === p.id && s.status !== "Empty").length;
                   const used = STATE.supplies.filter(s => s.product_id === p.id && s.status === "Empty").length;
                   return `
-                  <div class="list-card" style="border-left:4px solid var(--${catTone})">
-                    ${productPhotoUrl(p) ? `<div class="thumb-clickable" data-view-photo="${esc(productPhotoUrl(p))}" style="width:48px;height:48px;border-radius:6px;overflow:hidden;flex:0 0 auto;cursor:zoom-in"><img src="${productPhotoUrl(p)}" style="width:100%;height:100%;object-fit:cover"></div>` : `<div style="width:48px;height:48px;border-radius:6px;flex:0 0 auto;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:20px">📦</div>`}
+                  <div class="list-card" data-edit-product="${p.id}" style="border-left:4px solid var(--${catTone});cursor:pointer">
+                    ${productPhotoUrl(p) ? `<div class="thumb-clickable" data-view-photo="${esc(productPhotoUrl(p))}" data-product-id="${p.id}" style="width:48px;height:48px;border-radius:6px;overflow:hidden;flex:0 0 auto;cursor:zoom-in"><img src="${productPhotoUrl(p)}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(p)}"></div>` : `<div style="width:48px;height:48px;border-radius:6px;flex:0 0 auto;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:20px">📦</div>`}
                     <div class="list-card-main">
                       <div style="font-weight:700">${esc(p.brand || cat)}</div>
                       <div class="list-card-desc dim">${p.default_quantity != null ? `usually ${p.default_quantity} ${esc(p.default_unit || "")}` : "no usual quantity set"}${p.default_description ? ` · "${esc(p.default_description)}"` : ""}</div>
                       ${(inStock > 0 || used > 0) ? `<div class="list-card-desc dim">${inStock > 0 ? `${inStock} in stock` : ""}${inStock > 0 && used > 0 ? " · " : ""}${used > 0 ? `${used} used up` : ""}</div>` : ""}
-                    </div>
-                    <div class="list-card-side">
-                      <button class="icon-btn" data-settings-edit-product="${p.id}" title="Rename or update">✎</button>
-                      <button class="icon-btn" data-settings-remove-product="${p.id}" title="Remove">🗑</button>
                     </div>
                   </div>
                 `;}).join("")}
@@ -2326,20 +2387,16 @@ function renderProductsSection() {
   `;
   el.querySelectorAll("[data-view-photo]").forEach(el2 => el2.addEventListener("click", (e) => {
     e.stopPropagation();
-    showPhotoLightbox(el2.dataset.viewPhoto);
+    const product = STATE.supplyProducts.find(p => p.id === el2.dataset.productId);
+    showPhotoLightbox(el2.dataset.viewPhoto, {
+      x: product.photo_pos_x ?? 50, y: product.photo_pos_y ?? 50, aspectRatio: "1/1",
+      onSave: async (x, y) => { await localSupplyProductUpdate(product.id, { photo_pos_x: x, photo_pos_y: y }); renderProductsSection(); },
+    });
   }));
   el.querySelectorAll("[data-add-product-cat]").forEach(btn => btn.addEventListener("click", () => openProductModal(null, btn.dataset.addProductCat)));
-  el.querySelectorAll("[data-settings-edit-product]").forEach(btn => btn.addEventListener("click", () => {
-    const product = STATE.supplyProducts.find(p => p.id === btn.dataset.settingsEditProduct);
+  el.querySelectorAll("[data-edit-product]").forEach(card => card.addEventListener("click", () => {
+    const product = STATE.supplyProducts.find(p => p.id === card.dataset.editProduct);
     openProductModal(product, product.category);
-  }));
-  el.querySelectorAll("[data-settings-remove-product]").forEach(btn => btn.addEventListener("click", async () => {
-    const id = btn.dataset.settingsRemoveProduct;
-    if (!(await showConfirmDialog("Remove this saved product? Any bags already using its photo will lose it too, not just future ones -- this can't be undone."))) return;
-    await localSupplyProductDelete(id, currentCoopId);
-    STATE.supplyProducts = await localGetAll("supply_products", currentCoopId);
-    showToast("Product removed", "delete");
-    renderProductsSection();
   }));
 }
 
@@ -2364,6 +2421,26 @@ function openProductModal(editingProduct, category) {
       async () => { STATE.supplyProducts = await localGetAll("supply_products", currentCoopId); renderProductsSection(); }
     ) : null
   );
+  const refreshProductModal = () => { refreshModalContent(renderProductEditFormHtml(editingProduct, category, true)); wireProductModalPhoto(); };
+  function wireProductModalPhoto() {
+    const preview = document.getElementById("productPhotoPreview");
+    if (preview) preview.addEventListener("click", (e) => {
+      const url = e.target.dataset ? e.target.dataset.viewPhoto : null;
+      if (!url) return;
+      showPhotoLightbox(url, {
+        x: editingProduct.photo_pos_x ?? 50, y: editingProduct.photo_pos_y ?? 50, aspectRatio: "1/1",
+        onSave: async (x, y) => { editingProduct = await localSupplyProductUpdate(editingProduct.id, { photo_pos_x: x, photo_pos_y: y }); refreshProductModal(); },
+      });
+    });
+    const repositionBtn = document.getElementById("repositionProductPhoto");
+    if (repositionBtn) repositionBtn.addEventListener("click", () => {
+      openPhotoRepositionModal(productPhotoUrl(editingProduct), editingProduct.photo_pos_x ?? 50, editingProduct.photo_pos_y ?? 50, "1/1", async (x, y) => {
+        editingProduct = await localSupplyProductUpdate(editingProduct.id, { photo_pos_x: x, photo_pos_y: y });
+        refreshProductModal();
+      });
+    });
+  }
+  wireProductModalPhoto();
   const saveBtn = document.getElementById("saveNewProduct");
   saveBtn.addEventListener("click", async () => {
     const brand = document.getElementById("np_brand").value.trim();
@@ -2396,7 +2473,6 @@ function openProductModal(editingProduct, category) {
     closeModal();
     renderProductsSection();
   });
-  document.getElementById("cancelNewProduct").addEventListener("click", () => closeModal());
 }
 
 function beddingThresholdsFormHtml() {
@@ -2578,10 +2654,7 @@ function renderNotesSection() {
       <div class="list-stack">
         ${groups[cat].map(n => `
           <div class="list-card" data-edit="${n.id}" style="cursor:pointer;flex-direction:column;align-items:stretch">
-            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-              <div style="font-weight:700">${esc(n.title || "Untitled")}</div>
-              <button class="icon-btn" data-del="${n.id}" onclick="event.stopPropagation()">🗑</button>
-            </div>
+            <div style="font-weight:700">${esc(n.title || "Untitled")}</div>
             <div class="dim" style="white-space:pre-wrap;margin-top:4px;font-size:13px">${esc(n.body || "")}</div>
           </div>`).join("")}
       </div>
@@ -2593,14 +2666,6 @@ function renderNotesSection() {
   document.getElementById("toggleNoteFilters").addEventListener("click", () => { notesFiltersOpen = !notesFiltersOpen; renderNotesSection(); });
 
   el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => openNoteModal(STATE.notes.find(n => n.id === card.dataset.edit), null)));
-  el.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
-    if (!(await showConfirmDialog("Delete this note?"))) return;
-    await localNoteDelete(b.dataset.del, currentCoopId);
-    showToast("Note deleted", "delete");
-    if (editingNoteId === b.dataset.del) editingNoteId = null;
-    await loadCoopData();
-    renderNotesSection();
-  }));
   const filterCatEl = document.getElementById("filterNoteCategory");
   // Fires on selection (not per-keystroke), so no re-render-while-typing focus issue.
   if (filterCatEl) filterCatEl.addEventListener("change", (e) => { noteFilters.category = e.target.value; renderNotesSection(); });
@@ -3713,16 +3778,33 @@ function loadMoreButtonHtml(totalCount, visibleCount, id = "loadMoreBtn") {
  * uploaded photo be seen at full size instead of only the small cropped
  * thumbnail used in cards/forms. Dismissible by clicking outside the image,
  * the close button, or Escape. */
-function showPhotoLightbox(url) {
+/** repositionCtx (optional): { x, y, aspectRatio, onSave } -- when given,
+ * shows a reposition button that opens the crop modal and persists
+ * immediately on save, since there's no surrounding form here holding this
+ * as a pending, not-yet-committed change the way the bird/product forms do. */
+function showPhotoLightbox(url, repositionCtx = null) {
   const overlay = document.createElement("div");
   overlay.className = "photo-lightbox-overlay";
-  overlay.innerHTML = `<img src="${url}" class="photo-lightbox-img" alt=""><button class="icon-btn photo-lightbox-close" title="Close">✕</button>`;
+  const pos = repositionCtx ? `${repositionCtx.x ?? 50}% ${repositionCtx.y ?? 50}%` : "50% 50%";
+  overlay.innerHTML = `
+    <img src="${url}" class="photo-lightbox-img" alt="" style="object-position:${pos}">
+    <button class="icon-btn photo-lightbox-close" title="Close">✕</button>
+    ${repositionCtx ? `<button class="icon-btn photo-lightbox-reposition" title="Reposition">↔</button>` : ""}
+  `;
   document.body.appendChild(overlay);
   const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey); };
   function onKey(e) { if (e.key === "Escape") close(); }
   document.addEventListener("keydown", onKey);
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
   overlay.querySelector(".photo-lightbox-close").addEventListener("click", close);
+  const repositionBtn = overlay.querySelector(".photo-lightbox-reposition");
+  if (repositionBtn) repositionBtn.addEventListener("click", () => {
+    close();
+    openPhotoRepositionModal(url, repositionCtx.x ?? 50, repositionCtx.y ?? 50, repositionCtx.aspectRatio, async (x, y) => {
+      await repositionCtx.onSave(x, y);
+      if (repositionCtx.closeAfterSave !== false) closeModal();
+    });
+  });
 }
 
 function ensureModalDom() {
@@ -3887,7 +3969,27 @@ async function performRedo() {
 /** Small fixed corner bar, mirroring the existing "Local only" badge in
  * the opposite corner -- invisible unless there's actually something to
  * undo or redo, so it never costs any layout space the rest of the time. */
+/** Persisted to IndexedDB so undo/redo history survives a page reload or
+ * closing and reopening the app -- not synced anywhere, purely local to
+ * this device, same as the rest of this feature. */
+async function persistUndoHistory() {
+  const db = await openLocalDb();
+  const tx = db.transaction(["undo_history"], "readwrite");
+  tx.objectStore("undo_history").put({ key: "history", undoStack, redoStack });
+}
+async function loadUndoHistory() {
+  try {
+    const db = await openLocalDb();
+    const tx = db.transaction(["undo_history"], "readonly");
+    const row = await idbRequest(tx.objectStore("undo_history").get("history"));
+    if (row) { undoStack = row.undoStack || []; redoStack = row.redoStack || []; }
+  } catch (err) { /* nothing persisted yet, or this is a first run -- fine, stacks just start empty */ }
+}
+
 function renderUndoRedoBar() {
+  persistUndoHistory();
+  const slot = document.getElementById("undoRedoSlot");
+  if (!slot) return;
   let bar = document.getElementById("undoRedoBar");
   if (undoStack.length === 0 && redoStack.length === 0) {
     if (bar) bar.remove();
@@ -3901,7 +4003,7 @@ function renderUndoRedoBar() {
       <button id="undoBarBtn" title="Undo">↺</button>
       <button id="redoBarBtn" title="Redo">↻</button>
     `;
-    document.body.appendChild(bar);
+    slot.appendChild(bar);
     document.getElementById("undoBarBtn").addEventListener("click", () => performUndo());
     document.getElementById("redoBarBtn").addEventListener("click", () => performRedo());
   }
@@ -4104,7 +4206,7 @@ function birdCardHtml(b) {
   return `<div class="flock-card${accent ? " custom-color" : ""}" data-edit="${b.id}" style="${cardStyle}">
     <div class="flock-card-photo">
       <input type="checkbox" class="flock-card-check bird-check" data-id="${b.id}" ${selectedBirdIds.has(b.id) ? "checked" : ""} onclick="event.stopPropagation()">
-      ${birdPhotoUrl(b) ? `<img src="${birdPhotoUrl(b)}">` : "🐔"}
+      ${birdPhotoUrl(b) ? `<img src="${birdPhotoUrl(b)}" style="object-position:${photoPosition(b)}">` : "🐔"}
       <span class="stamp stamp-lg stamp-on-photo tone-${statusTone(b.status)} flock-card-status-badge">${esc(b.status)}</span>
       ${b.status === "Processed" && b.harvest_date ? `<div class="flock-card-harvest-badge">Harvested ${fmtDate(b.harvest_date)}</div>` : ""}
       ${showCountdown ? `<div class="flock-card-countdown-badge">${harvestCountdownHtml(b.target_harvest_date, "stamp-on-photo")}</div>` : ""}
@@ -4135,7 +4237,7 @@ function groupCardHtml(batchName, filteredBirds, totalCount) {
   const sharedLocation = locations.size === 1 ? [...locations][0] : null;
   return `<div class="flock-card flock-card-group" data-open-batch="${esc(batchName)}">
     <div class="flock-card-photo">
-      ${cover ? `<img src="${birdPhotoUrl(cover)}">` : "🐣"}
+      ${cover ? `<img src="${birdPhotoUrl(cover)}" style="object-position:${photoPosition(cover)}">` : "🐣"}
       <span class="stamp stamp-lg stamp-on-photo tone-slate flock-card-status-badge">Batch</span>
       <div class="flock-group-badge"><span class="stamp stamp-lg stamp-on-photo tone-gold">${countLabel} bird${(totalCount || s.count) !== 1 ? "s" : ""}</span></div>
     </div>
@@ -4400,7 +4502,7 @@ function batchEditModalHtml(batchName) {
     <div class="form-head">Edit group -- ${esc(batchName)}</div>
     <div style="display:flex;gap:14px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
       <div style="width:64px;height:64px;border-radius:8px;overflow:hidden;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:26px;flex:0 0 auto">
-        ${cover ? `<img src="${birdPhotoUrl(cover)}" style="width:100%;height:100%;object-fit:cover">` : "🐣"}
+        ${cover ? `<img src="${birdPhotoUrl(cover)}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(cover)}">` : "🐣"}
       </div>
       <div style="flex:1;min-width:180px">
         <label class="field"><span>Set group photo (applies to every bird in this batch)</span><input type="file" id="batchPhotoInput" accept="image/*"></label>
@@ -4684,10 +4786,13 @@ function showBirdForm(bird) {
       <div class="form-head">${isEdit ? "Edit bird" : "New bird"}</div>
       ${isEdit ? `<div class="dim" style="font-size:12px;margin:-8px 0 14px">${ageFromDate(f.hatch_date || f.acquired_date)}${f.hatch_date ? ` (hatched ${fmtDate(f.hatch_date)})` : f.acquired_date ? ` (acquired ${fmtDate(f.acquired_date)})` : ""}</div>` : ""}
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;align-items:flex-start">
-        <div id="photoPreview">${previewUrl ? `<img src="${previewUrl}" data-view-photo="${esc(previewUrl)}" class="thumb-clickable" style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--border);cursor:zoom-in">` : `<div style="width:84px;height:84px;border-radius:8px;background:var(--bg);border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:28px">🐔</div>`}</div>
+        <div id="photoPreview">${previewUrl ? `<img src="${previewUrl}" data-view-photo="${esc(previewUrl)}" class="thumb-clickable" style="width:84px;height:84px;object-fit:cover;object-position:${photoPosition(formState)};border-radius:8px;border:1px solid var(--border);cursor:zoom-in">` : `<div style="width:84px;height:84px;border-radius:8px;background:var(--bg);border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:28px">🐔</div>`}</div>
         <div>
           <label class="field"><span>Photo</span><input type="file" id="f_photo" accept="image/*"></label>
-          ${previewUrl ? `<button class="btn btn-close small" id="removePhoto" style="margin-top:6px">Remove photo</button>` : ""}
+          <div style="display:flex;gap:6px;margin-top:6px">
+            ${previewUrl ? `<button class="btn ghost small" id="repositionPhoto">↔ Reposition</button>` : ""}
+            ${previewUrl ? `<button class="btn btn-close small" id="removePhoto">Remove photo</button>` : ""}
+          </div>
         </div>
         <div>
           <label class="field"><span>Card color</span><input type="color" id="f_color" value="${esc(f.card_color || "#5A4B3C")}" style="width:60px;height:38px;padding:2px;cursor:pointer"></label>
@@ -4739,7 +4844,10 @@ function showBirdForm(bird) {
 
     document.getElementById("photoPreview").addEventListener("click", (e) => {
       const url = e.target.dataset ? e.target.dataset.viewPhoto : null;
-      if (url) showPhotoLightbox(url);
+      if (url) showPhotoLightbox(url, {
+        x: formState.photo_pos_x ?? 50, y: formState.photo_pos_y ?? 50, aspectRatio: "1/1", closeAfterSave: false,
+        onSave: async (x, y) => { formState = readCurrentValues(); formState.photo_pos_x = x; formState.photo_pos_y = y; render(false); },
+      });
     });
 
     document.getElementById("f_type").addEventListener("change", (e) => {
@@ -4756,13 +4864,25 @@ function showBirdForm(bird) {
       try {
         pendingPhotoBlob = await resizeImageFileToBlob(file);
         photoRemoved = false;
-        const objectUrl = URL.createObjectURL(pendingPhotoBlob);
-        document.getElementById("photoPreview").innerHTML = `<img src="${objectUrl}" style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--border)">`;
+        previewUrl = URL.createObjectURL(pendingPhotoBlob);
+        formState = readCurrentValues();
+        formState.photo_pos_x = 50; // a freshly-picked photo has no meaningful prior crop
+        formState.photo_pos_y = 50;
+        render(false);
       } catch (err) {
         alert("Couldn't read that image: " + err.message);
       }
     });
     const removeBtn = document.getElementById("removePhoto");
+    const repositionBtn = document.getElementById("repositionPhoto");
+    if (repositionBtn) repositionBtn.addEventListener("click", () => {
+      openPhotoRepositionModal(previewUrl, formState.photo_pos_x ?? 50, formState.photo_pos_y ?? 50, "1/1", async (x, y) => {
+        formState = readCurrentValues();
+        formState.photo_pos_x = x;
+        formState.photo_pos_y = y;
+        render(false);
+      });
+    });
     if (removeBtn) removeBtn.addEventListener("click", () => {
       pendingPhotoBlob = null;
       photoRemoved = true;
@@ -4784,6 +4904,8 @@ function showBirdForm(bird) {
         breed: current.breed,
         type: current.type,
         gender: current.gender || null,
+        photo_pos_x: current.photo_pos_x ?? 50,
+        photo_pos_y: current.photo_pos_y ?? 50,
         status: current.status,
         hatch_date: current.hatch_date,
         acquired_date: current.acquired_date,
@@ -5713,8 +5835,15 @@ function openExpenseModal(editing) {
  * "Products" page's edit form -- one definition, so the two never drift apart. */
 function renderProductEditFormHtml(editingProduct, category, standalone = false) {
   const lockedUnit = UNIT_LOCKS[category];
+  const photo = editingProduct ? productPhotoUrl(editingProduct) : null;
   const inner = `
       <div class="dim" style="font-size:11px;margin-bottom:6px">${editingProduct ? `Editing "${esc(editingProduct.brand)}"` : "New saved product"}</div>
+      ${standalone && photo ? `
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px">
+        <div id="productPhotoPreview"><img src="${photo}" data-view-photo="${esc(photo)}" class="thumb-clickable" style="width:64px;height:64px;object-fit:cover;object-position:${photoPosition(editingProduct)};border-radius:8px;border:1px solid var(--border);cursor:zoom-in"></div>
+        <button class="btn ghost small" id="repositionProductPhoto">↔ Reposition</button>
+      </div>
+      ` : ""}
       <div class="grid-form">
         <label class="field"><span>Brand</span><input id="np_brand" placeholder="e.g. Purina Layena" value="${editingProduct ? esc(editingProduct.brand || "") : ""}"></label>
         <label class="field"><span>Photo${editingProduct ? " (leave blank to keep current)" : ""}</span><input type="file" id="np_photo" accept="image/*"></label>
@@ -5762,7 +5891,7 @@ function renderProductPickerRow(category) {
         <div class="product-picker-item${selectedProductId === p.id ? " selected" : ""}" data-product="${p.id}">
           <span class="product-picker-remove" data-remove-product="${p.id}" title="Remove this saved product">×</span>
           <span class="product-picker-edit" data-edit-product="${p.id}" title="Rename or update this product">✎</span>
-          <div class="product-picker-thumb">${productPhotoUrl(p) ? `<img src="${productPhotoUrl(p)}">` : "📦"}</div>
+          <div class="product-picker-thumb">${productPhotoUrl(p) ? `<img src="${productPhotoUrl(p)}" style="object-position:${photoPosition(p)}">` : "📦"}</div>
           <div class="product-picker-label">${esc(label)}</div>
         </div>`;
   };
@@ -5895,9 +6024,9 @@ function supplyCardHtml(s) {
   const bagBorderStyle = `border-color:color-mix(in srgb, var(--${catTone}) 45%, var(--border))`;
   const bagStyle = photo ? bagBorderStyle : `background:color-mix(in srgb, var(--${catTone}) 10%, var(--bg));${bagBorderStyle}`;
   const bagInner = photo
-    ? `<div class="supply-bag-grey-base" style="background-image:url('${photo}')"></div>
+    ? `<div class="supply-bag-grey-base" style="background-image:url('${photo}');background-position:${photoPosition(product)}"></div>
        <div class="supply-bag-dash-overlay"></div>
-       <div class="supply-bag-color-reveal" style="background-image:url('${photo}');clip-path:inset(${100 - fillPct}% 0 0 0)"></div>`
+       <div class="supply-bag-color-reveal" style="background-image:url('${photo}');background-position:${photoPosition(product)};clip-path:inset(${100 - fillPct}% 0 0 0)"></div>`
     : `<div class="supply-bag-fill" style="height:${fillPct}%;background:var(--${tone})"></div>`;
   const line1 = s.brand || s.description || s.category;
   const line2 = (s.description && s.description !== line1) ? s.description : "";
@@ -6007,7 +6136,7 @@ function emptySupplyModalHtml() {
         const photo = product ? productPhotoUrl(product) : null;
         return `
         <div class="list-card tone-slate">
-          ${photo ? `<div style="width:44px;height:44px;border-radius:6px;overflow:hidden;flex:0 0 auto;margin-right:2px"><img src="${photo}" style="width:100%;height:100%;object-fit:cover;opacity:0.75"></div>` : ""}
+          ${photo ? `<div style="width:44px;height:44px;border-radius:6px;overflow:hidden;flex:0 0 auto;margin-right:2px"><img src="${photo}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(product)};opacity:0.75"></div>` : ""}
           <div class="list-card-main">
             <div style="font-weight:600">${esc(s.brand || s.description || s.category)}</div>
             <div class="list-card-desc dim">${esc(s.category)}${s.quantity ? ` · ${s.quantity} ${esc(s.unit || "")}` : ""}</div>
@@ -6080,13 +6209,14 @@ function supplyGroupCardHtml(items) {
   // ones, since grouping is based on matching description/quantity/unit,
   // not on having a consistent product link.
   let groupPhoto = null;
+  let groupPhotoPos = "50% 50%";
   for (const it of items) {
     const p = it.product_id ? STATE.supplyProducts.find(x => x.id === it.product_id) : null;
     const url = p ? productPhotoUrl(p) : null;
-    if (url) { groupPhoto = url; break; }
+    if (url) { groupPhoto = url; groupPhotoPos = photoPosition(p); break; }
   }
   const miniBagStyle = groupPhoto
-    ? `background-image:url('${groupPhoto}');background-size:cover;background-position:center`
+    ? `background-image:url('${groupPhoto}');background-size:cover;background-position:${groupPhotoPos}`
     : `background:var(--${catTone})`;
   const miniBags = Array.from({ length: shownCount }, () => `<div class="supply-mini-bag" style="${miniBagStyle}"></div>`).join("");
   const overflow = count > MAX_SHOWN ? `<span class="supply-mini-bag-more">+${count - MAX_SHOWN} more</span>` : "";
@@ -6441,7 +6571,6 @@ function renderBeddingFreshness() {
           </div>
           <div class="list-card-side">
             <span class="stamp tone-${b.entry_type === "Full Clean-out" ? "sage" : "gold"}">${esc(b.entry_type)}</span>
-            <button class="icon-btn" data-del="${b.id}" onclick="event.stopPropagation()">🗑</button>
           </div>
         </div>`).join("")}
     </div>
@@ -6463,12 +6592,6 @@ function renderBeddingFreshness() {
   const loadMoreEl = document.getElementById("loadMoreBtn");
   if (loadMoreEl) loadMoreEl.addEventListener("click", () => { beddingVisibleCount += PAGE_SIZE; renderBeddingFreshness(); });
   el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => openBeddingModal(STATE.bedding.find(b => b.id === card.dataset.edit))));
-  el.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
-    await localBeddingDelete(b.dataset.del, currentCoopId);
-    showToast("Bedding entry deleted", "delete");
-    if (editingBeddingId === b.dataset.del) editingBeddingId = null;
-    refreshAndRender();
-  }));
 }
 
 function beddingFormHtml(editing) {
@@ -6745,6 +6868,8 @@ async function init() {
     showWelcomeBackSummary(newActivityRows);
   }
   updateHeader();
+  await loadUndoHistory();
+  renderUndoRedoBar();
   updateTabVisibility();
   startBackgroundSyncTimer();
   startEventStream();
