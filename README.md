@@ -14,7 +14,7 @@ standalone app on desktop and Android, and works fully offline once loaded.
 # docker-compose.yml
 services:
   coop-ledger:
-    image: ghcr.io/YOUR_GITHUB_USERNAME/coop-ledger:latest
+    image: ghcr.io/TJusczak/thecoopledger:latest
     container_name: coop-ledger
     ports:
       - "8000:8000"
@@ -27,10 +27,9 @@ services:
 docker compose up -d
 ```
 
-Replace `YOUR_GITHUB_USERNAME` with wherever this image actually gets
-published (see **Publishing your own image** below if you're setting that
-up for the first time). No cloning, no build step — this pulls a ready-made
-image and starts it.
+That pulls the image straight from GHCR — no cloning, no build step. (See
+**Publishing your own image** below if you're setting up that pipeline for
+the first time, or forking this to publish your own copy.)
 
 Visit `http://<server-ip>:8000` from any machine on your network.
 
@@ -77,8 +76,10 @@ alike) to GHCR, GitHub's own container registry.
    **Public**. Packages default to private, and a private one will fail
    with a 401 for anyone (including you, on another machine) trying to
    `docker pull` it without being logged into GHCR first.
-4. Update `docker-compose.yml`'s `image:` line to
-   `ghcr.io/<your-username>/<repo-name>:latest`.
+4. `docker-compose.yml` in this repo already points at
+   `ghcr.io/TJusczak/thecoopledger:latest` — if you've forked this under a
+   different account or repo name, update the `image:` line to match
+   yours instead (`ghcr.io/<your-username>/<repo-name>:latest`).
 
 From then on, `docker compose pull && docker compose up -d` picks up new
 versions without ever needing the source on that machine.
