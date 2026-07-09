@@ -2,10 +2,10 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-119";
+const APP_VERSION = "2026.07.06-120";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
-const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
+const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], activityLog: [], supplyProducts: [] };
 let currentCoopId = null;
 let activeTab = "dashboard";
 let chartRangeDays = 30; // default 30 days -- shows meaningful recent activity without hiding older data by surprise
@@ -450,8 +450,8 @@ async function loadCoops() {
 // talks to the server directly for now, unchanged -- this is deliberately a
 // single proven slice before the same pattern gets extended to the rest.
 const LOCAL_DB_NAME = "coopLedgerLocalDB";
-const LOCAL_DB_VERSION = 7;
-const LOCAL_STORES = ["coops", "birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "activity_log", "supply_products"];
+const LOCAL_DB_VERSION = 8;
+const LOCAL_STORES = ["coops", "birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "activity_log", "supply_products"];
 let _localDbPromise = null;
 
 function openLocalDb() {
@@ -1346,6 +1346,68 @@ async function localHatchDelete(id, coopId) {
   if (existing) pushUndoAction(`Deleted clutch (${existing.egg_count} eggs, started ${fmtDate(existing.date_started)})`, [{ resource: "hatches", id, before: existing, after: null }]);
 }
 
+async function localHatchEggCreate(payload, opts = {}) {
+  const record = { id: newLocalId(), updated_at: new Date().toISOString(), deleted_at: null, ...payload };
+  await localPutMany("hatch_eggs", [record]);
+  await queueOutbox({ resource: "hatch_eggs", op: "create", id: record.id, payload: record });
+  trySyncSoon("hatch_eggs", payload.coop_id);
+  if (!opts.suppressUndo) pushUndoAction(`Added egg #${record.position}`, [{ resource: "hatch_eggs", id: record.id, before: null, after: record }]);
+  return record;
+}
+async function localHatchEggUpdate(id, payload, opts = {}) {
+  const existing = await localGetOne("hatch_eggs", id);
+  const record = { ...(existing || { id }), ...payload, updated_at: new Date().toISOString() };
+  await localPutMany("hatch_eggs", [record]);
+  await queueOutbox({ resource: "hatch_eggs", op: "update", id, payload });
+  trySyncSoon("hatch_eggs", payload.coop_id || (existing && existing.coop_id));
+  if (existing && !opts.suppressUndo) pushUndoAction(`Edited egg #${record.position}`, [{ resource: "hatch_eggs", id, before: existing, after: record }]);
+  return record;
+}
+
+/** Lazily creates individual hatch_eggs rows for a clutch that doesn't have
+ * any yet -- covers both a genuinely fresh clutch (all old counters at
+ * zero, generates egg_count "Incubating" eggs) and an old clutch from
+ * before per-egg tracking existed (reconstructs eggs from the old
+ * aggregate counters). Already-named birds linked via hatch_id get matched
+ * to generated "Hatched" eggs in display order, carrying their gender over
+ * rather than starting blank. Runs once per clutch -- after this it
+ * behaves exactly like one that always had individual eggs. */
+async function ensureHatchEggsExist(hatch) {
+  const existing = STATE.hatchEggs.filter(e => e.hatch_id === hatch.id);
+  if (existing.length > 0) return existing;
+
+  const hatchedCount = Number(hatch.hatched_count) || 0;
+  const namedCount = Number(hatch.named_count) || 0;
+  const clearCount = Number(hatch.clear_count) || 0;
+  const quitCount = Number(hatch.quit_count) || 0;
+  const failedCount = Number(hatch.failed_count) || 0;
+  const eggCount = Number(hatch.egg_count) || 0;
+  const accountedFor = hatchedCount + clearCount + quitCount + failedCount;
+  const incubatingCount = Math.max(0, eggCount - accountedFor);
+  const linkedBirds = STATE.birds.filter(b => b.hatch_id === hatch.id).sort((a, b) => (a.hatch_date || "").localeCompare(b.hatch_date || ""));
+  // named_count beyond the number of real linked birds represents eggs
+  // that were marked "already tracked elsewhere" via the old skip button --
+  // no bird record, but shouldn't prompt for naming again either.
+  const skippedCount = Math.max(0, namedCount - linkedBirds.length);
+
+  const toCreate = [];
+  let position = 1;
+  for (let i = 0; i < hatchedCount; i++) {
+    const bird = linkedBirds[i] || null;
+    const isSkipped = !bird && (i - linkedBirds.length) < skippedCount;
+    toCreate.push({ coop_id: hatch.coop_id, hatch_id: hatch.id, position: position++, status: "Hatched", gender: bird ? (bird.gender || null) : null, bird_id: bird ? bird.id : null, tracked_externally: isSkipped ? 1 : null });
+  }
+  for (let i = 0; i < clearCount; i++) toCreate.push({ coop_id: hatch.coop_id, hatch_id: hatch.id, position: position++, status: "Clear", gender: null, bird_id: null });
+  for (let i = 0; i < quitCount; i++) toCreate.push({ coop_id: hatch.coop_id, hatch_id: hatch.id, position: position++, status: "Quit", gender: null, bird_id: null });
+  for (let i = 0; i < failedCount; i++) toCreate.push({ coop_id: hatch.coop_id, hatch_id: hatch.id, position: position++, status: "Failed to Hatch", gender: null, bird_id: null });
+  for (let i = 0; i < incubatingCount; i++) toCreate.push({ coop_id: hatch.coop_id, hatch_id: hatch.id, position: position++, status: "Incubating", gender: null, bird_id: null });
+
+  if (toCreate.length === 0) return [];
+  await localBulkCreate("hatch_eggs", toCreate, { suppressUndo: true });
+  STATE.hatchEggs = await localGetAll("hatch_eggs", currentCoopId);
+  return STATE.hatchEggs.filter(e => e.hatch_id === hatch.id);
+}
+
 async function localNoteCreate(payload, opts = {}) {
   const record = { id: newLocalId(), updated_at: new Date().toISOString(), deleted_at: null, ...payload };
   await localPutMany("notes", [record]);
@@ -1428,10 +1490,10 @@ async function localBirdDelete(id, coopId) {
   // part of the same undo action as the bird itself, so undoing this
   // restores both the bird and the clutch's count together, not just the bird.
   if (existing && existing.hatch_id) {
-    const h = await localGetOne("hatches", existing.hatch_id);
-    if (h) {
-      const hatchUpdated = await localHatchUpdate(h.id, { named_count: Math.max(0, (Number(h.named_count) || 0) - 1) });
-      operations.push({ resource: "hatches", id: h.id, before: h, after: hatchUpdated });
+    const linkedEgg = (await localGetAll("hatch_eggs", coopId)).find(e => e.bird_id === id);
+    if (linkedEgg) {
+      const eggUpdated = await localHatchEggUpdate(linkedEgg.id, { bird_id: null }, { suppressUndo: true });
+      operations.push({ resource: "hatch_eggs", id: linkedEgg.id, before: linkedEgg, after: eggUpdated });
     }
   }
   trySyncSoon("birds", coopId);
@@ -1451,16 +1513,16 @@ async function localBulkDeleteBirds(ids, coopId) {
   await localPutMany("birds", records);
   await queueOutbox({ resource: "birds", op: "bulk-delete", id: null, payload: ids });
   await Promise.all(ids.map(id => clearPendingPhoto(id)));
-  const hatchDecrements = {};
-  existing.forEach(b => { if (b && b.hatch_id) hatchDecrements[b.hatch_id] = (hatchDecrements[b.hatch_id] || 0) + 1; });
+  const linkedEggIds = new Set(existing.filter(b => b && b.hatch_id).map(b => b.id));
   const hatchOps = [];
-  await Promise.all(Object.entries(hatchDecrements).map(async ([hatchId, n]) => {
-    const h = await localGetOne("hatches", hatchId);
-    if (h) {
-      const updated = await localHatchUpdate(h.id, { named_count: Math.max(0, (Number(h.named_count) || 0) - n) }, { suppressUndo: true });
-      hatchOps.push({ resource: "hatches", id: h.id, before: h, after: updated });
-    }
-  }));
+  if (linkedEggIds.size > 0) {
+    const allEggs = await localGetAll("hatch_eggs", coopId);
+    const eggsToClear = allEggs.filter(e => linkedEggIds.has(e.bird_id));
+    await Promise.all(eggsToClear.map(async (egg) => {
+      const updated = await localHatchEggUpdate(egg.id, { bird_id: null }, { suppressUndo: true });
+      hatchOps.push({ resource: "hatch_eggs", id: egg.id, before: egg, after: updated });
+    }));
+  }
   if (coopId) trySyncSoon("birds", coopId);
   const birdOps = ids.map((id, i) => ({ resource: "birds", id, before: existing[i], after: null }));
   pushUndoAction(ids.length === 1 ? "Deleted a bird" : `Deleted ${ids.length} birds`, [...birdOps, ...hatchOps]);
@@ -1489,7 +1551,7 @@ async function localCoopDelete(id) {
   // The server hard-deletes everything under this coop in one shot -- clean
   // up the same local records so nothing orphaned lingers in IndexedDB.
   const db = await openLocalDb();
-  for (const store of ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches"]) {
+  for (const store of ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "supply_products"]) {
     const all = await localGetAll(store, id);
     const tx = db.transaction(store, "readwrite");
     all.forEach(r => tx.objectStore(store).delete(r.id));
@@ -1566,7 +1628,7 @@ async function buildLocalExportBundle(coopId, onProgress) {
   const coop = await localGetOne("coops", coopId);
   const bundle = { version: 1, exported_at: todayStr(), offline_export: true, coop };
   const photoBlobs = {}; // zip-relative path -> Blob, collected here so the zip step never has to re-derive or re-decode anything
-  const tables = ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "supply_products"];
+  const tables = ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "supply_products"];
   for (let i = 0; i < tables.length; i++) {
     const table = tables[i];
     const rows = await localGetAll(table, coopId);
@@ -1764,7 +1826,7 @@ function rowsToCsv(rows, fields) {
 async function exportLocalCsv(coopId) {
   const coop = await localGetOne("coops", coopId);
   const zip = new JSZip();
-  for (const table of ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "supply_products"]) {
+  for (const table of ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "supply_products"]) {
     const rows = await localGetAll(table, coopId);
     if (rows.length === 0) continue;
     const fields = Object.keys(rows[0]).filter(f => f !== "coop_id" && f !== "photo");
@@ -1795,15 +1857,17 @@ async function importLocalBundle(bundle, photoBlobs, onProgress) {
   });
   const birdIdMap = {};
   const productIdMap = {};
+  const hatchIdMap = {};
   const createFns = {
     eggs: localEggCreate, expenses: localExpenseCreate, bedding: localBeddingCreate,
     notes: localNoteCreate, supplies: localSupplyCreate, bird_logs: localBirdLogCreate, hatches: localHatchCreate,
+    hatch_eggs: localHatchEggCreate,
   };
   // Birds and supply_products first (so their id maps exist), then
-  // everything else, bird_logs and supplies last -- same reasoning as the
-  // server: bird_logs needs bird ids remapped, supplies needs product ids
-  // remapped, so both must come after the tables they reference.
-  const tables = ["birds", "supply_products", "eggs", "expenses", "bedding", "notes", "hatches", "supplies", "bird_logs"];
+  // everything else, bird_logs and supplies after that (bird_logs needs
+  // bird ids remapped, supplies needs product ids remapped), hatch_eggs
+  // last of all since it needs both hatches and birds already imported.
+  const tables = ["birds", "supply_products", "eggs", "expenses", "bedding", "notes", "hatches", "supplies", "bird_logs", "hatch_eggs"];
   const totalRows = tables.reduce((sum, t) => sum + (bundle[t] || []).length, 0) || 1;
   let doneRows = 0;
   _suppressActivityLogging = true;
@@ -1823,6 +1887,12 @@ async function importLocalBundle(bundle, photoBlobs, onProgress) {
         if (table === "supplies" && row.product_id) {
           payload.product_id = productIdMap[row.product_id] || null; // dangling reference (product wasn't in this export) just drops the link, same spirit as the bird_logs skip above
         }
+        if (table === "hatch_eggs") {
+          const newHatchId = hatchIdMap[row.hatch_id];
+          if (!newHatchId) { doneRows++; continue; } // referenced clutch wasn't in this export; skip it
+          payload.hatch_id = newHatchId;
+          if (row.bird_id) payload.bird_id = birdIdMap[row.bird_id] || null; // dangling reference just drops the flock link, egg stays otherwise intact
+        }
         if (table === "birds" || table === "supply_products") {
           const photoRef = payload.photo;
           payload.photo = null;
@@ -1841,7 +1911,8 @@ async function importLocalBundle(bundle, photoBlobs, onProgress) {
             else await queuePendingProductPhoto(created.id, blob);
           }
         } else {
-          await createFns[table](payload);
+          const created = await createFns[table](payload);
+          if (table === "hatches") hatchIdMap[oldId] = created.id;
         }
         doneRows++;
         if (onProgress && (doneRows % 20 === 0 || doneRows === totalRows)) onProgress(Math.round((doneRows / totalRows) * 100), `Importing ${table}... ${i + 1}/${rows.length}`);
@@ -1895,14 +1966,14 @@ async function tryReadOfflineZipBundle(file, onProgress) {
 }
 
 async function loadCoopData() {
-  if (!currentCoopId) { STATE.birds = []; STATE.eggs = []; STATE.expenses = []; STATE.bedding = []; STATE.birdLogs = []; STATE.notes = []; STATE.supplies = []; STATE.hatches = []; STATE.supplyProducts = []; return []; }
+  if (!currentCoopId) { STATE.birds = []; STATE.eggs = []; STATE.expenses = []; STATE.bedding = []; STATE.birdLogs = []; STATE.notes = []; STATE.supplies = []; STATE.hatches = []; STATE.hatchEggs = []; STATE.supplyProducts = []; return []; }
 
   // Everything is local-first now, Birds included: eggs, expenses, supplies,
   // bedding, notes, bird_logs (health/medical records per bird), and birds
   // itself. Sync is best-effort per resource -- if one fails (offline), we
   // still read whatever's already in IndexedDB from last time, rather than
   // showing nothing, and one resource's failure can't block the others.
-  const stateKeyFor = { eggs: "eggs", expenses: "expenses", supplies: "supplies", bedding: "bedding", notes: "notes", bird_logs: "birdLogs", birds: "birds", hatches: "hatches", activity_log: "activityLog", supply_products: "supplyProducts" };
+  const stateKeyFor = { eggs: "eggs", expenses: "expenses", supplies: "supplies", bedding: "bedding", notes: "notes", bird_logs: "birdLogs", birds: "birds", hatches: "hatches", hatch_eggs: "hatchEggs", activity_log: "activityLog", supply_products: "supplyProducts" };
   let newActivityRows = [];
   await Promise.all(Object.entries(stateKeyFor).map(async ([resource, stateKey]) => {
     if (!localOnlyMode) {
@@ -1930,6 +2001,14 @@ async function loadCoopData() {
   if (staleEmptied.length) {
     await Promise.all(staleEmptied.map(s => localSupplyUpdate(s.id, { date_emptied: null })));
     STATE.supplies = await localGetAll("supplies", currentCoopId);
+  }
+
+  // Individual egg tracking: any clutch without its own hatch_eggs rows yet
+  // gets them generated now (from old aggregate counters if this clutch
+  // predates per-egg tracking, or fresh "Incubating" eggs if it's brand new).
+  const hatchesNeedingEggs = STATE.hatches.filter(h => !STATE.hatchEggs.some(e => e.hatch_id === h.id));
+  if (hatchesNeedingEggs.length) {
+    for (const h of hatchesNeedingEggs) await ensureHatchEggsExist(h);
   }
 
   return newActivityRows;
@@ -2466,7 +2545,7 @@ function renderConnectionSection() {
   });
 }
 
-const LOCAL_FIRST_RESOURCES = ["eggs", "expenses", "supplies", "bedding", "notes", "bird_logs", "birds", "coops", "hatches", "activity_log", "supply_products"];
+const LOCAL_FIRST_RESOURCES = ["eggs", "expenses", "supplies", "bedding", "notes", "bird_logs", "birds", "coops", "hatches", "hatch_eggs", "activity_log", "supply_products"];
 /** Relative time like "3m ago" / "2h ago", falling back to a plain date once
  * it's more than a day old -- precise-enough-to-verify-syncing without
  * needing a raw timestamp. */
@@ -3448,10 +3527,10 @@ function computeStats() {
   const lossesAll = deceased.length;
   const lossesThisYear = deceased.filter(b => b.death_date && isThisYear(b.death_date)).length;
 
-  const chicksHatchedAll = STATE.hatches.reduce((s, h) => s + (Number(h.hatched_count) || 0), 0);
-  const hatchClearAll = STATE.hatches.reduce((s, h) => s + (Number(h.clear_count) || 0), 0);
-  const hatchQuitAll = STATE.hatches.reduce((s, h) => s + (Number(h.quit_count) || 0), 0);
-  const hatchFailedAll = STATE.hatches.reduce((s, h) => s + (Number(h.failed_count) || 0), 0);
+  const chicksHatchedAll = STATE.hatchEggs.filter(e => e.status === "Hatched").length;
+  const hatchClearAll = STATE.hatchEggs.filter(e => e.status === "Clear").length;
+  const hatchQuitAll = STATE.hatchEggs.filter(e => e.status === "Quit").length;
+  const hatchFailedAll = STATE.hatchEggs.filter(e => e.status === "Failed to Hatch").length;
   const hatchLossAll = hatchClearAll + hatchQuitAll + hatchFailedAll;
 
   const eggsThisMonth = STATE.eggs.filter(e => isThisMonth(e.date)).reduce((s, e) => s + (Number(e.count) || 0), 0);
@@ -3515,10 +3594,12 @@ function computeYearStats(year) {
   // their own date, only the clutch does) -- a clutch spanning New Year's
   // counts toward the year it was set, not necessarily the year it hatched.
   const hatchesInYear = STATE.hatches.filter(h => inYear(h.date_started));
-  const chicksHatched = hatchesInYear.reduce((s, h) => s + (Number(h.hatched_count) || 0), 0);
-  const hatchClear = hatchesInYear.reduce((s, h) => s + (Number(h.clear_count) || 0), 0);
-  const hatchQuit = hatchesInYear.reduce((s, h) => s + (Number(h.quit_count) || 0), 0);
-  const hatchFailed = hatchesInYear.reduce((s, h) => s + (Number(h.failed_count) || 0), 0);
+  const hatchesInYearIds = new Set(hatchesInYear.map(h => h.id));
+  const hatchEggsInYear = STATE.hatchEggs.filter(e => hatchesInYearIds.has(e.hatch_id));
+  const chicksHatched = hatchEggsInYear.filter(e => e.status === "Hatched").length;
+  const hatchClear = hatchEggsInYear.filter(e => e.status === "Clear").length;
+  const hatchQuit = hatchEggsInYear.filter(e => e.status === "Quit").length;
+  const hatchFailed = hatchEggsInYear.filter(e => e.status === "Failed to Hatch").length;
   const hatchLoss = hatchClear + hatchQuit + hatchFailed;
 
   const cleanoutsInYear = STATE.bedding.filter(b => b.entry_type === "Full Clean-out" && inYear(b.date));
@@ -4959,6 +5040,7 @@ function batchEditModalHtml(batchName) {
       </div>
       <div style="flex:1;min-width:180px">
         <label class="field"><span>Set group photo (applies to every bird in this batch)</span><input type="file" id="batchPhotoInput" accept="image/*"></label>
+        ${cover ? `<button class="btn ghost small" id="repositionBatchPhoto" style="margin-top:8px">↔ Reposition (applies to whole batch)</button>` : ""}
       </div>
     </div>
 
@@ -5034,6 +5116,17 @@ function wireBatchEditModal(batchName) {
     showToast("Group photo updated", "update");
     await loadCoopData();
     refresh();
+  });
+  const repositionBatchBtn = document.getElementById("repositionBatchPhoto");
+  if (repositionBatchBtn) repositionBatchBtn.addEventListener("click", () => {
+    const cover = birds.find(b => b.photo || pendingPhotoUrls[b.id]);
+    if (!cover) return;
+    openPhotoRepositionModal(birdPhotoUrl(cover), cover.photo_pos_x ?? 50, cover.photo_pos_y ?? 50, photoZoom(cover), "1/1", async (x, y, zoom) => {
+      await localBulkUpdate("birds", birds.map(b => ({ id: b.id, fields: { photo_pos_x: x, photo_pos_y: y, photo_zoom: zoom } })), currentCoopId);
+      showToast("Photo position applied to whole batch", "update");
+      await loadCoopData();
+      refresh();
+    });
   });
 }
 
@@ -5546,7 +5639,7 @@ function hatchTimelineBarHtml(dateStarted) {
   const pct = Math.min(100, (daysIn / 21) * 100);
   return `
     <div style="position:relative;height:20px;border-radius:6px;overflow:hidden;background:linear-gradient(to right, var(--sage) 0%, var(--sage) 85.7%, var(--gold) 85.7%, var(--gold) 95.2%, var(--danger) 95.2%, var(--danger) 100%);margin:8px 0 4px">
-      <div style="position:absolute;top:0;bottom:0;left:${pct}%;width:2px;background:var(--text);box-shadow:0 0 0 2px var(--bg)"></div>
+      <div style="position:absolute;top:0;bottom:0;left:${pct}%;width:3px;background:var(--gold);box-shadow:0 0 0 2px var(--bg), 0 0 6px var(--gold)"></div>
     </div>
     <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em">
       <span>Day 0</span><span>Candle d7</span><span>Candle d14</span><span>Lockdown d18</span><span>Hatch d21</span>
@@ -5555,33 +5648,163 @@ function hatchTimelineBarHtml(dateStarted) {
 
 let editingHatchId = null;
 
+/** Background color for one egg tile -- pink/blue only for a live outcome
+ * (still incubating or hatched); Clear/Quit/Failed use a flat grey
+ * regardless of gender, since those outcomes aren't about gender at all. */
+function eggTileColor(egg) {
+  if (egg.status === "Clear" || egg.status === "Quit" || egg.status === "Failed to Hatch") return "var(--surface-raised)";
+  if (egg.gender === "Hen") return "#C97B94";
+  if (egg.gender === "Rooster") return "#5E85A8";
+  return "var(--surface-raised)";
+}
+function eggTileIcon(egg) {
+  if (egg.status === "Hatched") return "🐣";
+  if (egg.status === "Clear") return "○";
+  if (egg.status === "Quit") return "✕";
+  if (egg.status === "Failed to Hatch") return "⧖";
+  return "🥚";
+}
+function eggTileHtml(egg) {
+  const named = !!egg.bird_id;
+  return `<button type="button" class="egg-tile" data-egg="${egg.id}" title="Egg #${egg.position} -- ${esc(egg.status)}${egg.gender ? ` · ${egg.gender}` : ""}" style="background:${eggTileColor(egg)};${named ? "box-shadow:0 0 0 2px var(--gold);" : ""}">${eggTileIcon(egg)}</button>`;
+}
+/** The full grid for one clutch, sorted by position so numbering stays stable. */
+function eggGridHtml(hatchId) {
+  const eggs = STATE.hatchEggs.filter(e => e.hatch_id === hatchId).sort((a, b) => (Number(a.position) || 0) - (Number(b.position) || 0));
+  if (eggs.length === 0) return "";
+  return `<div class="egg-grid">${eggs.map(eggTileHtml).join("")}</div>`;
+}
+
+const HATCH_EGG_STATUSES = ["Incubating", "Hatched", "Clear", "Quit", "Failed to Hatch"];
+
+function hatchEggFormHtml(egg, hatch) {
+  const bird = egg.bird_id ? STATE.birds.find(b => b.id === egg.bird_id) : null;
+  const needsNaming = egg.status === "Hatched" && !bird && !egg.tracked_externally;
+  return `
+    <div class="form-head">Egg #${egg.position}</div>
+    <div class="grid-form">
+      <label class="field"><span>Status</span><select id="eg_status">${HATCH_EGG_STATUSES.map(s => `<option ${egg.status === s ? "selected" : ""}>${s}</option>`).join("")}</select></label>
+      <label class="field"><span>Gender</span><select id="eg_gender">${["", "Hen", "Rooster"].map(g => `<option value="${g}" ${(egg.gender || "") === g ? "selected" : ""}>${g || "Unknown"}</option>`).join("")}</select></label>
+    </div>
+    <div class="dim" style="font-size:11px;margin-top:6px">Gender is usually only knowable once hatched (or right at hatch for autosexing breeds) -- set it whenever you actually know it.</div>
+
+    ${bird ? `
+      <div class="note-box" style="margin-top:12px">Already in the flock as <strong style="color:var(--text)">${esc(bird.name)}</strong> -- edit that bird directly from the Flock tab for anything beyond gender here.</div>
+    ` : egg.tracked_externally ? `
+      <div class="note-box" style="margin-top:12px">Marked as tracked elsewhere -- no flock record here by choice.</div>
+    ` : ""}
+
+    ${needsNaming ? `
+      <div class="form-block" style="margin-top:12px;border-color:var(--sage)">
+        <div class="form-head" style="font-size:13px">🐣 Add to flock</div>
+        <div class="grid-form">
+          <label class="field"><span>Name</span><input id="eg_name" placeholder="e.g. Nugget"></label>
+          <label class="field"><span>Type</span><select id="eg_type">${BIRD_TYPES.map(t => `<option ${t === "Layer" ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+        </div>
+        <div class="dim" style="font-size:11px;margin-top:6px">Gender carries over from above. Breed (${esc(hatch.breed) || "Mixed"}), hatch date, and acquired date (all ${fmtDate(todayStr())}) carry over automatically -- add a photo or anything else later from the Flock tab.</div>
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-confirm small" id="saveChickFromEgg">+ Add to flock</button>
+          <button class="btn ghost small" id="skipChickFromEgg" title="Mark as tracked without creating a flock record">Already tracked elsewhere</button>
+        </div>
+      </div>
+    ` : ""}
+
+    <div class="modal-actions">
+      <button class="btn btn-confirm" id="saveHatchEgg">✓ Save</button>
+    </div>
+  `;
+}
+
+function openHatchEggModal(egg, hatch) {
+  openModal(
+    hatchEggFormHtml(egg, hatch),
+    null,
+    () => confirmAndDelete(
+      `Delete egg #${egg.position} from this clutch? This can't be undone.`,
+      () => localBulkDelete("hatch_eggs", [egg.id], currentCoopId),
+      "Egg deleted",
+      async () => { STATE.hatchEggs = await localGetAll("hatch_eggs", currentCoopId); renderHatching(); }
+    )
+  );
+  wireHatchEggModal(egg, hatch);
+}
+
+function wireHatchEggModal(egg, hatch) {
+  // Status/gender changes re-render the modal body against a draft (not yet
+  // saved) version of the egg, so "Add to flock" appears the moment you
+  // pick "Hatched" rather than only reflecting whatever was last saved.
+  const rewireLive = () => {
+    const statusEl = document.getElementById("eg_status");
+    const genderEl = document.getElementById("eg_gender");
+    if (statusEl) statusEl.addEventListener("change", () => {
+      const draft = { ...egg, status: statusEl.value, gender: genderEl.value || null };
+      refreshModalContent(hatchEggFormHtml(draft, hatch));
+      wireHatchEggModal(egg, hatch);
+    });
+    if (genderEl) genderEl.addEventListener("change", () => {
+      const draft = { ...egg, status: statusEl.value, gender: genderEl.value || null };
+      refreshModalContent(hatchEggFormHtml(draft, hatch));
+      wireHatchEggModal(egg, hatch);
+    });
+  };
+  rewireLive();
+  document.getElementById("saveHatchEgg").addEventListener("click", async () => {
+    const status = document.getElementById("eg_status").value;
+    const gender = document.getElementById("eg_gender").value || null;
+    await localHatchEggUpdate(egg.id, { status, gender });
+    showToast("Egg updated", "update");
+    closeModal();
+    STATE.hatchEggs = await localGetAll("hatch_eggs", currentCoopId);
+    renderHatching();
+  });
+  const saveChickBtn = document.getElementById("saveChickFromEgg");
+  if (saveChickBtn) saveChickBtn.addEventListener("click", async () => {
+    const name = document.getElementById("eg_name").value.trim();
+    if (!name) return;
+    const status = document.getElementById("eg_status").value;
+    const gender = document.getElementById("eg_gender").value || null;
+    const type = document.getElementById("eg_type").value;
+    const today = todayStr();
+    const createdBird = await localBirdCreate({ coop_id: currentCoopId, name, breed: hatch.breed || "", type, gender, status: "Active", hatch_date: today, acquired_date: today, hatch_id: hatch.id }, { suppressUndo: true });
+    const updatedEgg = await localHatchEggUpdate(egg.id, { status, gender, bird_id: createdBird.id }, { suppressUndo: true });
+    pushUndoAction(`Added bird "${name}" from clutch`, [
+      { resource: "birds", id: createdBird.id, before: null, after: createdBird },
+      { resource: "hatch_eggs", id: egg.id, before: egg, after: updatedEgg },
+    ]);
+    showToast(`${name} added to the flock`, "create");
+    closeModal();
+    STATE.birds = await localGetAll("birds", currentCoopId);
+    STATE.hatchEggs = await localGetAll("hatch_eggs", currentCoopId);
+    renderHatching();
+  });
+  const skipBtn = document.getElementById("skipChickFromEgg");
+  if (skipBtn) skipBtn.addEventListener("click", async () => {
+    const status = document.getElementById("eg_status").value;
+    const gender = document.getElementById("eg_gender").value || null;
+    await localHatchEggUpdate(egg.id, { status, gender, tracked_externally: 1 });
+    showToast("Marked as tracked elsewhere", "update");
+    closeModal();
+    STATE.hatchEggs = await localGetAll("hatch_eggs", currentCoopId);
+    renderHatching();
+  });
+}
+
 function renderHatching() {
   const el = document.getElementById("eggsSubContent");
   if (!currentCoopId) { el.innerHTML = noCoopMessage(); return; }
   const active = STATE.hatches.filter(h => h.status !== "Complete").sort((a, b) => a.date_started.localeCompare(b.date_started));
   const complete = STATE.hatches.filter(h => h.status === "Complete").sort((a, b) => b.date_started.localeCompare(a.date_started));
 
-  const stepperRow = (label, hint, count, incAttr, decAttr, incDisabled, decDisabled) => `
-    <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0">
-      <div style="font-size:13px">${label}${hint ? `<span class="dim" style="font-size:11px;display:block">${hint}</span>` : ""}</div>
-      <div style="display:flex;align-items:center;gap:10px">
-        <button class="icon-btn" ${decAttr} ${count === 0 || decDisabled ? "disabled" : ""}>−</button>
-        <span style="min-width:18px;text-align:center;font-weight:700">${count}</span>
-        <button class="icon-btn" ${incAttr} ${incDisabled ? "disabled" : ""}>+</button>
-      </div>
-    </div>`;
-
   const clutchCardHtml = (h) => {
     const info = hatchDayInfo(h.date_started);
-    const hatchedCount = Number(h.hatched_count) || 0;
-    const namedCount = Number(h.named_count) || 0;
-    const clearCount = Number(h.clear_count) || 0;
-    const quitCount = Number(h.quit_count) || 0;
-    const failedCount = Number(h.failed_count) || 0;
-    const accountedFor = hatchedCount + clearCount + quitCount + failedCount;
-    const remaining = Math.max(0, (Number(h.egg_count) || 0) - accountedFor);
-    const allAccountedFor = remaining === 0 && (Number(h.egg_count) || 0) > 0;
-    const pendingToName = Math.max(0, hatchedCount - namedCount);
+    const eggs = STATE.hatchEggs.filter(e => e.hatch_id === h.id);
+    const hatchedCount = eggs.filter(e => e.status === "Hatched").length;
+    const clearCount = eggs.filter(e => e.status === "Clear").length;
+    const quitCount = eggs.filter(e => e.status === "Quit").length;
+    const failedCount = eggs.filter(e => e.status === "Failed to Hatch").length;
+    const incubatingCount = eggs.filter(e => e.status === "Incubating").length;
+    const pendingToName = eggs.filter(e => e.status === "Hatched" && !e.bird_id && !e.tracked_externally).length;
+    const allAccountedFor = incubatingCount === 0 && eggs.length > 0;
     const isComplete = h.status === "Complete";
     return `
     <div class="card" style="margin-bottom:14px">
@@ -5605,41 +5828,17 @@ function renderHatching() {
         <div class="dim" style="font-size:10px;margin-top:6px">Candling: ${fmtDate(info.candle1Date)} &amp; ${fmtDate(info.candle2Date)} · Lockdown: ${fmtDate(info.lockdownDate)} · Hatch: ${fmtDate(info.expectedHatchDate)}</div>
       ` : `<div class="stamp tone-sage" style="margin-top:8px">Complete</div>`}
 
-      ${!isComplete ? `
-      <div style="margin-top:12px;border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
-        ${stepperRow("🐣 Hatched", null, hatchedCount, `data-inc-hatch="${h.id}"`, `data-dec-hatch="${h.id}"`, pendingToName > 0, pendingToName === 0)}
-        ${stepperRow("Clear", "infertile -- no chick ever developed", clearCount, `data-inc-clear="${h.id}"`, `data-dec-clear="${h.id}"`, false, false)}
-        ${stepperRow("Quit", "started developing, didn't make it", quitCount, `data-inc-quit="${h.id}"`, `data-dec-quit="${h.id}"`, false, false)}
-        ${stepperRow("Failed to hatch", "fully developed, never pipped", failedCount, `data-inc-failed="${h.id}"`, `data-dec-failed="${h.id}"`, false, false)}
-      </div>
-      ` : `
-      <div class="dim" style="font-size:12px;margin-top:10px">🐣 ${hatchedCount} hatched · ${clearCount} clear · ${quitCount} quit · ${failedCount} failed to hatch</div>
-      `}
-      ${pendingToName > 0 ? `<div class="dim" style="font-size:11px;margin-top:4px">Name the chick below before logging another hatch.</div>` : ""}
-      <div class="dim" style="font-size:11px;margin-top:8px">${remaining} still incubating${allAccountedFor && !isComplete && pendingToName === 0 ? " -- all eggs accounted for, mark this clutch complete when you're ready" : ""}</div>
-      ${allAccountedFor && !isComplete && pendingToName === 0 ? `<button class="btn ghost small" data-complete-hatch="${h.id}" style="margin-top:6px">✓ Mark clutch complete</button>` : ""}
+      ${eggGridHtml(h.id)}
+      <div class="dim" style="font-size:10.5px;margin-top:8px">🥚 incubating · 🐣 hatched (gold ring once in the flock) · ○ clear · ✕ quit · ⧖ failed to hatch — pink or blue once gender's known. Tap an egg to update it.</div>
+
+      <div class="dim" style="font-size:11px;margin-top:10px">${hatchedCount} hatched · ${clearCount} clear · ${quitCount} quit · ${failedCount} failed to hatch · ${incubatingCount} still incubating${pendingToName > 0 ? ` · ${pendingToName} waiting to be named` : ""}</div>
+      ${allAccountedFor && !isComplete ? `<button class="btn ghost small" data-complete-hatch="${h.id}" style="margin-top:6px">✓ Mark clutch complete</button>` : ""}
       ${(() => {
         const chicks = STATE.birds.filter(b => b.hatch_id === h.id).sort((a, b) => (a.hatch_date || "").localeCompare(b.hatch_date || ""));
         if (chicks.length === 0) return "";
         return `<div class="dim" style="font-size:11px;margin-top:8px">${chicks.map(c => `${esc(c.name)} (${fmtDate(c.hatch_date)})`).join(", ")}</div>`;
       })()}
       ${h.notes ? `<div class="dim" style="font-size:12px;margin-top:8px">${esc(h.notes)}</div>` : ""}
-
-      ${pendingToName > 0 ? `
-        <div class="form-block" style="margin-top:12px;border-color:var(--sage)">
-          <div class="form-head" style="font-size:13px">🐣 Name this chick${pendingToName > 1 ? ` (${pendingToName} waiting)` : ""}</div>
-          <div class="grid-form">
-            <label class="field"><span>Name</span><input id="qc_name_${h.id}" placeholder="e.g. Nugget"></label>
-            <label class="field"><span>Type</span><select id="qc_type_${h.id}">${BIRD_TYPES.map(t => `<option ${t === "Layer" ? "selected" : ""}>${t}</option>`).join("")}</select></label>
-            <label class="field"><span>Gender</span><select id="qc_gender_${h.id}">${["", "Hen", "Rooster"].map(g => `<option value="${g}">${g || "Unknown"}</option>`).join("")}</select></label>
-          </div>
-          <div class="dim" style="font-size:11px;margin-top:6px">Breed (${esc(h.breed) || "Mixed"}), hatch date, and acquired date (all ${fmtDate(todayStr())}) carry over automatically -- add a photo or anything else later from the Flock tab.</div>
-          <div style="margin-top:10px;display:flex;gap:8px">
-            <button class="btn btn-confirm small" data-save-chick="${h.id}">+ Add to flock</button>
-            <button class="btn ghost small" data-skip-chick="${h.id}" title="Mark as named without creating a flock record">Already tracked elsewhere</button>
-          </div>
-        </div>
-      ` : ""}
     </div>`;
   };
 
@@ -5668,53 +5867,10 @@ function renderHatching() {
     STATE.hatches = await localGetAll("hatches", currentCoopId);
     renderHatching();
   }));
-
-  // Shared stepper wiring: each outcome is its own +/- pair, field name
-  // passed in so one function handles all four instead of four near-copies.
-  const wireStepper = (incSelector, decSelector, field) => {
-    el.querySelectorAll(`[${incSelector}]`).forEach(b => b.addEventListener("click", async () => {
-      const id = b.getAttribute(incSelector);
-      const h = STATE.hatches.find(x => x.id === id);
-      await localHatchUpdate(h.id, { [field]: (Number(h[field]) || 0) + 1 });
-      STATE.hatches = await localGetAll("hatches", currentCoopId);
-      renderHatching();
-    }));
-    el.querySelectorAll(`[${decSelector}]`).forEach(b => b.addEventListener("click", async () => {
-      const id = b.getAttribute(decSelector);
-      const h = STATE.hatches.find(x => x.id === id);
-      await localHatchUpdate(h.id, { [field]: Math.max(0, (Number(h[field]) || 0) - 1) });
-      STATE.hatches = await localGetAll("hatches", currentCoopId);
-      renderHatching();
-    }));
-  };
-  wireStepper("data-inc-hatch", "data-dec-hatch", "hatched_count");
-  wireStepper("data-inc-clear", "data-dec-clear", "clear_count");
-  wireStepper("data-inc-quit", "data-dec-quit", "quit_count");
-  wireStepper("data-inc-failed", "data-dec-failed", "failed_count");
-
-  el.querySelectorAll("[data-skip-chick]").forEach(b => b.addEventListener("click", async () => {
-    const h = STATE.hatches.find(x => x.id === b.dataset.skipChick);
-    await localHatchUpdate(h.id, { named_count: (Number(h.named_count) || 0) + 1 });
-    STATE.hatches = await localGetAll("hatches", currentCoopId);
-    renderHatching();
-  }));
-  el.querySelectorAll("[data-save-chick]").forEach(b => b.addEventListener("click", async () => {
-    const h = STATE.hatches.find(x => x.id === b.dataset.saveChick);
-    const name = document.getElementById(`qc_name_${h.id}`).value.trim();
-    if (!name) return;
-    const type = document.getElementById(`qc_type_${h.id}`).value;
-    const gender = document.getElementById(`qc_gender_${h.id}`).value || null;
-    const today = todayStr();
-    const createdBird = await localBirdCreate({ coop_id: currentCoopId, name, breed: h.breed || "", type, gender, status: "Active", hatch_date: today, acquired_date: today, hatch_id: h.id }, { suppressUndo: true });
-    const updatedHatch = await localHatchUpdate(h.id, { named_count: (Number(h.named_count) || 0) + 1 }, { suppressUndo: true });
-    pushUndoAction(`Added bird "${name}" from clutch`, [
-      { resource: "birds", id: createdBird.id, before: null, after: createdBird },
-      { resource: "hatches", id: h.id, before: h, after: updatedHatch },
-    ]);
-    showToast(`${name} added to the flock`, "create");
-    STATE.hatches = await localGetAll("hatches", currentCoopId);
-    STATE.birds = await localGetAll("birds", currentCoopId);
-    renderHatching();
+  el.querySelectorAll("[data-egg]").forEach(tile => tile.addEventListener("click", () => {
+    const egg = STATE.hatchEggs.find(e => e.id === tile.dataset.egg);
+    const hatch = STATE.hatches.find(h => h.id === egg.hatch_id);
+    if (egg && hatch) openHatchEggModal(egg, hatch);
   }));
 }
 
@@ -5754,10 +5910,27 @@ function openHatchModal(editing) {
     if (!date_started || egg_count <= 0) return;
     const payload = { coop_id: currentCoopId, breed, date_started, egg_count, notes };
     if (editing) {
+      const oldCount = Number(editing.egg_count) || 0;
       await localHatchUpdate(editing.id, payload);
+      if (egg_count !== oldCount) {
+        const existingEggs = STATE.hatchEggs.filter(e => e.hatch_id === editing.id).sort((a, b) => (Number(a.position) || 0) - (Number(b.position) || 0));
+        if (egg_count > oldCount) {
+          const toAdd = [];
+          for (let p = existingEggs.length + 1; p <= egg_count; p++) toAdd.push({ coop_id: currentCoopId, hatch_id: editing.id, position: p, status: "Incubating", gender: null, bird_id: null });
+          if (toAdd.length) await localBulkCreate("hatch_eggs", toAdd, { suppressUndo: true });
+        } else {
+          const removable = existingEggs.filter(e => e.status === "Incubating").slice(-(oldCount - egg_count));
+          if (removable.length < oldCount - egg_count) {
+            showToast(`Only removed ${removable.length} still-incubating egg${removable.length !== 1 ? "s" : ""} -- the rest already have a tracked outcome`, "update");
+          }
+          if (removable.length) await localBulkDelete("hatch_eggs", removable.map(e => e.id), currentCoopId, { suppressUndo: true });
+        }
+        STATE.hatchEggs = await localGetAll("hatch_eggs", currentCoopId);
+      }
       showToast("Clutch updated", "update");
     } else {
-      await localHatchCreate({ ...payload, hatched_count: 0, named_count: 0, clear_count: 0, quit_count: 0, failed_count: 0, status: "Incubating" });
+      const created = await localHatchCreate({ ...payload, hatched_count: 0, named_count: 0, clear_count: 0, quit_count: 0, failed_count: 0, status: "Incubating" });
+      await ensureHatchEggsExist(created);
       showToast("Clutch started", "create");
     }
     closeModal();

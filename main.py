@@ -28,7 +28,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.06-119"
+SERVER_VERSION = "2026.07.06-120"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -81,13 +81,23 @@ SCHEMA = {
         "hatched_count": "REAL", "named_count": "REAL", "clear_count": "REAL", "quit_count": "REAL", "failed_count": "REAL",
         "status": "TEXT", "notes": "TEXT",
     },
+    "hatch_eggs": {
+        # One row per individual egg in a clutch -- position is a stable
+        # display order (1, 2, 3...) that doesn't change as status changes.
+        # status: Incubating | Hatched | Clear | Quit | Failed to Hatch.
+        # bird_id is set once a Hatched egg has been named into the flock;
+        # tracked_externally marks one as "handled" without a real flock
+        # record (kept separate from bird_id so a null bird_id still means
+        # "still needs naming" rather than being ambiguous with this).
+        "coop_id": "TEXT", "hatch_id": "TEXT", "position": "REAL", "status": "TEXT", "gender": "TEXT", "bird_id": "TEXT", "tracked_externally": "REAL",
+    },
     "activity_log": {
         # Append-only by convention (the app never updates or deletes a log entry) --
         # reuses the same generic create/list/sync endpoints as everything else.
         "coop_id": "TEXT", "resource": "TEXT", "op": "TEXT", "changed_by": "TEXT", "summary": "TEXT",
     },
 }
-SCOPED = {"birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "activity_log", "supply_products"}  # tables siloed by coop_id
+SCOPED = {"birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "activity_log", "supply_products"}  # tables siloed by coop_id
 
 
 @contextmanager
@@ -483,10 +493,12 @@ def _do_import_bundle(bundle: dict, zip_photo_reader=None) -> dict:
         )
         bird_id_map = {}
         product_id_map = {}
+        hatch_id_map = {}
         # supply_products before supplies (so product_id can be remapped),
-        # birds before bird_logs (so bird_id can be remapped) -- everything
-        # else order doesn't matter.
-        import_order = ["birds", "supply_products"] + [t for t in SCOPED if t not in ("birds", "bird_logs", "supply_products", "supplies")] + ["supplies", "bird_logs"]
+        # birds before bird_logs (so bird_id can be remapped), hatch_eggs
+        # last of all (needs both hatches and birds already imported) --
+        # everything else order doesn't matter.
+        import_order = ["birds", "supply_products"] + [t for t in SCOPED if t not in ("birds", "bird_logs", "supply_products", "supplies", "hatch_eggs")] + ["supplies", "bird_logs", "hatch_eggs"]
         for table in import_order:
             cols = [c for c in SCHEMA[table] if c != "coop_id"]
             for row in bundle.get(table, []) or []:
@@ -533,6 +545,13 @@ def _do_import_bundle(bundle: dict, zip_photo_reader=None) -> dict:
                     if not new_bird_id:
                         continue  # log referenced a bird that wasn't in this export; skip it
                     row["bird_id"] = new_bird_id
+                if table == "hatch_eggs":
+                    new_hatch_id = hatch_id_map.get(row.get("hatch_id"))
+                    if not new_hatch_id:
+                        continue  # egg referenced a clutch that wasn't in this export; skip it
+                    row["hatch_id"] = new_hatch_id
+                    if row.get("bird_id"):
+                        row["bird_id"] = bird_id_map.get(row["bird_id"])  # None if that bird wasn't in this export -- fine, the egg just loses its flock link
                 fields = ["id", "coop_id", "updated_at"] + [c for c in cols if c in row]
                 values = [new_row_id, new_id, _now_iso()] + [row[c] for c in cols if c in row]
                 placeholders = ", ".join("?" for _ in fields)
@@ -542,6 +561,8 @@ def _do_import_bundle(bundle: dict, zip_photo_reader=None) -> dict:
                     bird_id_map[old_bird_id] = new_row_id
                 if table == "supply_products":
                     product_id_map[old_product_id] = new_row_id
+                if table == "hatches":
+                    hatch_id_map[old_hatch_id] = new_row_id
         return dict(conn.execute("SELECT * FROM coops WHERE id = ?", (new_id,)).fetchone())
 
 

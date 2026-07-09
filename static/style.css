@@ -365,6 +365,13 @@ tr:hover td { background: var(--surface-raised); }
 .flock-card-check { position: absolute; top: 6px; left: 6px; width: 20px; height: 20px; z-index: 2; }
 .card-selected { outline: 3px solid var(--gold); outline-offset: -1px; }
 .list-card-check { flex: 0 0 auto; width: 20px; height: 20px; margin-top: 2px; cursor: pointer; }
+.egg-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.egg-tile {
+  width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--border);
+  font-size: 16px; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; padding: 0; transition: transform 0.1s;
+}
+.egg-tile:hover { transform: scale(1.1); }
 .flock-group-badge { position: absolute; bottom: 6px; right: 6px; z-index: 2; transform: rotate(3deg); }
 .flock-card-info { padding: 8px 10px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 3px; flex: 1; }
 .flock-card-name { font-family: 'Roboto Slab', serif; font-weight: 700; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; color: var(--text); }
