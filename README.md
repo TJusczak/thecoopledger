@@ -84,6 +84,26 @@ alike) to GHCR, GitHub's own container registry.
 From then on, `docker compose pull && docker compose up -d` picks up new
 versions without ever needing the source on that machine.
 
+## Deploying the landing site (thecoopledger.com)
+
+The `landing/` folder is the marketing/delivery site; `static/` is the app
+itself (also what self-hosted Docker instances serve). Cloudflare Pages
+combines them at build time rather than keeping two copies in sync by
+hand. In the Cloudflare dashboard for this project:
+
+- **Root directory:** leave blank (repo root)
+- **Build command:**
+  ```
+  mkdir -p dist && cp -r landing/. dist/ && mkdir -p dist/app && cp -r static/. dist/app/
+  ```
+- **Build output directory:** `dist`
+
+Note the `/.` (not `/*`) at the end of each source path — a trailing `/*`
+is a shell glob that silently skips hidden files and folders, which was
+quietly dropping `.well-known/assetlinks.json` (needed for the Android
+app's domain verification) from every deploy without any error. `/.`
+copies everything, hidden or not.
+
 ## Local-only mode: no server required at all
 
 The app doesn't require self-hosting to be useful. On first visit, "Start

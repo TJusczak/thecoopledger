@@ -1,0 +1,10 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.thecoopledger.twa",
+      "sha256_cert_fingerprints": ["1E:47:14:41:BE:0F:AD:9B:96:99:AD:E9:5D:D7:7D:5C:FF:A7:6D:22:3B:CA:06:50:EC:64:C6:41:24:71:A4:52"]
+    }
+  }
+]
