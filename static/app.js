@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-111";
+const APP_VERSION = "2026.07.06-112";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -1099,6 +1099,7 @@ async function localSupplyProductUpdate(id, payload, opts = {}) {
   await queueOutbox({ resource: "supply_products", op: "update", id, payload });
   trySyncSoon("supply_products", payload.coop_id || (existing && existing.coop_id));
   if (existing && !opts.suppressUndo) pushUndoAction(`Edited saved product: ${record.brand}`, [{ resource: "supply_products", id, before: existing, after: record }]);
+  return record;
 }
 async function localSupplyProductDelete(id, coopId) {
   const existing = await localGetOne("supply_products", id);
@@ -2422,20 +2423,33 @@ function openProductModal(editingProduct, category) {
     ) : null
   );
   const refreshProductModal = () => { refreshModalContent(renderProductEditFormHtml(editingProduct, category, true)); wireProductModalPhoto(); };
+  function captureUnsavedProductFields() {
+    return {
+      brand: document.getElementById("np_brand")?.value,
+      default_description: document.getElementById("np_desc")?.value,
+      default_quantity: document.getElementById("np_qty")?.value,
+      default_unit: document.getElementById("np_unit")?.value,
+    };
+  }
   function wireProductModalPhoto() {
     const preview = document.getElementById("productPhotoPreview");
     if (preview) preview.addEventListener("click", (e) => {
       const url = e.target.dataset ? e.target.dataset.viewPhoto : null;
       if (!url) return;
+      const unsaved = captureUnsavedProductFields();
       showPhotoLightbox(url, {
         x: editingProduct.photo_pos_x ?? 50, y: editingProduct.photo_pos_y ?? 50, aspectRatio: "1/1",
-        onSave: async (x, y) => { editingProduct = await localSupplyProductUpdate(editingProduct.id, { photo_pos_x: x, photo_pos_y: y }); refreshProductModal(); },
+        onSave: async (x, y) => {
+          editingProduct = { ...(await localSupplyProductUpdate(editingProduct.id, { photo_pos_x: x, photo_pos_y: y })), ...unsaved };
+          refreshProductModal();
+        },
       });
     });
     const repositionBtn = document.getElementById("repositionProductPhoto");
     if (repositionBtn) repositionBtn.addEventListener("click", () => {
+      const unsaved = captureUnsavedProductFields();
       openPhotoRepositionModal(productPhotoUrl(editingProduct), editingProduct.photo_pos_x ?? 50, editingProduct.photo_pos_y ?? 50, "1/1", async (x, y) => {
-        editingProduct = await localSupplyProductUpdate(editingProduct.id, { photo_pos_x: x, photo_pos_y: y });
+        editingProduct = { ...(await localSupplyProductUpdate(editingProduct.id, { photo_pos_x: x, photo_pos_y: y })), ...unsaved };
         refreshProductModal();
       });
     });
@@ -4176,6 +4190,21 @@ function statusTone(status) {
   return status === "Active" ? "sage" : status === "Processed" ? "rust" : status === "Deceased" ? "danger" : "slate";
 }
 
+/** Shared by bird cards and group cards -- computes the border-color/style
+ * and pattern-background CSS for a given accent color, or "" if there's no
+ * accent at all (falling back to the plain default card border). */
+function cardAccentStyle(accent, borderStyle, pattern) {
+  if (!accent) return "";
+  const patternBg = pattern === "gradient"
+    ? `background:linear-gradient(135deg, color-mix(in srgb, ${esc(accent)} 30%, var(--surface)), var(--surface))`
+    : pattern === "dots"
+    ? `background-color:color-mix(in srgb, ${esc(accent)} 8%, var(--surface));background-image:radial-gradient(color-mix(in srgb, ${esc(accent)} 55%, transparent) 1.5px, transparent 1.5px);background-size:10px 10px`
+    : pattern === "stripes"
+    ? `background-color:color-mix(in srgb, ${esc(accent)} 8%, var(--surface));background-image:repeating-linear-gradient(45deg, color-mix(in srgb, ${esc(accent)} 25%, transparent), color-mix(in srgb, ${esc(accent)} 25%, transparent) 6px, transparent 6px, transparent 12px)`
+    : `background:color-mix(in srgb, ${esc(accent)} 12%, var(--surface))`;
+  return `border-color:${esc(accent)};border-style:${esc(borderStyle)};${patternBg}`;
+}
+
 function birdCardHtml(b) {
   const displayName = esc(b.name);
   const age = ageFromDate(b.hatch_date || b.acquired_date);
@@ -4192,14 +4221,7 @@ function birdCardHtml(b) {
   const accent = b.card_color || null;
   const borderStyle = b.border_style || "solid";
   const pattern = b.card_pattern || "solid";
-  const patternBg = !accent ? "" : pattern === "gradient"
-    ? `background:linear-gradient(135deg, color-mix(in srgb, ${esc(accent)} 30%, var(--surface)), var(--surface))`
-    : pattern === "dots"
-    ? `background-color:color-mix(in srgb, ${esc(accent)} 8%, var(--surface));background-image:radial-gradient(color-mix(in srgb, ${esc(accent)} 55%, transparent) 1.5px, transparent 1.5px);background-size:10px 10px`
-    : pattern === "stripes"
-    ? `background-color:color-mix(in srgb, ${esc(accent)} 8%, var(--surface));background-image:repeating-linear-gradient(45deg, color-mix(in srgb, ${esc(accent)} 25%, transparent), color-mix(in srgb, ${esc(accent)} 25%, transparent) 6px, transparent 6px, transparent 12px)`
-    : `background:color-mix(in srgb, ${esc(accent)} 12%, var(--surface))`;
-  const cardStyle = accent ? `border-color:${esc(accent)};border-style:${esc(borderStyle)};${patternBg}` : "";
+  const cardStyle = cardAccentStyle(accent, borderStyle, pattern);
   const nameHtml = accent
     ? `<div class="flock-card-name-ribbon" style="background:color-mix(in srgb, ${esc(accent)} 55%, var(--surface))"><div class="flock-card-name">${displayName}</div></div>`
     : `<div class="flock-card-name">${displayName}</div>`;
@@ -4223,6 +4245,12 @@ function birdCardHtml(b) {
   </div>`;
 }
 
+/** currentOpenBatchName tracks which group (if any) is currently expanded
+ * below the grid, purely so its card can show a glowing border -- "this is
+ * the one you have open right now" -- distinct from any color customization
+ * the group might also have. */
+let currentOpenBatchName = null;
+
 function groupCardHtml(batchName, filteredBirds, totalCount) {
   const s = summarizeGroup(filteredBirds);
   const cover = filteredBirds.find(b => b.photo || pendingPhotoUrls[b.id]);
@@ -4235,14 +4263,31 @@ function groupCardHtml(batchName, filteredBirds, totalCount) {
   const avgPricePerLb = totalWeight > 0 ? totalValue / totalWeight : 0;
   const locations = new Set(filteredBirds.map(b => b.location || null));
   const sharedLocation = locations.size === 1 ? [...locations][0] : null;
-  return `<div class="flock-card flock-card-group" data-open-batch="${esc(batchName)}">
+  // The group card's own look mirrors whatever styling the birds inside it
+  // actually share -- if they were all colored via "Apply to whole batch,"
+  // the collapsed card matches; if they're mixed (or never styled), it just
+  // uses the same plain default border every other card gets, rather than
+  // a fixed dashed one that didn't reflect anything about the group itself.
+  const sharedOf = (field, fallback) => {
+    const vals = new Set(filteredBirds.map(b => b[field] || null));
+    return vals.size === 1 && [...vals][0] ? [...vals][0] : fallback;
+  };
+  const accent = sharedOf("card_color", null);
+  const borderStyle = sharedOf("border_style", "solid");
+  const pattern = sharedOf("card_pattern", "solid");
+  const cardStyle = cardAccentStyle(accent, borderStyle, pattern);
+  const isOpen = currentOpenBatchName === batchName;
+  const nameHtml = accent
+    ? `<div class="flock-card-name-ribbon" style="background:color-mix(in srgb, ${esc(accent)} 55%, var(--surface))"><div class="flock-card-name">${esc(batchName)}</div></div>`
+    : `<div class="flock-card-name">${esc(batchName)}</div>`;
+  return `<div class="flock-card flock-card-group${accent ? " custom-color" : ""}${isOpen ? " flock-card-group-open" : ""}" data-open-batch="${esc(batchName)}" style="${cardStyle}">
     <div class="flock-card-photo">
       ${cover ? `<img src="${birdPhotoUrl(cover)}" style="object-position:${photoPosition(cover)}">` : "🐣"}
       <span class="stamp stamp-lg stamp-on-photo tone-slate flock-card-status-badge">Batch</span>
       <div class="flock-group-badge"><span class="stamp stamp-lg stamp-on-photo tone-gold">${countLabel} bird${(totalCount || s.count) !== 1 ? "s" : ""}</span></div>
     </div>
     <div class="flock-card-info">
-      <div class="flock-card-name">${esc(batchName)}</div>
+      ${nameHtml}
       <div class="flock-card-sub">${s.statusSummary}${totalCount && totalCount !== filteredBirds.length ? ` · ${totalCount} in batch` : ""}</div>
       ${hasActive && s.target_harvest_date ? `<div style="margin-top:2px">${harvestCountdownHtml(s.target_harvest_date)}</div>` : ""}
       ${sharedLocation ? `<span class="stamp tone-slate" style="margin-top:2px">📍 ${esc(sharedLocation)}</span>` : ""}
@@ -4362,8 +4407,8 @@ function renderFlockBirds() {
       </div>
     ` : ""}
 
-    <div id="birdFormHost"></div>
     ${bodyHtml}
+    <div id="birdFormHost"></div>
   `;
 
   document.getElementById("flockSortSelect").addEventListener("change", (e) => { flockSort = e.target.value; renderFlockBirds(); });
@@ -4402,6 +4447,7 @@ function renderFlockBirds() {
     selectedBirdIds.clear();
     refreshAndRender();
   });
+  if (currentOpenBatchName) showBatchPanel(currentOpenBatchName);
 }
 
 /** Individual birds that left Active status on their own (not part of a batch), plus batches where every member has left Active status. */
@@ -4410,7 +4456,7 @@ function renderFlockBirds() {
 /** Shared click wiring for both the active grid and the archive grid. */
 function wireFlockCardHandlers(el) {
   el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => showBirdForm(STATE.birds.find(x => x.id === card.dataset.edit))));
-  el.querySelectorAll("[data-open-batch]").forEach(card => card.addEventListener("click", () => showBatchPanel(card.dataset.openBatch)));
+  el.querySelectorAll("[data-open-batch]").forEach(card => card.addEventListener("click", () => { currentOpenBatchName = card.dataset.openBatch; renderFlockBirds(); }));
 }
 
 function showBatchPanel(batchName) {
@@ -4446,7 +4492,7 @@ function showBatchPanel(batchName) {
       <div class="flock-grid">${birds.map(b => birdCardHtml(b)).join("")}</div>
     </div>
   `;
-  const close = () => { host.innerHTML = ""; };
+  const close = () => { currentOpenBatchName = null; renderFlockBirds(); };
   document.getElementById("closeBatchPanel").addEventListener("click", close);
   document.getElementById("openBatchEdit").addEventListener("click", () => openBatchEditModal(batchName));
   document.getElementById("selectAllInBatch").addEventListener("click", () => {
@@ -4568,6 +4614,7 @@ function wireBatchEditModal(batchName) {
     await localBulkDeleteBirds(birds.map(x => x.id), currentCoopId);
     showToast(`"${batchName}" batch deleted`, "delete");
     closeModal();
+    currentOpenBatchName = null;
     document.getElementById("birdFormHost").innerHTML = ""; // the batch panel behind this modal no longer has anything to show
     refreshAndRender();
   });
@@ -4586,9 +4633,11 @@ function wireBatchEditModal(batchName) {
 function openBatchEditModal(batchName) {
   openModal(batchEditModalHtml(batchName), () => {
     // Whatever changed in here (photo, location, styling) should be
-    // reflected in the batch panel underneath once this closes, regardless
-    // of which button was used to close it.
-    if (document.getElementById("birdFormHost")) showBatchPanel(batchName);
+    // reflected in BOTH the expanded panel underneath AND the collapsed
+    // group card in the main grid once this closes -- a full re-render
+    // covers both, since renderFlockBirds re-opens the panel itself when
+    // currentOpenBatchName is set.
+    if (document.getElementById("birdFormHost")) renderFlockBirds();
   });
   wireBatchEditModal(batchName);
 }
@@ -4630,6 +4679,7 @@ function showBulkEditForm() {
     <div class="note-box" style="margin-bottom:12px">Leave a field blank to leave it unchanged on all selected birds. Only fields you fill in get applied.</div>
     <div class="grid-form">
       <label class="field"><span>Type</span><select id="be_type"><option value="">(no change)</option>${BIRD_TYPES.map(t => `<option value="${t}">${t}</option>`).join("")}</select></label>
+      <label class="field"><span>Gender</span><select id="be_gender"><option value="">(no change)</option><option value="Hen">Hen</option><option value="Rooster">Rooster</option></select></label>
       <label class="field"><span>Status</span><select id="be_status"><option value="">(no change)</option>${BIRD_STATUSES.map(s => `<option value="${s}">${s}</option>`).join("")}</select></label>
       <label class="field"><span>Location</span><select id="be_location"><option value="">(no change)</option>${getBeddingAreas().map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join("")}</select></label>
       <label class="field"><span>Target harvest date</span><input type="date" id="be_target"></label>
@@ -4660,6 +4710,7 @@ function showBulkEditForm() {
   document.getElementById("saveBulkEdit").addEventListener("click", async () => {
     const updates = {};
     const type = document.getElementById("be_type").value;
+    const gender = document.getElementById("be_gender").value;
     const status = document.getElementById("be_status").value;
     const location = document.getElementById("be_location").value;
     const batch = document.getElementById("be_batch").value;
@@ -4674,6 +4725,7 @@ function showBulkEditForm() {
     const pattern = document.getElementById("be_pattern").value;
     const setColor = document.getElementById("be_set_color").checked;
     if (type) updates.type = type;
+    if (gender) updates.gender = gender;
     if (status) updates.status = status;
     if (location) updates.location = location;
     if (setBatch) updates.batch_name = batch.trim() || null;
@@ -4844,9 +4896,11 @@ function showBirdForm(bird) {
 
     document.getElementById("photoPreview").addEventListener("click", (e) => {
       const url = e.target.dataset ? e.target.dataset.viewPhoto : null;
-      if (url) showPhotoLightbox(url, {
+      if (!url) return;
+      formState = readCurrentValues(); // capture every field now, before the lightbox (and possibly the crop modal after it) replaces this form's DOM
+      showPhotoLightbox(url, {
         x: formState.photo_pos_x ?? 50, y: formState.photo_pos_y ?? 50, aspectRatio: "1/1", closeAfterSave: false,
-        onSave: async (x, y) => { formState = readCurrentValues(); formState.photo_pos_x = x; formState.photo_pos_y = y; render(false); },
+        onSave: async (x, y) => { formState.photo_pos_x = x; formState.photo_pos_y = y; render(false); },
       });
     });
 
@@ -4876,8 +4930,8 @@ function showBirdForm(bird) {
     const removeBtn = document.getElementById("removePhoto");
     const repositionBtn = document.getElementById("repositionPhoto");
     if (repositionBtn) repositionBtn.addEventListener("click", () => {
+      formState = readCurrentValues(); // capture every field now, before the crop modal replaces this form's DOM
       openPhotoRepositionModal(previewUrl, formState.photo_pos_x ?? 50, formState.photo_pos_y ?? 50, "1/1", async (x, y) => {
-        formState = readCurrentValues();
         formState.photo_pos_x = x;
         formState.photo_pos_y = y;
         render(false);
@@ -5708,7 +5762,11 @@ function renderExpenses() {
   el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => openExpenseModal(STATE.expenses.find(x => x.id === card.dataset.edit))));
 }
 
+const QUANTITY_RELEVANT_INCOME = new Set(["Egg Sale", "Meat Sale"]); // the only income categories where "how many/how much" feeds back into the Coop tab's value-produced estimate
+
 function expenseFormHtml(editing) {
+  const catValue = editing ? editing.category : (document.getElementById("x_cat") ? document.getElementById("x_cat").value : (pendingExpenseCategory || (expenseFormEntryType === "income" ? INCOME_CATEGORIES[0] : EXPENSE_CATEGORIES[0])));
+  const showQuantityFields = expenseFormEntryType === "income" ? QUANTITY_RELEVANT_INCOME.has(catValue) : QUANTITY_CATEGORIES.has(catValue);
   return `
     <div class="form-head">${editing ? "Edit entry" : "Log an entry"}</div>
     <div style="display:flex;gap:8px;margin-bottom:14px">
@@ -5719,16 +5777,18 @@ function expenseFormHtml(editing) {
       <label class="field"><span>Date</span><input type="date" id="x_date" value="${editing ? editing.date : todayStr()}"></label>
       <label class="field"><span>Category</span><select id="x_cat">${(expenseFormEntryType === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map(c => `<option ${(editing ? editing.category === c : pendingExpenseCategory === c) ? "selected" : ""}>${c}</option>`).join("")}</select></label>
       <label class="field"><span>Amount ($, total)</span><input type="number" step="0.01" id="x_amount" value="${editing ? editing.amount : ""}"></label>
-      <label class="field"><span>Quantity${expenseFormEntryType === "income" ? "" : " (per bag/item)"}</span><input type="number" step="0.01" id="x_qty" placeholder="e.g. 50" value="${editing && editing.quantity != null ? editing.quantity : ""}"></label>
-      <label class="field"><span>Unit</span><select id="x_unit"><option value="">—</option>${EXPENSE_UNITS.map(u => `<option ${editing && editing.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>
-      ${!editing && expenseFormEntryType === "expense" ? `<label class="field"><span>Number of bags/items</span><input type="number" min="1" max="200" step="1" id="x_count" value="1"></label>` : ""}
+      ${showQuantityFields ? `<label class="field"><span>Quantity${expenseFormEntryType === "income" ? "" : " (per bag/item)"}</span><input type="number" step="0.01" id="x_qty" placeholder="e.g. 50" value="${editing && editing.quantity != null ? editing.quantity : ""}"></label>` : ""}
+      ${showQuantityFields ? `<label class="field"><span>Unit</span><select id="x_unit"><option value="">—</option>${EXPENSE_UNITS.map(u => `<option ${editing && editing.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>` : ""}
+      ${showQuantityFields && !editing && expenseFormEntryType === "expense" ? `<label class="field"><span>Number of bags/items</span><input type="number" min="1" max="200" step="1" id="x_count" value="1"></label>` : ""}
       ${expenseFormEntryType === "expense" ? `<label class="field"><span>Applies to</span><select id="x_for">${EXPENSE_FOR_TYPES.map(t => `<option ${editing ? (editing.for_type === t ? "selected" : "") : (t === "All Birds" ? "selected" : "")}>${t}</option>`).join("")}</select></label>` : ""}
-      <label class="field"><span>Description</span><input id="x_desc" placeholder="${expenseFormEntryType === "income" ? "e.g. Sold to neighbor" : "e.g. 50lb layer feed"}" value="${editing ? esc(editing.description || "") : ""}"></label>
+      <label class="field"><span>Description</span><input id="x_desc" placeholder="${expenseFormEntryType === "income" ? "e.g. Sold to neighbor" : "e.g. 50lb layer feed, or Heat lamp"}" value="${editing ? esc(editing.description || "") : ""}"></label>
     </div>
     <div class="note-box" style="margin-top:10px">${expenseFormEntryType === "income"
       ? `For Egg Sale or Meat Sale specifically, fill in the quantity (eggs or lbs) -- this lets the app subtract that amount from the estimated "value produced" on the Coop tab, so a sale doesn't get counted twice: once as an estimate when collected, and again as real income here.`
-      : `Layer Feed and Meat Feed are separate categories now, so the cost-per-dozen and cost-per-lb estimates on the Coop tab stay accurate without needing a flock tag. "Applies to" still matters for shared costs like Bedding or Equipment.${!editing ? " Buying more than one bag at once? Set the count, and the total amount here covers all of them -- each still becomes its own separate, independently trackable item in the Supply tab's inventory." : ""}`}</div>
-    ${!editing && expenseFormEntryType === "expense" && QUANTITY_CATEGORIES.has(document.getElementById("x_cat") ? document.getElementById("x_cat").value : EXPENSE_CATEGORIES[0]) ? `<div id="productPickerHost">${renderProductPickerRow(document.getElementById("x_cat") ? document.getElementById("x_cat").value : EXPENSE_CATEGORIES[0])}</div>` : ""}
+      : showQuantityFields
+      ? `Layer Feed and Meat Feed are separate categories now, so the cost-per-dozen and cost-per-lb estimates on the Coop tab stay accurate without needing a flock tag. "Applies to" still matters for shared costs like Bedding or Equipment.${!editing ? " Buying more than one bag at once? Set the count, and the total amount here covers all of them -- each still becomes its own separate, independently trackable item in the Supply tab's inventory." : ""}`
+      : `This category doesn't track quantity/unit or inventory -- the amount here is simply the total cost. Use the description for specifics, like "Heat lamp" or "Coop hinges."`}</div>
+    ${showQuantityFields && !editing && expenseFormEntryType === "expense" ? `<div id="productPickerHost">${renderProductPickerRow(catValue)}</div>` : ""}
     <div class="modal-actions">
       <button class="btn btn-confirm" id="saveExpense">${editing ? "✓ Save changes" : "+ Add entry"}</button>
     </div>
@@ -5754,9 +5814,11 @@ function wireExpenseFormModal(editing) {
   document.getElementById("saveExpense").addEventListener("click", async () => {
     const amount = document.getElementById("x_amount").value;
     if (!amount) return;
-    const perItemQty = document.getElementById("x_qty").value;
+    const qtyEl = document.getElementById("x_qty");
+    const perItemQty = qtyEl ? qtyEl.value : "";
     const category = document.getElementById("x_cat").value;
-    const unit = document.getElementById("x_unit").value || null;
+    const unitEl = document.getElementById("x_unit");
+    const unit = unitEl ? (unitEl.value || null) : null;
     const description = document.getElementById("x_desc").value;
     const date = document.getElementById("x_date").value;
     const countEl = document.getElementById("x_count");
