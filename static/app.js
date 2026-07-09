@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-118";
+const APP_VERSION = "2026.07.06-119";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -40,7 +40,56 @@ let selectedSupplyIds = new Set();
 const selectionState = {
   birds: { mode: false, lastClicked: null },
   supplies: { mode: false, lastClicked: null },
+  eggs: { mode: false, lastClicked: null },
+  notes: { mode: false, lastClicked: null },
+  expenses: { mode: false, lastClicked: null },
+  products: { mode: false, lastClicked: null },
+  bedding: { mode: false, lastClicked: null },
 };
+let selectedEggIds = new Set();
+let selectedNoteIds = new Set();
+let selectedExpenseIds = new Set();
+let selectedProductIds = new Set();
+let selectedBeddingIds = new Set();
+
+/** "☑ Select" / "✕ Cancel selection" toggle button, shared markup for every
+ * simple list that only needs bulk delete (birds/supplies have their own
+ * richer version with bulk-edit too). */
+function selectModeButtonHtml(stateKey, btnId) {
+  const active = selectionState[stateKey].mode;
+  return `<button class="btn ${active ? "btn-close" : "ghost"} small" id="${btnId}">${active ? "✕ Cancel selection" : "☑ Select"}</button>`;
+}
+/** The "N selected / Delete selected / Clear" bar itself. */
+function bulkDeleteBarHtml(idsSet) {
+  if (idsSet.size === 0) return "";
+  return `
+    <div class="form-block" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;border-color:var(--rust);margin-bottom:12px">
+      <div><strong style="color:var(--text)">${idsSet.size}</strong> selected</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-close small" id="bulkDeleteSelectedBtn">Delete selected</button>
+        <button class="btn ghost small" id="clearSelectedBtn">Clear</button>
+      </div>
+    </div>
+  `;
+}
+/** Wires the two buttons bulkDeleteBarHtml renders. refreshState reloads
+ * whatever slice of STATE this list reads from (e.g. STATE.eggs); renderFn
+ * re-renders the list itself afterward. */
+function wireBulkDeleteBar(idsSet, resource, itemLabel, refreshState, renderFn, itemLabelPlural) {
+  const plural = itemLabelPlural || `${itemLabel}s`;
+  const delBtn = document.getElementById("bulkDeleteSelectedBtn");
+  if (delBtn) delBtn.addEventListener("click", async () => {
+    const n = idsSet.size;
+    if (!(await showConfirmDialog(`Delete ${n} selected ${n !== 1 ? plural : itemLabel}? This can't be undone.`))) return;
+    await localBulkDelete(resource, [...idsSet], currentCoopId);
+    showToast(`${n} ${n !== 1 ? plural : itemLabel} deleted`, "delete");
+    idsSet.clear();
+    await refreshState();
+    renderFn();
+  });
+  const clearBtn = document.getElementById("clearSelectedBtn");
+  if (clearBtn) clearBtn.addEventListener("click", () => { idsSet.clear(); renderFn(); });
+}
 
 /** Wires selection interaction onto a set of already-rendered cards.
  * cards: NodeList/array of elements, each carrying a data-id.
@@ -2593,6 +2642,11 @@ function renderProductsSection() {
   el.innerHTML = `
     <div class="card-title" style="margin-bottom:4px">Saved Products</div>
     <div class="dim" style="font-size:12px;margin-bottom:14px">Every product you've photographed or named, grouped the same way the Inventory tab is. Add new ones here, or from the picker when you're actually logging a bag -- either way this is the page for renaming, updating the usual quantity/description, or cleaning up ones you don't need anymore.</div>
+    <div class="toolbar" style="margin-bottom:10px">
+      <div class="dim">${STATE.supplyProducts.length} saved product${STATE.supplyProducts.length !== 1 ? "s" : ""}</div>
+      ${selectModeButtonHtml("products", "toggleProductSelectMode")}
+    </div>
+    ${bulkDeleteBarHtml(selectedProductIds)}
     ${categoryOrder.map(cat => {
       const catTone = supplyCategoryTone(cat);
       const products = STATE.supplyProducts.filter(p => p.category === cat).sort((a, b) => (a.brand || "").localeCompare(b.brand || ""));
@@ -2614,7 +2668,8 @@ function renderProductsSection() {
                   const inStock = STATE.supplies.filter(s => s.product_id === p.id && s.status !== "Empty").length;
                   const used = STATE.supplies.filter(s => s.product_id === p.id && s.status === "Empty").length;
                   return `
-                  <div class="list-card" data-edit-product="${p.id}" style="border-left:4px solid var(--${catTone});cursor:pointer">
+                  <div class="list-card${selectedProductIds.has(p.id) ? " card-selected" : ""}" data-edit-product="${p.id}" data-id="${p.id}" style="border-left:4px solid var(--${catTone});cursor:pointer">
+                    ${selectionState.products.mode ? `<input type="checkbox" class="list-card-check product-check" data-id="${p.id}" ${selectedProductIds.has(p.id) ? "checked" : ""} onclick="event.stopPropagation()">` : ""}
                     ${productPhotoUrl(p) ? `<div class="thumb-clickable" data-view-photo="${esc(productPhotoUrl(p))}" data-product-id="${p.id}" style="width:48px;height:48px;border-radius:6px;overflow:hidden;flex:0 0 auto;cursor:zoom-in"><img src="${productPhotoUrl(p)}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(p)};${photoTransformStyle(p)}"></div>` : `<div style="width:48px;height:48px;border-radius:6px;flex:0 0 auto;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:20px">📦</div>`}
                     <div class="list-card-main">
                       <div style="font-weight:700">${esc(p.brand || cat)}</div>
@@ -2640,10 +2695,24 @@ function renderProductsSection() {
     });
   }));
   el.querySelectorAll("[data-add-product-cat]").forEach(btn => btn.addEventListener("click", () => openProductModal(null, btn.dataset.addProductCat)));
-  el.querySelectorAll("[data-edit-product]").forEach(card => card.addEventListener("click", () => {
-    const product = STATE.supplyProducts.find(p => p.id === card.dataset.editProduct);
-    openProductModal(product, product.category);
+  el.querySelectorAll(".product-check").forEach(cb => cb.addEventListener("change", (e) => {
+    if (e.target.checked) selectedProductIds.add(cb.dataset.id); else selectedProductIds.delete(cb.dataset.id);
+    renderProductsSection();
   }));
+  wireCardSelection(
+    el.querySelectorAll("[data-edit-product]"),
+    selectedProductIds,
+    "products",
+    () => [...el.querySelectorAll("[data-edit-product]")].map(c => c.dataset.id),
+    (id) => { const product = STATE.supplyProducts.find(p => p.id === id); openProductModal(product, product.category); },
+    renderProductsSection
+  );
+  document.getElementById("toggleProductSelectMode").addEventListener("click", () => {
+    selectionState.products.mode = !selectionState.products.mode;
+    if (!selectionState.products.mode) selectedProductIds.clear();
+    renderProductsSection();
+  });
+  wireBulkDeleteBar(selectedProductIds, "supply_products", "product", async () => { STATE.supplyProducts = await localGetAll("supply_products", currentCoopId); }, renderProductsSection);
 }
 
 /** Single entry point for the standalone Products page's add/edit, mirroring
@@ -2901,9 +2970,12 @@ function renderNotesSection() {
       <div class="dim">${filteredNotes.length} of ${STATE.notes.length} shown</div>
       <div style="display:flex;gap:8px">
         <button class="btn ghost small" id="toggleNoteFilters">Filters${anyFilter ? " (on)" : ""} ${notesFiltersOpen ? "▾" : "▸"}</button>
+        ${selectModeButtonHtml("notes", "toggleNoteSelectMode")}
         <button class="btn" id="toggleNoteForm">+ Add note</button>
       </div>
     </div>
+
+    ${bulkDeleteBarHtml(selectedNoteIds)}
 
     ${notesFiltersOpen ? `
     <div class="form-block" style="padding:12px 16px">
@@ -2919,8 +2991,11 @@ function renderNotesSection() {
       <div class="flock-section-header" style="margin-top:18px">${esc(cat)}</div>
       <div class="list-stack">
         ${groups[cat].map(n => `
-          <div class="list-card" data-edit="${n.id}" style="cursor:pointer;flex-direction:column;align-items:stretch">
-            <div style="font-weight:700">${esc(n.title || "Untitled")}</div>
+          <div class="list-card${selectedNoteIds.has(n.id) ? " card-selected" : ""}" data-edit="${n.id}" data-id="${n.id}" style="cursor:pointer;flex-direction:column;align-items:stretch">
+            <div style="display:flex;gap:8px;align-items:flex-start">
+              ${selectionState.notes.mode ? `<input type="checkbox" class="list-card-check note-check" data-id="${n.id}" ${selectedNoteIds.has(n.id) ? "checked" : ""} onclick="event.stopPropagation()">` : ""}
+              <div style="font-weight:700">${esc(n.title || "Untitled")}</div>
+            </div>
             <div class="dim" style="white-space:pre-wrap;margin-top:4px;font-size:13px">${esc(n.body || "")}</div>
           </div>`).join("")}
       </div>
@@ -2930,8 +3005,25 @@ function renderNotesSection() {
   el.querySelectorAll("[data-pill-cat]").forEach(p => p.addEventListener("click", () => openNoteModal(null, p.dataset.pillCat === "__new__" ? "" : p.dataset.pillCat)));
   document.getElementById("toggleNoteForm").addEventListener("click", () => openNoteModal(null, null));
   document.getElementById("toggleNoteFilters").addEventListener("click", () => { notesFiltersOpen = !notesFiltersOpen; renderNotesSection(); });
+  document.getElementById("toggleNoteSelectMode").addEventListener("click", () => {
+    selectionState.notes.mode = !selectionState.notes.mode;
+    if (!selectionState.notes.mode) selectedNoteIds.clear();
+    renderNotesSection();
+  });
 
-  el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => openNoteModal(STATE.notes.find(n => n.id === card.dataset.edit), null)));
+  el.querySelectorAll(".note-check").forEach(cb => cb.addEventListener("change", (e) => {
+    if (e.target.checked) selectedNoteIds.add(cb.dataset.id); else selectedNoteIds.delete(cb.dataset.id);
+    renderNotesSection();
+  }));
+  wireCardSelection(
+    el.querySelectorAll("[data-edit]"),
+    selectedNoteIds,
+    "notes",
+    () => [...el.querySelectorAll("[data-edit]")].map(c => c.dataset.id),
+    (id) => openNoteModal(STATE.notes.find(n => n.id === id), null),
+    renderNotesSection
+  );
+  wireBulkDeleteBar(selectedNoteIds, "notes", "note", async () => { STATE.notes = await localGetAll("notes", currentCoopId); }, renderNotesSection);
   const filterCatEl = document.getElementById("filterNoteCategory");
   // Fires on selection (not per-keystroke), so no re-render-while-typing focus issue.
   if (filterCatEl) filterCatEl.addEventListener("change", (e) => { noteFilters.category = e.target.value; renderNotesSection(); });
@@ -5685,9 +5777,12 @@ function renderEggsMain() {
       <div class="dim">${sorted.length} of ${STATE.eggs.length} shown</div>
       <div style="display:flex;gap:8px">
         ${years.length > 0 ? `<button class="btn ghost small" id="toggleEggFilters">Filters${eggFilters.year ? " (1)" : ""} ${eggFiltersOpen ? "▾" : "▸"}</button>` : ""}
+        ${selectModeButtonHtml("eggs", "toggleEggSelectMode")}
         <button class="btn" id="toggleEggForm">+ Add entry</button>
       </div>
     </div>
+
+    ${bulkDeleteBarHtml(selectedEggIds)}
 
     ${eggFiltersOpen && years.length > 0 ? `
     <div class="form-block" style="padding:12px 16px">
@@ -5713,7 +5808,8 @@ function renderEggsMain() {
         const freshTone = daysAgo === 0 ? "sage" : daysAgo <= 7 ? "slate" : "";
         const freshLabel = daysAgo === 0 ? "New" : daysAgo <= 7 ? "Recent" : "";
         return `
-        <div class="list-card${freshTone ? " tone-" + freshTone : ""}" data-edit="${e.id}" style="cursor:pointer;align-items:flex-start">
+        <div class="list-card${freshTone ? " tone-" + freshTone : ""}${selectedEggIds.has(e.id) ? " card-selected" : ""}" data-edit="${e.id}" data-id="${e.id}" style="cursor:pointer;align-items:flex-start">
+          ${selectionState.eggs.mode ? `<input type="checkbox" class="list-card-check egg-check" data-id="${e.id}" ${selectedEggIds.has(e.id) ? "checked" : ""} onclick="event.stopPropagation()">` : ""}
           <div class="list-card-main">
             <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
               <div style="font-weight:700">${fmtDate(e.date)}${freshLabel ? ` <span class="stamp tone-${freshTone}" style="margin-left:4px">${freshLabel}</span>` : ""}</div>
@@ -5729,13 +5825,30 @@ function renderEggsMain() {
     })()}
   `;
   document.getElementById("toggleEggForm").addEventListener("click", () => openEggModal(null));
+  document.getElementById("toggleEggSelectMode").addEventListener("click", () => {
+    selectionState.eggs.mode = !selectionState.eggs.mode;
+    if (!selectionState.eggs.mode) selectedEggIds.clear();
+    renderEggsMain();
+  });
   const toggleFiltersBtn = document.getElementById("toggleEggFilters");
   if (toggleFiltersBtn) toggleFiltersBtn.addEventListener("click", () => { eggFiltersOpen = !eggFiltersOpen; renderEggsMain(); });
   const yearFilterEl = document.getElementById("filterEggYear");
   if (yearFilterEl) yearFilterEl.addEventListener("change", (e) => { eggFilters.year = e.target.value; eggsVisibleCount = PAGE_SIZE; renderEggsMain(); });
   const loadMoreEl = document.getElementById("loadMoreBtn");
   if (loadMoreEl) loadMoreEl.addEventListener("click", () => { eggsVisibleCount += PAGE_SIZE; renderEggsMain(); });
-  el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => openEggModal(STATE.eggs.find(e => e.id === card.dataset.edit))));
+  el.querySelectorAll(".egg-check").forEach(cb => cb.addEventListener("change", (e) => {
+    if (e.target.checked) selectedEggIds.add(cb.dataset.id); else selectedEggIds.delete(cb.dataset.id);
+    renderEggsMain();
+  }));
+  wireCardSelection(
+    el.querySelectorAll("[data-edit]"),
+    selectedEggIds,
+    "eggs",
+    () => [...el.querySelectorAll("[data-edit]")].map(c => c.dataset.id),
+    (id) => openEggModal(STATE.eggs.find(e => e.id === id)),
+    renderEggsMain
+  );
+  wireBulkDeleteBar(selectedEggIds, "eggs", "egg log", async () => { STATE.eggs = await localGetAll("eggs", currentCoopId); }, renderEggsMain);
 }
 
 function eggFormHtml(editing) {
@@ -5967,8 +6080,13 @@ function renderExpenses() {
 
     <div class="toolbar" style="margin-bottom:10px">
       <div class="dim">${sorted.length} entr${sorted.length !== 1 ? "ies" : "y"}${expenseFilters.category ? ` in ${esc(expenseFilters.category)}` : ""}</div>
-      <button class="btn" id="toggleExpenseForm">+ Add entry</button>
+      <div style="display:flex;gap:8px">
+        ${selectModeButtonHtml("expenses", "toggleExpenseSelectMode")}
+        <button class="btn" id="toggleExpenseForm">+ Add entry</button>
+      </div>
     </div>
+
+    ${bulkDeleteBarHtml(selectedExpenseIds)}
 
     ${sorted.length === 0 ? `<div class="card"><div class="empty">No entries logged${expenseFilters.category ? ` for ${esc(expenseFilters.category)}` : ""} in ${esc(periodLabel)}.</div></div>` : (() => {
       const visibleRows = [...rows].reverse().slice(0, expensesVisibleCount);
@@ -5977,7 +6095,8 @@ function renderExpenses() {
       ${visibleRows.map(({ x, running }) => {
         const isIncome = x.entry_type === "income";
         return `
-        <div class="list-card" data-edit="${x.id}" style="cursor:pointer">
+        <div class="list-card${selectedExpenseIds.has(x.id) ? " card-selected" : ""}" data-edit="${x.id}" data-id="${x.id}" style="cursor:pointer">
+          ${selectionState.expenses.mode ? `<input type="checkbox" class="list-card-check expense-check" data-id="${x.id}" ${selectedExpenseIds.has(x.id) ? "checked" : ""} onclick="event.stopPropagation()">` : ""}
           <div class="timeline-total" style="${running >= 0 ? "color:var(--sage);border-color:var(--sage)" : "color:var(--danger);border-color:var(--danger)"}">${running >= 0 ? "+" : ""}${fmtMoney(running)}</div>
           <div class="list-card-main">
             <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -6077,7 +6196,24 @@ function renderExpenses() {
   }
   const loadMoreEl = document.getElementById("loadMoreBtn");
   if (loadMoreEl) loadMoreEl.addEventListener("click", () => { expensesVisibleCount += PAGE_SIZE; renderExpenses(); });
-  el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => openExpenseModal(STATE.expenses.find(x => x.id === card.dataset.edit))));
+  el.querySelectorAll(".expense-check").forEach(cb => cb.addEventListener("change", (e) => {
+    if (e.target.checked) selectedExpenseIds.add(cb.dataset.id); else selectedExpenseIds.delete(cb.dataset.id);
+    renderExpenses();
+  }));
+  wireCardSelection(
+    el.querySelectorAll("[data-edit]"),
+    selectedExpenseIds,
+    "expenses",
+    () => [...el.querySelectorAll("[data-edit]")].map(c => c.dataset.id),
+    (id) => openExpenseModal(STATE.expenses.find(x => x.id === id)),
+    renderExpenses
+  );
+  document.getElementById("toggleExpenseSelectMode").addEventListener("click", () => {
+    selectionState.expenses.mode = !selectionState.expenses.mode;
+    if (!selectionState.expenses.mode) selectedExpenseIds.clear();
+    renderExpenses();
+  });
+  wireBulkDeleteBar(selectedExpenseIds, "expenses", "entry", async () => { STATE.expenses = await localGetAll("expenses", currentCoopId); }, renderExpenses, "entries");
 }
 
 const QUANTITY_RELEVANT_INCOME = new Set(["Egg Sale", "Meat Sale"]); // the only income categories where "how many/how much" feeds back into the Coop tab's value-produced estimate
@@ -6961,9 +7097,12 @@ function renderBeddingFreshness() {
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn ghost small" id="openBedThresholds" title="Add/remove/reorder tracking areas, and set warn/overdue timing for each">⚙ Areas &amp; thresholds</button>
         <button class="btn ghost small" id="toggleBedFilters">Filters${anyFilter ? " (on)" : ""} ${beddingFiltersOpen ? "▾" : "▸"}</button>
+        ${selectModeButtonHtml("bedding", "toggleBeddingSelectMode")}
         <button class="btn" id="toggleBedForm">+ Add entry</button>
       </div>
     </div>
+
+    ${bulkDeleteBarHtml(selectedBeddingIds)}
 
     ${beddingFiltersOpen ? `
     <div class="form-block" style="padding:12px 16px">
@@ -6981,7 +7120,8 @@ function renderBeddingFreshness() {
       return `
     <div class="list-stack">
       ${visible.map(b => `
-        <div class="list-card tone-${b.entry_type === "Full Clean-out" ? "sage" : "gold"}" data-edit="${b.id}" style="cursor:pointer">
+        <div class="list-card tone-${b.entry_type === "Full Clean-out" ? "sage" : "gold"}${selectedBeddingIds.has(b.id) ? " card-selected" : ""}" data-edit="${b.id}" data-id="${b.id}" style="cursor:pointer">
+          ${selectionState.bedding.mode ? `<input type="checkbox" class="list-card-check bedding-check" data-id="${b.id}" ${selectedBeddingIds.has(b.id) ? "checked" : ""} onclick="event.stopPropagation()">` : ""}
           <div class="list-card-main">
             <div style="font-weight:600">${esc(b.area)}</div>
             <div class="list-card-desc dim">${fmtDate(b.date)} · ${esc(b.material)}${b.notes ? " · " + esc(b.notes) : ""}</div>
@@ -7008,7 +7148,24 @@ function renderBeddingFreshness() {
   if (clearBtn) clearBtn.addEventListener("click", () => { beddingFilters = { area: "", entryType: "", year: "" }; beddingVisibleCount = PAGE_SIZE; renderBeddingFreshness(); });
   const loadMoreEl = document.getElementById("loadMoreBtn");
   if (loadMoreEl) loadMoreEl.addEventListener("click", () => { beddingVisibleCount += PAGE_SIZE; renderBeddingFreshness(); });
-  el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => openBeddingModal(STATE.bedding.find(b => b.id === card.dataset.edit))));
+  el.querySelectorAll(".bedding-check").forEach(cb => cb.addEventListener("change", (e) => {
+    if (e.target.checked) selectedBeddingIds.add(cb.dataset.id); else selectedBeddingIds.delete(cb.dataset.id);
+    renderBeddingFreshness();
+  }));
+  wireCardSelection(
+    el.querySelectorAll("[data-edit]"),
+    selectedBeddingIds,
+    "bedding",
+    () => [...el.querySelectorAll("[data-edit]")].map(c => c.dataset.id),
+    (id) => openBeddingModal(STATE.bedding.find(b => b.id === id)),
+    renderBeddingFreshness
+  );
+  document.getElementById("toggleBeddingSelectMode").addEventListener("click", () => {
+    selectionState.bedding.mode = !selectionState.bedding.mode;
+    if (!selectionState.bedding.mode) selectedBeddingIds.clear();
+    renderBeddingFreshness();
+  });
+  wireBulkDeleteBar(selectedBeddingIds, "bedding", "entry", async () => { STATE.bedding = await localGetAll("bedding", currentCoopId); }, renderBeddingFreshness, "entries");
 }
 
 function beddingFormHtml(editing) {
