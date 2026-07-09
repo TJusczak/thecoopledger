@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-109";
+const APP_VERSION = "2026.07.06-110";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -4112,7 +4112,7 @@ function birdCardHtml(b) {
     <div class="flock-card-info">
       ${nameHtml}
       ${(b.breed || b.type) ? `<div class="flock-card-breed">${esc(b.breed || b.type)}</div>` : ""}
-      <div class="flock-card-sub">${age}${statusDetail ? " · " + statusDetail : ""}</div>
+      <div class="flock-card-sub">${age}${b.gender ? ` · ${b.gender === "Hen" ? "♀" : "♂"} ${b.gender}` : ""}${statusDetail ? " · " + statusDetail : ""}</div>
       ${b.status === "Active" && b.target_harvest_date ? `<div class="flock-card-sub">target ${fmtDate(b.target_harvest_date)}</div>` : ""}
       ${b.location ? `<span class="stamp tone-slate" style="margin-top:2px">📍 ${esc(b.location)}</span>` : ""}
       ${showRate ? `<span class="stamp tone-slate" style="margin-top:4px">${weight.toFixed(1)} lb @ ${fmtMoney(pricePerLb)}/lb</span>` : ""}
@@ -4527,6 +4527,7 @@ function showBulkEditForm() {
     <div class="form-head">Bulk edit ${count} bird${count !== 1 ? "s" : ""}</div>
     <div class="note-box" style="margin-bottom:12px">Leave a field blank to leave it unchanged on all selected birds. Only fields you fill in get applied.</div>
     <div class="grid-form">
+      <label class="field"><span>Type</span><select id="be_type"><option value="">(no change)</option>${BIRD_TYPES.map(t => `<option value="${t}">${t}</option>`).join("")}</select></label>
       <label class="field"><span>Status</span><select id="be_status"><option value="">(no change)</option>${BIRD_STATUSES.map(s => `<option value="${s}">${s}</option>`).join("")}</select></label>
       <label class="field"><span>Location</span><select id="be_location"><option value="">(no change)</option>${getBeddingAreas().map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join("")}</select></label>
       <label class="field"><span>Target harvest date</span><input type="date" id="be_target"></label>
@@ -4556,6 +4557,7 @@ function showBulkEditForm() {
   openModal(html);
   document.getElementById("saveBulkEdit").addEventListener("click", async () => {
     const updates = {};
+    const type = document.getElementById("be_type").value;
     const status = document.getElementById("be_status").value;
     const location = document.getElementById("be_location").value;
     const batch = document.getElementById("be_batch").value;
@@ -4569,10 +4571,14 @@ function showBulkEditForm() {
     const borderStyle = document.getElementById("be_border_style").value;
     const pattern = document.getElementById("be_pattern").value;
     const setColor = document.getElementById("be_set_color").checked;
+    if (type) updates.type = type;
     if (status) updates.status = status;
     if (location) updates.location = location;
     if (setBatch) updates.batch_name = batch.trim() || null;
     if (target) updates.target_harvest_date = target;
+    // Layers don't have a harvest date -- clear it out unless this same
+    // bulk edit is also explicitly setting a new one.
+    if (type === "Layer" && !target) updates.target_harvest_date = null;
     if (harvestDate) updates.harvest_date = harvestDate;
     if (harvestWeight) updates.harvest_weight = Number(harvestWeight);
     if (price) updates.price_per_lb = Number(price);
@@ -4633,7 +4639,7 @@ function showBirdForm(bird) {
   let previewUrl = bird ? birdPhotoUrl(bird) : null;
 
   let formState = bird ? { ...bird } : {
-    name: "", breed: "", type: "Layer", hatch_date: "", acquired_date: "", status: "Active",
+    name: "", breed: "", type: "Layer", gender: "", hatch_date: "", acquired_date: "", status: "Active",
     target_harvest_date: "", harvest_date: "", harvest_weight: "", notes: "", photo: null,
     price_per_lb: getCoopDefaults().pricePerLb, death_date: "", death_cause: "", card_color: "", border_style: "", card_pattern: "", location: "", batch_name: "",
   };
@@ -4649,6 +4655,7 @@ function showBirdForm(bird) {
       name: val("f_name") ?? formState.name,
       breed: val("f_breed") ?? formState.breed,
       type: val("f_type") ?? formState.type,
+      gender: val("f_gender") ?? formState.gender,
       location: val("f_location") ?? formState.location,
       status: val("f_status") ?? formState.status,
       batch_name: val("f_batch") ?? formState.batch_name,
@@ -4675,6 +4682,7 @@ function showBirdForm(bird) {
 
     const html = `
       <div class="form-head">${isEdit ? "Edit bird" : "New bird"}</div>
+      ${isEdit ? `<div class="dim" style="font-size:12px;margin:-8px 0 14px">${ageFromDate(f.hatch_date || f.acquired_date)}${f.hatch_date ? ` (hatched ${fmtDate(f.hatch_date)})` : f.acquired_date ? ` (acquired ${fmtDate(f.acquired_date)})` : ""}</div>` : ""}
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;align-items:flex-start">
         <div id="photoPreview">${previewUrl ? `<img src="${previewUrl}" data-view-photo="${esc(previewUrl)}" class="thumb-clickable" style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--border);cursor:zoom-in">` : `<div style="width:84px;height:84px;border-radius:8px;background:var(--bg);border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:28px">🐔</div>`}</div>
         <div>
@@ -4693,6 +4701,7 @@ function showBirdForm(bird) {
         <label class="field"><span>Name</span><input id="f_name" value="${esc(f.name)}" placeholder="e.g. Nugget"></label>
         <label class="field"><span>Breed</span><input id="f_breed" value="${esc(f.breed)}" placeholder="e.g. Rhode Island Red"></label>
         <label class="field"><span>Type</span><select id="f_type">${BIRD_TYPES.map(t => `<option ${f.type === t ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+        <label class="field"><span>Gender</span><select id="f_gender">${["", "Hen", "Rooster"].map(g => `<option value="${g}" ${(f.gender || "") === g ? "selected" : ""}>${g || "Unknown"}</option>`).join("")}</select></label>
         <label class="field"><span>Location</span><select id="f_location"><option value="">(unspecified)</option>${getBeddingAreas().map(a => `<option value="${esc(a)}" ${f.location === a ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></label>
         <label class="field"><span>Status</span><select id="f_status">${BIRD_STATUSES.map(s => `<option ${f.status === s ? "selected" : ""}>${s}</option>`).join("")}</select></label>
         <label class="field"><span>Batch</span><input id="f_batch" value="${esc(f.batch_name || "")}" placeholder="(not in a batch)"></label>
@@ -4733,7 +4742,12 @@ function showBirdForm(bird) {
       if (url) showPhotoLightbox(url);
     });
 
-    document.getElementById("f_type").addEventListener("change", (e) => { formState = readCurrentValues(); formState.type = e.target.value; render(false); });
+    document.getElementById("f_type").addEventListener("change", (e) => {
+      formState = readCurrentValues();
+      formState.type = e.target.value;
+      if (formState.type === "Layer") formState.target_harvest_date = "";
+      render(false);
+    });
     document.getElementById("f_status").addEventListener("change", (e) => { formState = readCurrentValues(); formState.status = e.target.value; render(false); });
 
     document.getElementById("f_photo").addEventListener("change", async (e) => {
@@ -4769,6 +4783,7 @@ function showBirdForm(bird) {
         name: current.name.trim(),
         breed: current.breed,
         type: current.type,
+        gender: current.gender || null,
         status: current.status,
         hatch_date: current.hatch_date,
         acquired_date: current.acquired_date,
@@ -4831,12 +4846,13 @@ function showBulkForm() {
     <div class="grid-form">
       <label class="field"><span>How many birds</span><input type="number" id="k_count" min="1" max="200" value="25"></label>
       <label class="field"><span>Batch name</span><input id="k_batch" placeholder="e.g. July Cornish Cross"></label>
+      <label class="field"><span>Type</span><select id="k_type">${BIRD_TYPES.map(t => `<option ${t === "Meat" ? "selected" : ""}>${t}</option>`).join("")}</select></label>
       <label class="field"><span>Breed</span><input id="k_breed" placeholder="e.g. Cornish Cross"></label>
       <label class="field"><span>Hatch date</span><input type="date" id="k_hatch" value="${defaultHatch}"></label>
       <label class="field"><span>Acquired date</span><input type="date" id="k_acquired" value="${today}"></label>
       <label class="field"><span>Target harvest date</span><input type="date" id="k_target" value="${defaultTarget}"></label>
     </div>
-    <div class="note-box" style="margin-top:10px">Each bird gets its own record — named "Batch name #1", "#2", and so on — so you can still log an individual dressed weight for each one at processing time. This just saves you from typing the shared details over and over. Hatch date defaults to a week before pickup (typical for chick delivery) — adjust it if the hatchery told you the actual date. Target harvest defaults to 6 weeks from hatch; adjust it if your breed runs longer.</div>
+    <div class="note-box" style="margin-top:10px">Each bird gets its own record — named "Batch name #1", "#2", and so on — so you can still log an individual dressed weight for each one at processing time. This just saves you from typing the shared details over and over. Hatch date defaults to a week before pickup (typical for chick delivery) — adjust it if the hatchery told you the actual date. Target harvest defaults to 6 weeks from hatch (ignored for Layer, which has no harvest date) — adjust it if your breed runs longer.</div>
     <div style="margin-top:12px"><label class="field"><span>Notes</span><textarea id="k_notes" placeholder="optional"></textarea></label></div>
     <div style="margin-top:12px"><label class="field"><span>Group photo (optional, applied to every bird in the batch)</span><input type="file" id="k_photo" accept="image/*"></label></div>
     <div class="modal-actions"><button class="btn btn-confirm" id="saveBulk">✓ Create batch</button></div>
@@ -4852,14 +4868,15 @@ function showBulkForm() {
     if (!count || count < 1) return;
     if (count > 200) { alert("That's a lot of birds for one batch — try 200 or fewer at a time"); return; }
     const batchName = document.getElementById("k_batch").value.trim() || `Batch ${todayStr()}`;
+    const type = document.getElementById("k_type").value;
     const shared = {
       coop_id: currentCoopId,
       breed: document.getElementById("k_breed").value,
-      type: "Meat",
+      type,
       status: "Active",
       hatch_date: document.getElementById("k_hatch").value,
       acquired_date: document.getElementById("k_acquired").value,
-      target_harvest_date: document.getElementById("k_target").value,
+      target_harvest_date: type === "Layer" ? null : document.getElementById("k_target").value,
       batch_name: batchName,
       notes: document.getElementById("k_notes").value,
     };
@@ -5029,8 +5046,9 @@ function renderHatching() {
           <div class="grid-form">
             <label class="field"><span>Name</span><input id="qc_name_${h.id}" placeholder="e.g. Nugget"></label>
             <label class="field"><span>Type</span><select id="qc_type_${h.id}">${BIRD_TYPES.map(t => `<option ${t === "Layer" ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+            <label class="field"><span>Gender</span><select id="qc_gender_${h.id}">${["", "Hen", "Rooster"].map(g => `<option value="${g}">${g || "Unknown"}</option>`).join("")}</select></label>
           </div>
-          <div class="dim" style="font-size:11px;margin-top:6px">Breed (${esc(h.breed) || "Mixed"}) and hatch date (${fmtDate(todayStr())}) carry over automatically -- add a photo or anything else later from the Flock tab.</div>
+          <div class="dim" style="font-size:11px;margin-top:6px">Breed (${esc(h.breed) || "Mixed"}), hatch date, and acquired date (all ${fmtDate(todayStr())}) carry over automatically -- add a photo or anything else later from the Flock tab.</div>
           <div style="margin-top:10px;display:flex;gap:8px">
             <button class="btn btn-confirm small" data-save-chick="${h.id}">+ Add to flock</button>
             <button class="btn ghost small" data-skip-chick="${h.id}" title="Mark as named without creating a flock record">Already tracked elsewhere</button>
@@ -5100,7 +5118,9 @@ function renderHatching() {
     const name = document.getElementById(`qc_name_${h.id}`).value.trim();
     if (!name) return;
     const type = document.getElementById(`qc_type_${h.id}`).value;
-    const createdBird = await localBirdCreate({ coop_id: currentCoopId, name, breed: h.breed || "", type, status: "Active", hatch_date: todayStr(), hatch_id: h.id }, { suppressUndo: true });
+    const gender = document.getElementById(`qc_gender_${h.id}`).value || null;
+    const today = todayStr();
+    const createdBird = await localBirdCreate({ coop_id: currentCoopId, name, breed: h.breed || "", type, gender, status: "Active", hatch_date: today, acquired_date: today, hatch_id: h.id }, { suppressUndo: true });
     const updatedHatch = await localHatchUpdate(h.id, { named_count: (Number(h.named_count) || 0) + 1 }, { suppressUndo: true });
     pushUndoAction(`Added bird "${name}" from clutch`, [
       { resource: "birds", id: createdBird.id, before: null, after: createdBird },
