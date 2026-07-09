@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-99";
+const APP_VERSION = "2026.07.06-100";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -21,7 +21,7 @@ const INCOME_CATEGORIES = ["Egg Sale", "Meat Sale", "Bird Sale", "Other Income"]
 const INCOME_UNIT_LOCKS = { "Egg Sale": "eggs", "Meat Sale": "lb" };
 const BEDDING_AREAS = ["Coop Floor", "Nesting Boxes", "Run"];
 const BEDDING_MATERIALS = ["Pine Shavings", "Straw", "Sand", "Hemp Bedding", "Deep Litter (mixed)", "Other"];
-const BEDDING_TYPES = ["Top-off / Churn", "Full Clean-out"];
+const BEDDING_TYPES = ["Top-off", "Churn", "Top-off + Churn", "Full Clean-out"];
 const RANGES = [{ label: "7D", days: 7 }, { label: "30D", days: 30 }, { label: "90D", days: 90 }, { label: "180D", days: 180 }, { label: "1Y", days: 365 }, { label: "All", days: null }];
 const PIE_COLORS = ["#C1502E", "#D4A017", "#8A9A5B", "#7A8FA6", "#9C7A54", "#6B5B95", "#C77B58"];
 const FLOCK_DATE_FIELDS = [
@@ -3193,9 +3193,18 @@ function beddingStatsFor(area) {
   const entries = STATE.bedding.filter(b => b.area === area);
   const cleanouts = entries.filter(b => b.entry_type === "Full Clean-out").sort((a, b) => b.date.localeCompare(a.date));
   const lastCleanout = cleanouts[0] || null;
-  const topoffsSince = entries.filter(b => b.entry_type === "Top-off / Churn" && (!lastCleanout || b.date > lastCleanout.date)).length;
+  const topoffsSince = entries.filter(b => (b.entry_type === "Top-off" || b.entry_type === "Top-off + Churn" || b.entry_type === "Top-off / Churn") && (!lastCleanout || b.date > lastCleanout.date)).length;
   const lastActivity = entries.length ? entries.reduce((latest, e) => (!latest || e.date > latest.date) ? e : latest, null) : null;
-  return { lastCleanout, topoffsSince, lastActivity };
+  // A top-off-only visit doesn't accomplish the actual churning task, so it
+  // shouldn't be able to satisfy the churn-due countdown on its own -- only
+  // entries where churning genuinely happened count here. A full clean-out
+  // obviously also resets it, since fresh bedding has nothing to churn yet.
+  // "Top-off / Churn" (the old combined label, before this split existed)
+  // is included too, so existing history keeps counting the same way it
+  // always did rather than suddenly looking overdue the moment this ships.
+  const churnEntries = entries.filter(b => b.entry_type === "Churn" || b.entry_type === "Top-off + Churn" || b.entry_type === "Full Clean-out" || b.entry_type === "Top-off / Churn");
+  const lastChurn = churnEntries.length ? churnEntries.reduce((latest, e) => (!latest || e.date > latest.date) ? e : latest, null) : null;
+  return { lastCleanout, topoffsSince, lastActivity, lastChurn };
 }
 
 function getCoopSettings() {
@@ -3275,21 +3284,22 @@ function renderCoopOverview() {
             const t = getBeddingThresholds(area);
             const daysSinceCleanout = bs.lastCleanout ? daysSince(bs.lastCleanout.date) : null;
             const daysSinceActivity = bs.lastActivity ? daysSince(bs.lastActivity.date) : null;
+            const daysSinceChurn = bs.lastChurn ? daysSince(bs.lastChurn.date) : null;
             const cleanoutToneInfo = cleanoutTone(daysSinceCleanout, area);
             const daysUntilCleanout = daysSinceCleanout !== null ? t.danger - daysSinceCleanout : null;
-            const daysUntilChurn = daysSinceActivity !== null ? t.churn - daysSinceActivity : null;
+            const daysUntilChurn = daysSinceChurn !== null ? t.churn - daysSinceChurn : null;
             const cleanoutLabel = daysUntilCleanout === null ? "no clean-out logged"
               : daysUntilCleanout < 0 ? `clean-out overdue ${-daysUntilCleanout}d`
               : daysUntilCleanout === 0 ? "clean-out due today"
               : `clean-out in ${daysUntilCleanout}d`;
             const churnTone = daysUntilChurn === null ? "slate" : daysUntilChurn <= 0 ? "gold" : "sage";
-            const churnLabel = daysUntilChurn === null ? "no activity logged"
+            const churnLabel = daysUntilChurn === null ? "no churn logged"
               : daysUntilChurn < 0 ? `churn overdue ${-daysUntilChurn}d`
               : daysUntilChurn === 0 ? "churn due today"
               : `churn in ${daysUntilChurn}d`;
             return `<div style="min-width:190px;display:flex;flex-direction:column;gap:4px">
               <div style="font-weight:600">${esc(area)}</div>
-              <div class="dim" style="font-size:11px">Last top-off/churn: ${daysSinceActivity !== null ? daysSinceActivity + "d ago" : "never"}</div>
+              <div class="dim" style="font-size:11px">Last activity: ${daysSinceActivity !== null ? daysSinceActivity + "d ago" : "never"}</div>
               <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:2px">
                 <span class="stamp tone-${cleanoutToneInfo.tone}">${cleanoutLabel}</span>
                 <span class="stamp tone-${churnTone}">${churnLabel}</span>
@@ -6018,22 +6028,23 @@ function renderBeddingFreshness() {
         const t = getBeddingThresholds(area);
         const daysSinceCleanout = bs.lastCleanout ? daysSince(bs.lastCleanout.date) : null;
         const daysSinceActivity = bs.lastActivity ? daysSince(bs.lastActivity.date) : null;
+        const daysSinceChurn = bs.lastChurn ? daysSince(bs.lastChurn.date) : null;
         const cleanoutToneInfo = cleanoutTone(daysSinceCleanout, area);
         const daysUntilCleanout = daysSinceCleanout !== null ? t.danger - daysSinceCleanout : null;
-        const daysUntilChurn = daysSinceActivity !== null ? t.churn - daysSinceActivity : null;
+        const daysUntilChurn = daysSinceChurn !== null ? t.churn - daysSinceChurn : null;
         const cleanoutLabel = daysUntilCleanout === null ? "no clean-out logged"
           : daysUntilCleanout < 0 ? `overdue ${-daysUntilCleanout}d`
           : daysUntilCleanout === 0 ? "due today"
           : `in ${daysUntilCleanout}d`;
         const churnToneClass = daysUntilChurn === null ? "slate" : daysUntilChurn <= 0 ? "gold" : "sage";
-        const churnLabel = daysUntilChurn === null ? "no activity logged"
+        const churnLabel = daysUntilChurn === null ? "no churn logged"
           : daysUntilChurn < 0 ? `overdue ${-daysUntilChurn}d`
           : daysUntilChurn === 0 ? "due today"
           : `in ${daysUntilChurn}d`;
         return `<div class="stat tone-${cleanoutToneInfo.tone === "danger" ? "" : cleanoutToneInfo.tone}">
           <div class="stat-label">${esc(area)}</div>
           <div class="stat-value">${daysSinceActivity !== null ? daysSinceActivity + "d" : "—"}</div>
-          <div class="stat-sub">last top-off/churn${bs.lastCleanout ? ` · last material: ${esc(bs.lastCleanout.material)}` : ""}</div>
+          <div class="stat-sub">last activity${bs.lastCleanout ? ` · last material: ${esc(bs.lastCleanout.material)}` : ""}</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
             <span class="stamp tone-${cleanoutToneInfo.tone}">${daysUntilCleanout === null ? cleanoutLabel : "Clean-out " + cleanoutLabel}</span>
             <span class="stamp tone-${churnToneClass}">${daysUntilChurn === null ? churnLabel : "Churn " + churnLabel}</span>
@@ -6071,7 +6082,7 @@ function renderBeddingFreshness() {
         <label class="field"><span>Material</span><select id="d_material">${BEDDING_MATERIALS.map(m => `<option ${editing && editing.material === m ? "selected" : ""}>${m}</option>`).join("")}</select></label>
         <label class="field"><span>Notes</span><input id="d_notes" placeholder="optional" value="${editing ? esc(editing.notes || "") : ""}"></label>
       </div>
-      <div class="note-box" style="margin-top:10px">Use <strong style="color:var(--text)">Top-off / Churn</strong> for adding fresh material and stirring the deep litter. Use <strong style="color:var(--text)">Full Clean-out</strong> when the coop or run is emptied down to bare floor — that's what the freshness badges above track.</div>
+      <div class="note-box" style="margin-top:10px"><strong style="color:var(--text)">Top-off</strong> is adding fresh material without stirring. <strong style="color:var(--text)">Churn</strong> is stirring what's already there without adding anything. <strong style="color:var(--text)">Top-off + Churn</strong> is both in the same visit. Only Churn and Top-off + Churn count toward the churn-due countdown above -- topping off alone doesn't reset it. Use <strong style="color:var(--text)">Full Clean-out</strong> when the coop or run is emptied down to bare floor.</div>
       <div style="margin-top:12px;display:flex;gap:8px">
         <button class="btn btn-confirm" id="saveBedding">${editing ? "✓ Save changes" : "+ Add entry"}</button>
         <button class="btn btn-close" id="cancelBeddingForm">Cancel</button>
