@@ -14,7 +14,7 @@ standalone app on desktop and Android, and works fully offline once loaded.
 # docker-compose.yml
 services:
   coop-ledger:
-    image: ghcr.io/TJusczak/thecoopledger:latest
+    image: ghcr.io/tjusczak/thecoopledger:latest
     container_name: coop-ledger
     ports:
       - "8000:8000"
@@ -77,7 +77,7 @@ alike) to GHCR, GitHub's own container registry.
    with a 401 for anyone (including you, on another machine) trying to
    `docker pull` it without being logged into GHCR first.
 4. `docker-compose.yml` in this repo already points at
-   `ghcr.io/TJusczak/thecoopledger:latest` — if you've forked this under a
+   `ghcr.io/tjusczak/thecoopledger:latest` — if you've forked this under a
    different account or repo name, update the `image:` line to match
    yours instead (`ghcr.io/<your-username>/<repo-name>:latest`).
 

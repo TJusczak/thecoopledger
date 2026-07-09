@@ -26,7 +26,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }} # resolves to owner/repo automatically, no need to hardcode a name
 
 jobs:
   build-and-push:
@@ -38,6 +37,14 @@ jobs:
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
+
+      - name: Compute lowercase image name
+        # Docker/OCI registries require repository paths to be all-lowercase.
+        # github.repository preserves whatever exact case the account/repo
+        # actually has (e.g. TJusczak/thecoopledger), which the registry
+        # would reject outright -- this computes the correct, always-valid
+        # form instead of assuming the account name happens to be lowercase.
+        run: echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
       - name: Set up QEMU
         # Lets the amd64 runner below also emulate arm64 well enough to

@@ -1,6 +1,6 @@
 services:
   coop-ledger:
-    image: ghcr.io/TJusczak/thecoopledger:latest
+    image: ghcr.io/tjusczak/thecoopledger:latest
     # To build from local source instead (e.g. you've modified the code,
     # or you're developing it), comment the image: line above and
     # uncomment this one:
