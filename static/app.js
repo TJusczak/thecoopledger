@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-114";
+const APP_VERSION = "2026.07.06-115";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -659,6 +659,8 @@ const RESOURCE_LABELS = {
 const RESOURCE_LABELS_PLURAL = { birds: "birds", supplies: "supply items", supply_products: "saved products" };
 const OP_VERBS = { create: "added", update: "updated", delete: "deleted" };
 
+let _suppressActivityLogging = false;
+
 async function queueOutbox(entry) {
   const db = await openLocalDb();
   const tx = db.transaction("_outbox", "readwrite");
@@ -666,8 +668,12 @@ async function queueOutbox(entry) {
   await idbDone(tx);
   // Every mutation flows through here, so this is the one place activity
   // logging needs to hook in -- not two dozen individual create/update/
-  // delete functions. Guarded against logging the logging itself.
-  if (entry.resource !== "activity_log") await logActivity(entry.resource, entry.op, entry.payload);
+  // delete functions. Guarded against logging the logging itself, and
+  // against logging at all during a suppressed bulk operation (import),
+  // since logActivity's own STATE.activityLog refresh re-reads the whole
+  // (still-growing) table on every call -- fine for one record at a time,
+  // but turns a loop of thousands into a freeze.
+  if (entry.resource !== "activity_log" && !_suppressActivityLogging) await logActivity(entry.resource, entry.op, entry.payload);
 }
 
 /** Records "who did what" as its own local-first, syncing resource -- so
@@ -1666,44 +1672,59 @@ async function importLocalBundle(bundle, photoBlobs, onProgress) {
   const tables = ["birds", "supply_products", "eggs", "expenses", "bedding", "notes", "hatches", "supplies", "bird_logs"];
   const totalRows = tables.reduce((sum, t) => sum + (bundle[t] || []).length, 0) || 1;
   let doneRows = 0;
-  for (const table of tables) {
-    const rows = bundle[table] || [];
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      const oldId = row.id;
-      const payload = { ...row, coop_id: newCoop.id };
-      delete payload.id; delete payload.updated_at; delete payload.deleted_at;
-      if (table === "bird_logs") {
-        const newBirdId = birdIdMap[row.bird_id];
-        if (!newBirdId) { doneRows++; continue; } // referenced bird wasn't in this export; skip it, matching server behavior
-        payload.bird_id = newBirdId;
-      }
-      if (table === "supplies" && row.product_id) {
-        payload.product_id = productIdMap[row.product_id] || null; // dangling reference (product wasn't in this export) just drops the link, same spirit as the bird_logs skip above
-      }
-      if (table === "birds" || table === "supply_products") {
-        const photoRef = payload.photo;
-        payload.photo = null;
-        const created = table === "birds" ? await localBirdCreate(payload) : await localSupplyProductCreate(payload);
-        (table === "birds" ? birdIdMap : productIdMap)[oldId] = created.id;
-        // A zip import has real blobs already extracted (photoBlobs, keyed
-        // by the path stored in the bundle); a plain JSON import (or an
-        // older export) still has photos as literal data URIs inline --
-        // both are handled here so neither format broke when the zip path
-        // stopped needing the data-URI round trip.
-        let blob = null;
-        if (photoBlobs && typeof photoRef === "string" && photoBlobs[photoRef]) blob = photoBlobs[photoRef];
-        else if (typeof photoRef === "string" && photoRef.startsWith("data:")) blob = await dataUriToBlob(photoRef);
-        if (blob) {
-          if (table === "birds") await queuePendingPhoto(created.id, blob);
-          else await queuePendingProductPhoto(created.id, blob);
+  _suppressActivityLogging = true;
+  try {
+    for (const table of tables) {
+      const rows = bundle[table] || [];
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const oldId = row.id;
+        const payload = { ...row, coop_id: newCoop.id };
+        delete payload.id; delete payload.updated_at; delete payload.deleted_at;
+        if (table === "bird_logs") {
+          const newBirdId = birdIdMap[row.bird_id];
+          if (!newBirdId) { doneRows++; continue; } // referenced bird wasn't in this export; skip it, matching server behavior
+          payload.bird_id = newBirdId;
         }
-      } else {
-        await createFns[table](payload);
+        if (table === "supplies" && row.product_id) {
+          payload.product_id = productIdMap[row.product_id] || null; // dangling reference (product wasn't in this export) just drops the link, same spirit as the bird_logs skip above
+        }
+        if (table === "birds" || table === "supply_products") {
+          const photoRef = payload.photo;
+          payload.photo = null;
+          const created = table === "birds" ? await localBirdCreate(payload) : await localSupplyProductCreate(payload);
+          (table === "birds" ? birdIdMap : productIdMap)[oldId] = created.id;
+          // A zip import has real blobs already extracted (photoBlobs, keyed
+          // by the path stored in the bundle); a plain JSON import (or an
+          // older export) still has photos as literal data URIs inline --
+          // both are handled here so neither format broke when the zip path
+          // stopped needing the data-URI round trip.
+          let blob = null;
+          if (photoBlobs && typeof photoRef === "string" && photoBlobs[photoRef]) blob = photoBlobs[photoRef];
+          else if (typeof photoRef === "string" && photoRef.startsWith("data:")) blob = await dataUriToBlob(photoRef);
+          if (blob) {
+            if (table === "birds") await queuePendingPhoto(created.id, blob);
+            else await queuePendingProductPhoto(created.id, blob);
+          }
+        } else {
+          await createFns[table](payload);
+        }
+        doneRows++;
+        if (onProgress && (doneRows % 20 === 0 || doneRows === totalRows)) onProgress(Math.round((doneRows / totalRows) * 100), `Importing ${table}... ${i + 1}/${rows.length}`);
       }
-      doneRows++;
-      if (onProgress && (doneRows % 20 === 0 || doneRows === totalRows)) onProgress(Math.round((doneRows / totalRows) * 100), `Importing ${table}... ${i + 1}/${rows.length}`);
     }
+  } finally {
+    _suppressActivityLogging = false;
+  }
+  // One summary entry instead of the thousands that would've resulted from
+  // logging individually -- against the coop actually being imported into,
+  // not whatever was active before this (currentCoopId doesn't switch to
+  // the new coop until after this function returns).
+  const name = getUserName();
+  if (name) {
+    const summaryRecord = { id: newLocalId(), coop_id: newCoop.id, resource: "coops", op: "import", changed_by: name, summary: `imported ${doneRows} records`, updated_at: new Date().toISOString(), deleted_at: null };
+    await localPutMany("activity_log", [summaryRecord]);
+    await queueOutbox({ resource: "activity_log", op: "create", id: summaryRecord.id, payload: summaryRecord });
   }
   trySyncSoon("birds", newCoop.id);
   trySyncSoon("supply_products", newCoop.id);
@@ -3966,16 +3987,25 @@ function closeModal() {
  * or mid-import would leave things in a half-finished, confusing state, so
  * the only way out is for the operation to actually finish (closeModal()
  * called explicitly once it does, or on error). */
+let _progressModalUnloadHandler = null;
+
 function openProgressModal(title) {
   ensureModalDom();
   const html = `
     <div class="form-head">${esc(title)}</div>
     <div class="progress-bar-track"><div class="progress-bar-fill" id="progressBarFill" style="width:0%"></div></div>
     <div class="dim" id="progressStatusText" style="margin-top:8px;font-size:12px">Starting...</div>
+    <div class="dim" style="margin-top:10px;font-size:11px">Please keep this tab open until this finishes -- closing or reloading partway through can leave things in a confusing, half-finished state.</div>
   `;
   openModal(html);
   const closeBtn = document.getElementById("modalCloseBtn");
   if (closeBtn) closeBtn.style.display = "none";
+  // A real guard, not just a suggestion -- the browser's own "are you sure
+  // you want to leave" prompt if someone tries to close the tab or reload
+  // while this is running, since that's exactly what was landing people on
+  // a blank "no coops" screen mid-import.
+  _progressModalUnloadHandler = (e) => { e.preventDefault(); e.returnValue = ""; };
+  window.addEventListener("beforeunload", _progressModalUnloadHandler);
 }
 function updateProgressModal(percent, label) {
   const fill = document.getElementById("progressBarFill");
@@ -3986,6 +4016,7 @@ function updateProgressModal(percent, label) {
 function closeProgressModal() {
   const closeBtn = document.getElementById("modalCloseBtn");
   if (closeBtn) closeBtn.style.display = "";
+  if (_progressModalUnloadHandler) { window.removeEventListener("beforeunload", _progressModalUnloadHandler); _progressModalUnloadHandler = null; }
   closeModal();
 }
 
