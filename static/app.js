@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-112";
+const APP_VERSION = "2026.07.06-113";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -419,6 +419,17 @@ function photoPosition(record) {
   const y = (record && record.photo_pos_y != null) ? record.photo_pos_y : 50;
   return `${x}% ${y}%`;
 }
+function photoZoom(record) {
+  return (record && record.photo_zoom != null) ? record.photo_zoom : 1;
+}
+/** For <img>-based display sites: object-fit:cover already handles the
+ * aspect-ratio-correct base fit, so scaling the element itself zooms in
+ * further from that already-correct baseline -- no natural-dimension
+ * computation needed here, unlike the crop frame's own background-size math. */
+function photoTransformStyle(record) {
+  const zoom = photoZoom(record);
+  return zoom !== 1 ? `transform:scale(${zoom});` : "";
+}
 
 /** Drag-to-reframe UI for a photo that's already been uploaded (or is about
  * to be) -- resource/id identify which record to save the position onto,
@@ -426,22 +437,48 @@ function photoPosition(record) {
  * displays (square for birds, 3:4 for supply products), and onSaved (if
  * given) runs after a successful save so the caller can refresh whatever
  * it's showing. Works from a live photo URL, whether that's an already
- * -uploaded server photo or a fresh local object URL for one not saved yet. */
-function openPhotoRepositionModal(photoUrl, initialX, initialY, aspectRatio, onSave) {
+ * -uploaded server photo or a fresh local object URL for one not saved yet.
+ * Zoom is a multiplier on top of the "fill the frame" baseline (1 = no
+ * zoom, matching every photo that existed before this feature) -- computed
+ * from the image's real natural dimensions rather than a fixed CSS
+ * percentage, so it zooms in predictably regardless of the source photo's
+ * own resolution or aspect ratio. */
+function openPhotoRepositionModal(photoUrl, initialX, initialY, initialZoom, aspectRatio, onSave) {
   const html = `
     <div class="form-head">Reposition photo</div>
-    <div class="dim" style="font-size:12px;margin-bottom:12px">Drag to reframe -- this only changes what shows in cards, the original photo itself is never altered.</div>
-    <div id="cropFrame" class="photo-crop-frame" style="aspect-ratio:${aspectRatio};background-image:url('${photoUrl}');background-position:${initialX}% ${initialY}%"></div>
+    <div class="dim" style="font-size:12px;margin-bottom:12px">Drag to reframe, or use the slider to zoom in for more control -- this only changes what shows in cards, the original photo itself is never altered.</div>
+    <div id="cropFrame" class="photo-crop-frame" style="aspect-ratio:${aspectRatio}"></div>
+    <label class="field" style="margin-top:12px"><span>Zoom</span><input type="range" id="cropZoom" min="100" max="300" step="1" value="${Math.round((initialZoom || 1) * 100)}"></label>
     <div class="modal-actions">
       <button class="btn btn-confirm" id="saveCropBtn">✓ Save position</button>
-      <button class="btn ghost" id="resetCropBtn">Reset to center</button>
+      <button class="btn ghost" id="resetCropBtn">Reset</button>
     </div>
   `;
   openModal(html);
-  let posX = initialX, posY = initialY, dragging = false, startClientX, startClientY, startPosX, startPosY;
+  let posX = initialX, posY = initialY, zoom = initialZoom || 1;
+  let dragging = false, startClientX, startClientY, startPosX, startPosY;
+  let imgW = 0, imgH = 0; // natural dimensions, filled in once the image loads
   const frame = document.getElementById("cropFrame");
-
+  const zoomSlider = document.getElementById("cropZoom");
   const clamp = (v) => Math.max(0, Math.min(100, v));
+
+  function applyBackgroundSize() {
+    if (!imgW || !imgH) { frame.style.backgroundSize = "cover"; return; } // fallback while the natural-size probe is still loading
+    const rect = frame.getBoundingClientRect();
+    const coverScale = Math.max(rect.width / imgW, rect.height / imgH);
+    const scale = coverScale * zoom;
+    frame.style.backgroundSize = `${Math.round(imgW * scale)}px ${Math.round(imgH * scale)}px`;
+  }
+
+  const probe = new Image();
+  probe.onload = () => {
+    imgW = probe.naturalWidth; imgH = probe.naturalHeight;
+    frame.style.backgroundImage = `url('${photoUrl}')`;
+    frame.style.backgroundPosition = `${posX}% ${posY}%`;
+    applyBackgroundSize();
+  };
+  probe.src = photoUrl;
+
   const startDrag = (clientX, clientY) => { dragging = true; startClientX = clientX; startClientY = clientY; startPosX = posX; startPosY = posY; frame.classList.add("dragging"); };
   const moveDrag = (clientX, clientY) => {
     if (!dragging) return;
@@ -462,12 +499,19 @@ function openPhotoRepositionModal(photoUrl, initialX, initialY, aspectRatio, onS
   frame.addEventListener("touchmove", (e) => { const t = e.touches[0]; moveDrag(t.clientX, t.clientY); }, { passive: true });
   frame.addEventListener("touchend", endDrag);
 
+  zoomSlider.addEventListener("input", (e) => {
+    zoom = Number(e.target.value) / 100;
+    applyBackgroundSize();
+  });
+
   document.getElementById("resetCropBtn").addEventListener("click", () => {
-    posX = 50; posY = 50;
+    posX = 50; posY = 50; zoom = 1;
     frame.style.backgroundPosition = "50% 50%";
+    zoomSlider.value = 100;
+    applyBackgroundSize();
   });
   document.getElementById("saveCropBtn").addEventListener("click", async () => {
-    await onSave(posX, posY);
+    await onSave(posX, posY, zoom);
   });
 }
 
@@ -1333,6 +1377,28 @@ function dataUriToBlob(dataUri) { return fetch(dataUri).then(res => res.blob());
 /** A not-yet-uploaded local photo is used first (guaranteed available with
  * zero network); otherwise, if this bird has a server-hosted photo, try
  * fetching it -- works if we happen to be online, quietly gives up if not. */
+async function birdPhotoToBlob(bird) {
+  const pending = await getPendingPhoto(bird.id);
+  if (pending && pending.blob) return pending.blob;
+  if (bird.photo) {
+    try {
+      const res = await fetch(mediaUrl(bird.photo));
+      if (res.ok) return await res.blob();
+    } catch (err) { /* offline or unreachable -- exported without this photo */ }
+  }
+  return null;
+}
+async function productPhotoToBlob(product) {
+  const pending = await getPendingProductPhoto(product.id);
+  if (pending && pending.blob) return pending.blob;
+  if (product.photo) {
+    try {
+      const res = await fetch(mediaUrl(product.photo));
+      if (res.ok) return await res.blob();
+    } catch (err) { /* offline or unreachable -- exported without this photo */ }
+  }
+  return null;
+}
 async function birdPhotoToDataUri(bird) {
   const pending = await getPendingPhoto(bird.id);
   if (pending && pending.blob) return blobToDataUri(pending.blob);
@@ -1356,19 +1422,35 @@ async function productPhotoToDataUri(product) {
   return null;
 }
 
-async function buildLocalExportBundle(coopId) {
+async function buildLocalExportBundle(coopId, onProgress) {
   const coop = await localGetOne("coops", coopId);
   const bundle = { version: 1, exported_at: todayStr(), offline_export: true, coop };
-  for (const table of ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "supply_products"]) {
+  const photoBlobs = {}; // zip-relative path -> Blob, collected here so the zip step never has to re-derive or re-decode anything
+  const tables = ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "supply_products"];
+  for (let i = 0; i < tables.length; i++) {
+    const table = tables[i];
     const rows = await localGetAll(table, coopId);
-    if (table === "birds") {
-      for (const r of rows) r.photo = await birdPhotoToDataUri(r);
-    } else if (table === "supply_products") {
-      for (const r of rows) r.photo = await productPhotoToDataUri(r);
+    if (table === "birds" || table === "supply_products") {
+      const toBlobFn = table === "birds" ? birdPhotoToBlob : productPhotoToBlob;
+      const prefix = table === "birds" ? "bird" : "product";
+      for (let j = 0; j < rows.length; j++) {
+        const r = rows[j];
+        const blob = await toBlobFn(r);
+        if (blob) {
+          const path = `photos/${prefix}-${r.id}.jpg`;
+          photoBlobs[path] = blob;
+          r.photo = path;
+        } else {
+          r.photo = null;
+        }
+        if (onProgress) onProgress(Math.round(((i + (j + 1) / Math.max(rows.length, 1)) / tables.length) * 60), `Gathering ${table}... ${j + 1}/${rows.length}`);
+      }
+    } else if (onProgress) {
+      onProgress(Math.round(((i + 1) / tables.length) * 60), `Gathering ${table}... (${rows.length})`);
     }
     bundle[table] = rows;
   }
-  return bundle;
+  return { bundle, photoBlobs };
 }
 
 const LAST_BACKUP_KEY = "coopLedgerLastLocalBackupAt";
@@ -1501,32 +1583,20 @@ async function refreshSyncFolderUi() {
   });
 }
 
-async function buildLocalExportZipBlob(coopId) {
-  const bundle = await buildLocalExportBundle(coopId);
+async function buildLocalExportZipBlob(coopId, onProgress) {
+  const { bundle, photoBlobs } = await buildLocalExportBundle(coopId, onProgress);
   const zip = new JSZip();
-  const photosFolder = zip.folder("photos");
-  for (const bird of bundle.birds || []) {
-    if (bird.photo && typeof bird.photo === "string" && bird.photo.startsWith("data:")) {
-      const filename = `bird-${bird.id}.jpg`; // every photo in this app is re-encoded to JPEG on upload, so the extension is always safe to assume
-      photosFolder.file(filename, await dataUriToBlob(bird.photo));
-      bird.photo = `photos/${filename}`;
-    }
-  }
-  for (const product of bundle.supply_products || []) {
-    if (product.photo && typeof product.photo === "string" && product.photo.startsWith("data:")) {
-      const filename = `product-${product.id}.jpg`;
-      photosFolder.file(filename, await dataUriToBlob(product.photo));
-      product.photo = `photos/${filename}`;
-    }
-  }
+  Object.entries(photoBlobs).forEach(([path, blob]) => zip.file(path, blob));
   zip.file("data.json", JSON.stringify(bundle, null, 2));
-  const zipBlob = await zip.generateAsync({ type: "blob" });
+  const zipBlob = await zip.generateAsync({ type: "blob" }, (metadata) => {
+    if (onProgress) onProgress(60 + Math.round(metadata.percent * 0.4), `Compressing... ${Math.round(metadata.percent)}%`);
+  });
   const safeName = (bundle.coop.name || "coop").toLowerCase().replace(/[^a-z0-9]+/g, "-");
   return { blob: zipBlob, filename: `${safeName}-backup-${todayStr()}.zip` };
 }
 
-async function exportLocalZip(coopId) {
-  const { blob, filename } = await buildLocalExportZipBlob(coopId);
+async function exportLocalZip(coopId, onProgress) {
+  const { blob, filename } = await buildLocalExportZipBlob(coopId, onProgress);
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -1575,7 +1645,7 @@ async function exportLocalCsv(coopId) {
  * IndexedDB instead of the server -- so importing a backup works fully
  * offline, with every row (and any embedded photos) queued to push out
  * whenever a connection actually shows up. */
-async function importLocalBundle(bundle) {
+async function importLocalBundle(bundle, photoBlobs, onProgress) {
   const src = bundle.coop || {};
   const newCoop = await localCoopCreate({
     name: (src.name || "Imported Coop").trim(),
@@ -1593,38 +1663,46 @@ async function importLocalBundle(bundle) {
   // everything else, bird_logs and supplies last -- same reasoning as the
   // server: bird_logs needs bird ids remapped, supplies needs product ids
   // remapped, so both must come after the tables they reference.
-  for (const table of ["birds", "supply_products", "eggs", "expenses", "bedding", "notes", "hatches", "supplies", "bird_logs"]) {
-    for (const row of bundle[table] || []) {
+  const tables = ["birds", "supply_products", "eggs", "expenses", "bedding", "notes", "hatches", "supplies", "bird_logs"];
+  const totalRows = tables.reduce((sum, t) => sum + (bundle[t] || []).length, 0) || 1;
+  let doneRows = 0;
+  for (const table of tables) {
+    const rows = bundle[table] || [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
       const oldId = row.id;
       const payload = { ...row, coop_id: newCoop.id };
       delete payload.id; delete payload.updated_at; delete payload.deleted_at;
       if (table === "bird_logs") {
         const newBirdId = birdIdMap[row.bird_id];
-        if (!newBirdId) continue; // referenced bird wasn't in this export; skip it, matching server behavior
+        if (!newBirdId) { doneRows++; continue; } // referenced bird wasn't in this export; skip it, matching server behavior
         payload.bird_id = newBirdId;
       }
       if (table === "supplies" && row.product_id) {
         payload.product_id = productIdMap[row.product_id] || null; // dangling reference (product wasn't in this export) just drops the link, same spirit as the bird_logs skip above
       }
-      if (table === "birds") {
-        const photoDataUri = payload.photo;
+      if (table === "birds" || table === "supply_products") {
+        const photoRef = payload.photo;
         payload.photo = null;
-        const created = await localBirdCreate(payload);
-        birdIdMap[oldId] = created.id;
-        if (photoDataUri && typeof photoDataUri === "string" && photoDataUri.startsWith("data:")) {
-          await queuePendingPhoto(created.id, await dataUriToBlob(photoDataUri));
-        }
-      } else if (table === "supply_products") {
-        const photoDataUri = payload.photo;
-        payload.photo = null;
-        const created = await localSupplyProductCreate(payload);
-        productIdMap[oldId] = created.id;
-        if (photoDataUri && typeof photoDataUri === "string" && photoDataUri.startsWith("data:")) {
-          await queuePendingProductPhoto(created.id, await dataUriToBlob(photoDataUri));
+        const created = table === "birds" ? await localBirdCreate(payload) : await localSupplyProductCreate(payload);
+        (table === "birds" ? birdIdMap : productIdMap)[oldId] = created.id;
+        // A zip import has real blobs already extracted (photoBlobs, keyed
+        // by the path stored in the bundle); a plain JSON import (or an
+        // older export) still has photos as literal data URIs inline --
+        // both are handled here so neither format broke when the zip path
+        // stopped needing the data-URI round trip.
+        let blob = null;
+        if (photoBlobs && typeof photoRef === "string" && photoBlobs[photoRef]) blob = photoBlobs[photoRef];
+        else if (typeof photoRef === "string" && photoRef.startsWith("data:")) blob = await dataUriToBlob(photoRef);
+        if (blob) {
+          if (table === "birds") await queuePendingPhoto(created.id, blob);
+          else await queuePendingProductPhoto(created.id, blob);
         }
       } else {
         await createFns[table](payload);
       }
+      doneRows++;
+      if (onProgress && (doneRows % 20 === 0 || doneRows === totalRows)) onProgress(Math.round((doneRows / totalRows) * 100), `Importing ${table}... ${i + 1}/${rows.length}`);
     }
   }
   trySyncSoon("birds", newCoop.id);
@@ -1635,27 +1713,27 @@ async function importLocalBundle(bundle) {
 /** True if this .zip is one of this app's own offline exports (client-side,
  * data.json + a photos/ folder), as opposed to the server-generated export
  * format, which needs the /api/coops/import.zip endpoint instead. Reading
- * this always works with zero connection -- it's just reading a local file. */
-async function tryReadOfflineZipBundle(file) {
+ * this always works with zero connection -- it's just reading a local file.
+ * Returns photos as raw blobs (photoBlobs, keyed by their in-zip path) rather
+ * than decoding them to data URIs here only for importLocalBundle to
+ * immediately re-encode them back to blobs -- same wasted-round-trip fix as
+ * the export side. */
+async function tryReadOfflineZipBundle(file, onProgress) {
   try {
     const zip = await JSZip.loadAsync(file);
     const dataEntry = zip.file("data.json");
     if (!dataEntry) return null;
     const bundle = JSON.parse(await dataEntry.async("string"));
     if (!bundle.offline_export) return null;
-    for (const bird of bundle.birds || []) {
-      if (bird.photo && typeof bird.photo === "string" && bird.photo.startsWith("photos/")) {
-        const entry = zip.file(bird.photo);
-        bird.photo = entry ? await blobToDataUri(await entry.async("blob")) : null;
-      }
+    const photoBlobs = {};
+    const photoRows = [...(bundle.birds || []), ...(bundle.supply_products || [])].filter(r => r.photo && typeof r.photo === "string" && r.photo.startsWith("photos/"));
+    for (let i = 0; i < photoRows.length; i++) {
+      const r = photoRows[i];
+      const entry = zip.file(r.photo);
+      if (entry) photoBlobs[r.photo] = await entry.async("blob");
+      if (onProgress) onProgress(Math.round(((i + 1) / Math.max(photoRows.length, 1)) * 100), `Reading photos... ${i + 1}/${photoRows.length}`);
     }
-    for (const product of bundle.supply_products || []) {
-      if (product.photo && typeof product.photo === "string" && product.photo.startsWith("photos/")) {
-        const entry = zip.file(product.photo);
-        product.photo = entry ? await blobToDataUri(await entry.async("blob")) : null;
-      }
-    }
-    return bundle;
+    return { bundle, photoBlobs };
   } catch (err) {
     return null; // not a zip we recognize -- caller falls back to the server-side import path
   }
@@ -2370,7 +2448,7 @@ function renderProductsSection() {
                   const used = STATE.supplies.filter(s => s.product_id === p.id && s.status === "Empty").length;
                   return `
                   <div class="list-card" data-edit-product="${p.id}" style="border-left:4px solid var(--${catTone});cursor:pointer">
-                    ${productPhotoUrl(p) ? `<div class="thumb-clickable" data-view-photo="${esc(productPhotoUrl(p))}" data-product-id="${p.id}" style="width:48px;height:48px;border-radius:6px;overflow:hidden;flex:0 0 auto;cursor:zoom-in"><img src="${productPhotoUrl(p)}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(p)}"></div>` : `<div style="width:48px;height:48px;border-radius:6px;flex:0 0 auto;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:20px">📦</div>`}
+                    ${productPhotoUrl(p) ? `<div class="thumb-clickable" data-view-photo="${esc(productPhotoUrl(p))}" data-product-id="${p.id}" style="width:48px;height:48px;border-radius:6px;overflow:hidden;flex:0 0 auto;cursor:zoom-in"><img src="${productPhotoUrl(p)}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(p)};${photoTransformStyle(p)}"></div>` : `<div style="width:48px;height:48px;border-radius:6px;flex:0 0 auto;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:20px">📦</div>`}
                     <div class="list-card-main">
                       <div style="font-weight:700">${esc(p.brand || cat)}</div>
                       <div class="list-card-desc dim">${p.default_quantity != null ? `usually ${p.default_quantity} ${esc(p.default_unit || "")}` : "no usual quantity set"}${p.default_description ? ` · "${esc(p.default_description)}"` : ""}</div>
@@ -2438,9 +2516,9 @@ function openProductModal(editingProduct, category) {
       if (!url) return;
       const unsaved = captureUnsavedProductFields();
       showPhotoLightbox(url, {
-        x: editingProduct.photo_pos_x ?? 50, y: editingProduct.photo_pos_y ?? 50, aspectRatio: "1/1",
-        onSave: async (x, y) => {
-          editingProduct = { ...(await localSupplyProductUpdate(editingProduct.id, { photo_pos_x: x, photo_pos_y: y })), ...unsaved };
+        x: editingProduct.photo_pos_x ?? 50, y: editingProduct.photo_pos_y ?? 50, zoom: photoZoom(editingProduct), aspectRatio: "1/1",
+        onSave: async (x, y, zoom) => {
+          editingProduct = { ...(await localSupplyProductUpdate(editingProduct.id, { photo_pos_x: x, photo_pos_y: y, photo_zoom: zoom })), ...unsaved };
           refreshProductModal();
         },
       });
@@ -2448,8 +2526,8 @@ function openProductModal(editingProduct, category) {
     const repositionBtn = document.getElementById("repositionProductPhoto");
     if (repositionBtn) repositionBtn.addEventListener("click", () => {
       const unsaved = captureUnsavedProductFields();
-      openPhotoRepositionModal(productPhotoUrl(editingProduct), editingProduct.photo_pos_x ?? 50, editingProduct.photo_pos_y ?? 50, "1/1", async (x, y) => {
-        editingProduct = { ...(await localSupplyProductUpdate(editingProduct.id, { photo_pos_x: x, photo_pos_y: y })), ...unsaved };
+      openPhotoRepositionModal(productPhotoUrl(editingProduct), editingProduct.photo_pos_x ?? 50, editingProduct.photo_pos_y ?? 50, photoZoom(editingProduct), "1/1", async (x, y, zoom) => {
+        editingProduct = { ...(await localSupplyProductUpdate(editingProduct.id, { photo_pos_x: x, photo_pos_y: y, photo_zoom: zoom })), ...unsaved };
         refreshProductModal();
       });
     });
@@ -2806,11 +2884,14 @@ function renderCoopsSection() {
         // server-generated one (needs the server to unzip and write photo
         // files). Try reading it as the offline format first -- if that
         // doesn't recognize it, it's the server format instead.
-        const offlineBundle = await tryReadOfflineZipBundle(file);
-        if (offlineBundle) {
-          coop = await importLocalBundle(offlineBundle);
+        openProgressModal("Reading backup");
+        const offline = await tryReadOfflineZipBundle(file, (percent, label) => updateProgressModal(Math.round(percent * 0.25), label));
+        if (offline) {
+          coop = await importLocalBundle(offline.bundle, offline.photoBlobs, (percent, label) => updateProgressModal(25 + Math.round(percent * 0.75), label));
           await loadCoops();
+          closeProgressModal();
         } else {
+          closeProgressModal();
           const formData = new FormData();
           formData.append("file", file);
           const res = await fetch(apiUrl("/api/coops/import.zip"), { method: "POST", headers: authHeaders(), body: formData });
@@ -2821,31 +2902,33 @@ function renderCoopsSection() {
       } else {
         // JSON imports go straight into IndexedDB -- works with zero
         // connection, same as the offline zip format above.
+        openProgressModal("Importing backup");
         const bundle = JSON.parse(await file.text());
-        coop = await importLocalBundle(bundle);
+        coop = await importLocalBundle(bundle, null, (percent, label) => updateProgressModal(percent, label));
         await loadCoops();
+        closeProgressModal();
       }
       showToast(`"${coop.name}" imported`, "create");
       await switchCoop(coop.id);
       switchTab("dashboard");
     } catch (err) {
+      closeProgressModal();
       alert("Could not import that file — make sure it's a backup exported from this app.\n\n" + err.message);
     }
     e.target.value = "";
   });
 
   el.querySelectorAll("[data-export-offline-zip]").forEach(b => b.addEventListener("click", async () => {
-    b.disabled = true;
-    const originalText = b.textContent;
-    b.textContent = "Exporting...";
+    openProgressModal("Exporting backup");
     try {
-      await exportLocalZip(b.dataset.exportOfflineZip);
+      await exportLocalZip(b.dataset.exportOfflineZip, (percent, label) => updateProgressModal(percent, label));
+      updateProgressModal(100, "Done");
+      closeProgressModal();
       showToast("Backup downloaded", "create");
     } catch (err) {
+      closeProgressModal();
       alert("Export failed: " + err.message);
     }
-    b.disabled = false;
-    b.textContent = originalText;
   }));
   el.querySelectorAll("[data-export-csv]").forEach(b => b.addEventListener("click", async () => {
     b.disabled = true;
@@ -3799,9 +3882,8 @@ function loadMoreButtonHtml(totalCount, visibleCount, id = "loadMoreBtn") {
 function showPhotoLightbox(url, repositionCtx = null) {
   const overlay = document.createElement("div");
   overlay.className = "photo-lightbox-overlay";
-  const pos = repositionCtx ? `${repositionCtx.x ?? 50}% ${repositionCtx.y ?? 50}%` : "50% 50%";
   overlay.innerHTML = `
-    <img src="${url}" class="photo-lightbox-img" alt="" style="object-position:${pos}">
+    <img src="${url}" class="photo-lightbox-img" alt="">
     <button class="icon-btn photo-lightbox-close" title="Close">✕</button>
     ${repositionCtx ? `<button class="icon-btn photo-lightbox-reposition" title="Reposition">↔</button>` : ""}
   `;
@@ -3814,8 +3896,8 @@ function showPhotoLightbox(url, repositionCtx = null) {
   const repositionBtn = overlay.querySelector(".photo-lightbox-reposition");
   if (repositionBtn) repositionBtn.addEventListener("click", () => {
     close();
-    openPhotoRepositionModal(url, repositionCtx.x ?? 50, repositionCtx.y ?? 50, repositionCtx.aspectRatio, async (x, y) => {
-      await repositionCtx.onSave(x, y);
+    openPhotoRepositionModal(url, repositionCtx.x ?? 50, repositionCtx.y ?? 50, repositionCtx.zoom ?? 1, repositionCtx.aspectRatio, async (x, y, zoom) => {
+      await repositionCtx.onSave(x, y, zoom);
       if (repositionCtx.closeAfterSave !== false) closeModal();
     });
   });
@@ -3876,6 +3958,35 @@ function closeModal() {
   if (deleteBtn) { deleteBtn.style.display = "none"; deleteBtn.onclick = null; }
   if (modalOnClose) { modalOnClose(); modalOnClose = null; }
   setTimeout(() => { const c = document.getElementById("modalContent"); if (c) c.innerHTML = ""; }, 320);
+}
+
+/** For long-running operations (export, import) where the person needs to
+ * see that something is actually happening, not just a frozen screen.
+ * Deliberately has no close button while running -- dismissing mid-export
+ * or mid-import would leave things in a half-finished, confusing state, so
+ * the only way out is for the operation to actually finish (closeModal()
+ * called explicitly once it does, or on error). */
+function openProgressModal(title) {
+  ensureModalDom();
+  const html = `
+    <div class="form-head">${esc(title)}</div>
+    <div class="progress-bar-track"><div class="progress-bar-fill" id="progressBarFill" style="width:0%"></div></div>
+    <div class="dim" id="progressStatusText" style="margin-top:8px;font-size:12px">Starting...</div>
+  `;
+  openModal(html);
+  const closeBtn = document.getElementById("modalCloseBtn");
+  if (closeBtn) closeBtn.style.display = "none";
+}
+function updateProgressModal(percent, label) {
+  const fill = document.getElementById("progressBarFill");
+  if (fill) fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  const text = document.getElementById("progressStatusText");
+  if (text && label) text.textContent = label;
+}
+function closeProgressModal() {
+  const closeBtn = document.getElementById("modalCloseBtn");
+  if (closeBtn) closeBtn.style.display = "";
+  closeModal();
 }
 
 /** Updates an already-open modal's content in place -- for a list-style
@@ -4228,7 +4339,7 @@ function birdCardHtml(b) {
   return `<div class="flock-card${accent ? " custom-color" : ""}" data-edit="${b.id}" style="${cardStyle}">
     <div class="flock-card-photo">
       <input type="checkbox" class="flock-card-check bird-check" data-id="${b.id}" ${selectedBirdIds.has(b.id) ? "checked" : ""} onclick="event.stopPropagation()">
-      ${birdPhotoUrl(b) ? `<img src="${birdPhotoUrl(b)}" style="object-position:${photoPosition(b)}">` : "🐔"}
+      ${birdPhotoUrl(b) ? `<img src="${birdPhotoUrl(b)}" style="object-position:${photoPosition(b)};${photoTransformStyle(b)}">` : "🐔"}
       <span class="stamp stamp-lg stamp-on-photo tone-${statusTone(b.status)} flock-card-status-badge">${esc(b.status)}</span>
       ${b.status === "Processed" && b.harvest_date ? `<div class="flock-card-harvest-badge">Harvested ${fmtDate(b.harvest_date)}</div>` : ""}
       ${showCountdown ? `<div class="flock-card-countdown-badge">${harvestCountdownHtml(b.target_harvest_date, "stamp-on-photo")}</div>` : ""}
@@ -4282,7 +4393,7 @@ function groupCardHtml(batchName, filteredBirds, totalCount) {
     : `<div class="flock-card-name">${esc(batchName)}</div>`;
   return `<div class="flock-card flock-card-group${accent ? " custom-color" : ""}${isOpen ? " flock-card-group-open" : ""}" data-open-batch="${esc(batchName)}" style="${cardStyle}">
     <div class="flock-card-photo">
-      ${cover ? `<img src="${birdPhotoUrl(cover)}" style="object-position:${photoPosition(cover)}">` : "🐣"}
+      ${cover ? `<img src="${birdPhotoUrl(cover)}" style="object-position:${photoPosition(cover)};${photoTransformStyle(cover)}">` : "🐣"}
       <span class="stamp stamp-lg stamp-on-photo tone-slate flock-card-status-badge">Batch</span>
       <div class="flock-group-badge"><span class="stamp stamp-lg stamp-on-photo tone-gold">${countLabel} bird${(totalCount || s.count) !== 1 ? "s" : ""}</span></div>
     </div>
@@ -4548,7 +4659,7 @@ function batchEditModalHtml(batchName) {
     <div class="form-head">Edit group -- ${esc(batchName)}</div>
     <div style="display:flex;gap:14px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
       <div style="width:64px;height:64px;border-radius:8px;overflow:hidden;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:26px;flex:0 0 auto">
-        ${cover ? `<img src="${birdPhotoUrl(cover)}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(cover)}">` : "🐣"}
+        ${cover ? `<img src="${birdPhotoUrl(cover)}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(cover)};${photoTransformStyle(cover)}">` : "🐣"}
       </div>
       <div style="flex:1;min-width:180px">
         <label class="field"><span>Set group photo (applies to every bird in this batch)</span><input type="file" id="batchPhotoInput" accept="image/*"></label>
@@ -4838,7 +4949,7 @@ function showBirdForm(bird) {
       <div class="form-head">${isEdit ? "Edit bird" : "New bird"}</div>
       ${isEdit ? `<div class="dim" style="font-size:12px;margin:-8px 0 14px">${ageFromDate(f.hatch_date || f.acquired_date)}${f.hatch_date ? ` (hatched ${fmtDate(f.hatch_date)})` : f.acquired_date ? ` (acquired ${fmtDate(f.acquired_date)})` : ""}</div>` : ""}
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;align-items:flex-start">
-        <div id="photoPreview">${previewUrl ? `<img src="${previewUrl}" data-view-photo="${esc(previewUrl)}" class="thumb-clickable" style="width:84px;height:84px;object-fit:cover;object-position:${photoPosition(formState)};border-radius:8px;border:1px solid var(--border);cursor:zoom-in">` : `<div style="width:84px;height:84px;border-radius:8px;background:var(--bg);border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:28px">🐔</div>`}</div>
+        <div id="photoPreview">${previewUrl ? `<img src="${previewUrl}" data-view-photo="${esc(previewUrl)}" class="thumb-clickable" style="width:84px;height:84px;object-fit:cover;object-position:${photoPosition(formState)};${photoTransformStyle(formState)}border-radius:8px;border:1px solid var(--border);cursor:zoom-in">` : `<div style="width:84px;height:84px;border-radius:8px;background:var(--bg);border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:28px">🐔</div>`}</div>
         <div>
           <label class="field"><span>Photo</span><input type="file" id="f_photo" accept="image/*"></label>
           <div style="display:flex;gap:6px;margin-top:6px">
@@ -4899,8 +5010,8 @@ function showBirdForm(bird) {
       if (!url) return;
       formState = readCurrentValues(); // capture every field now, before the lightbox (and possibly the crop modal after it) replaces this form's DOM
       showPhotoLightbox(url, {
-        x: formState.photo_pos_x ?? 50, y: formState.photo_pos_y ?? 50, aspectRatio: "1/1", closeAfterSave: false,
-        onSave: async (x, y) => { formState.photo_pos_x = x; formState.photo_pos_y = y; render(false); },
+        x: formState.photo_pos_x ?? 50, y: formState.photo_pos_y ?? 50, zoom: photoZoom(formState), aspectRatio: "1/1", closeAfterSave: false,
+        onSave: async (x, y, zoom) => { formState.photo_pos_x = x; formState.photo_pos_y = y; formState.photo_zoom = zoom; render(false); },
       });
     });
 
@@ -4931,9 +5042,10 @@ function showBirdForm(bird) {
     const repositionBtn = document.getElementById("repositionPhoto");
     if (repositionBtn) repositionBtn.addEventListener("click", () => {
       formState = readCurrentValues(); // capture every field now, before the crop modal replaces this form's DOM
-      openPhotoRepositionModal(previewUrl, formState.photo_pos_x ?? 50, formState.photo_pos_y ?? 50, "1/1", async (x, y) => {
+      openPhotoRepositionModal(previewUrl, formState.photo_pos_x ?? 50, formState.photo_pos_y ?? 50, photoZoom(formState), "1/1", async (x, y, zoom) => {
         formState.photo_pos_x = x;
         formState.photo_pos_y = y;
+        formState.photo_zoom = zoom;
         render(false);
       });
     });
@@ -4960,6 +5072,7 @@ function showBirdForm(bird) {
         gender: current.gender || null,
         photo_pos_x: current.photo_pos_x ?? 50,
         photo_pos_y: current.photo_pos_y ?? 50,
+        photo_zoom: current.photo_zoom ?? 1,
         status: current.status,
         hatch_date: current.hatch_date,
         acquired_date: current.acquired_date,
@@ -5902,7 +6015,7 @@ function renderProductEditFormHtml(editingProduct, category, standalone = false)
       <div class="dim" style="font-size:11px;margin-bottom:6px">${editingProduct ? `Editing "${esc(editingProduct.brand)}"` : "New saved product"}</div>
       ${standalone && photo ? `
       <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px">
-        <div id="productPhotoPreview"><img src="${photo}" data-view-photo="${esc(photo)}" class="thumb-clickable" style="width:64px;height:64px;object-fit:cover;object-position:${photoPosition(editingProduct)};border-radius:8px;border:1px solid var(--border);cursor:zoom-in"></div>
+        <div id="productPhotoPreview"><img src="${photo}" data-view-photo="${esc(photo)}" class="thumb-clickable" style="width:64px;height:64px;object-fit:cover;object-position:${photoPosition(editingProduct)};${photoTransformStyle(editingProduct)}border-radius:8px;border:1px solid var(--border);cursor:zoom-in"></div>
         <button class="btn ghost small" id="repositionProductPhoto">↔ Reposition</button>
       </div>
       ` : ""}
@@ -5953,7 +6066,7 @@ function renderProductPickerRow(category) {
         <div class="product-picker-item${selectedProductId === p.id ? " selected" : ""}" data-product="${p.id}">
           <span class="product-picker-remove" data-remove-product="${p.id}" title="Remove this saved product">×</span>
           <span class="product-picker-edit" data-edit-product="${p.id}" title="Rename or update this product">✎</span>
-          <div class="product-picker-thumb">${productPhotoUrl(p) ? `<img src="${productPhotoUrl(p)}" style="object-position:${photoPosition(p)}">` : "📦"}</div>
+          <div class="product-picker-thumb">${productPhotoUrl(p) ? `<img src="${productPhotoUrl(p)}" style="object-position:${photoPosition(p)};${photoTransformStyle(p)}">` : "📦"}</div>
           <div class="product-picker-label">${esc(label)}</div>
         </div>`;
   };
@@ -6086,9 +6199,9 @@ function supplyCardHtml(s) {
   const bagBorderStyle = `border-color:color-mix(in srgb, var(--${catTone}) 45%, var(--border))`;
   const bagStyle = photo ? bagBorderStyle : `background:color-mix(in srgb, var(--${catTone}) 10%, var(--bg));${bagBorderStyle}`;
   const bagInner = photo
-    ? `<div class="supply-bag-grey-base" style="background-image:url('${photo}');background-position:${photoPosition(product)}"></div>
+    ? `<div class="supply-bag-grey-base" style="background-image:url('${photo}');background-position:${photoPosition(product)};${photoTransformStyle(product)}"></div>
        <div class="supply-bag-dash-overlay"></div>
-       <div class="supply-bag-color-reveal" style="background-image:url('${photo}');background-position:${photoPosition(product)};clip-path:inset(${100 - fillPct}% 0 0 0)"></div>`
+       <div class="supply-bag-color-reveal" style="background-image:url('${photo}');background-position:${photoPosition(product)};${photoTransformStyle(product)}clip-path:inset(${100 - fillPct}% 0 0 0)"></div>`
     : `<div class="supply-bag-fill" style="height:${fillPct}%;background:var(--${tone})"></div>`;
   const line1 = s.brand || s.description || s.category;
   const line2 = (s.description && s.description !== line1) ? s.description : "";
@@ -6198,7 +6311,7 @@ function emptySupplyModalHtml() {
         const photo = product ? productPhotoUrl(product) : null;
         return `
         <div class="list-card tone-slate">
-          ${photo ? `<div style="width:44px;height:44px;border-radius:6px;overflow:hidden;flex:0 0 auto;margin-right:2px"><img src="${photo}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(product)};opacity:0.75"></div>` : ""}
+          ${photo ? `<div style="width:44px;height:44px;border-radius:6px;overflow:hidden;flex:0 0 auto;margin-right:2px"><img src="${photo}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(product)};${photoTransformStyle(product)}opacity:0.75"></div>` : ""}
           <div class="list-card-main">
             <div style="font-weight:600">${esc(s.brand || s.description || s.category)}</div>
             <div class="list-card-desc dim">${esc(s.category)}${s.quantity ? ` · ${s.quantity} ${esc(s.unit || "")}` : ""}</div>
