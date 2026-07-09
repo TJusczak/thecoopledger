@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-106";
+const APP_VERSION = "2026.07.06-109";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -881,19 +881,21 @@ function newLocalId() {
   return "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
 }
 
-async function localEggCreate(payload) {
+async function localEggCreate(payload, opts = {}) {
   const record = { id: newLocalId(), updated_at: new Date().toISOString(), deleted_at: null, ...payload };
   await localPutMany("eggs", [record]);
   await queueOutbox({ resource: "eggs", op: "create", id: record.id, payload: record });
   trySyncSoon("eggs", payload.coop_id);
+  if (!opts.suppressUndo) pushUndoAction(`Added egg entry (${record.count} egg${record.count !== 1 ? "s" : ""}, ${fmtDate(record.date)})`, [{ resource: "eggs", id: record.id, before: null, after: record }]);
   return record;
 }
-async function localEggUpdate(id, payload) {
+async function localEggUpdate(id, payload, opts = {}) {
   const existing = await localGetOne("eggs", id);
   const record = { ...(existing || { id }), ...payload, updated_at: new Date().toISOString() };
   await localPutMany("eggs", [record]);
   await queueOutbox({ resource: "eggs", op: "update", id, payload });
   trySyncSoon("eggs", payload.coop_id || (existing && existing.coop_id));
+  if (existing && !opts.suppressUndo) pushUndoAction(`Edited egg entry (${fmtDate(record.date)})`, [{ resource: "eggs", id, before: existing, after: record }]);
   return record;
 }
 async function localEggDelete(id, coopId) {
@@ -902,21 +904,24 @@ async function localEggDelete(id, coopId) {
   await localPutMany("eggs", [{ ...(existing || { id }), deleted_at: now, updated_at: now }]);
   await queueOutbox({ resource: "eggs", op: "delete", id, payload: null });
   trySyncSoon("eggs", coopId);
+  if (existing) pushUndoAction(`Deleted egg entry (${existing.count} egg${existing.count !== 1 ? "s" : ""}, ${fmtDate(existing.date)})`, [{ resource: "eggs", id, before: existing, after: null }]);
 }
 
-async function localExpenseCreate(payload) {
+async function localExpenseCreate(payload, opts = {}) {
   const record = { id: newLocalId(), updated_at: new Date().toISOString(), deleted_at: null, ...payload };
   await localPutMany("expenses", [record]);
   await queueOutbox({ resource: "expenses", op: "create", id: record.id, payload: record });
   trySyncSoon("expenses", payload.coop_id);
+  if (!opts.suppressUndo) pushUndoAction(`Added ${record.entry_type === "income" ? "income" : "expense"}: ${record.category} (${fmtMoney(record.amount)})`, [{ resource: "expenses", id: record.id, before: null, after: record }]);
   return record;
 }
-async function localExpenseUpdate(id, payload) {
+async function localExpenseUpdate(id, payload, opts = {}) {
   const existing = await localGetOne("expenses", id);
   const record = { ...(existing || { id }), ...payload, updated_at: new Date().toISOString() };
   await localPutMany("expenses", [record]);
   await queueOutbox({ resource: "expenses", op: "update", id, payload });
   trySyncSoon("expenses", payload.coop_id || (existing && existing.coop_id));
+  if (existing && !opts.suppressUndo) pushUndoAction(`Edited ${record.entry_type === "income" ? "income" : "expense"}: ${record.category}`, [{ resource: "expenses", id, before: existing, after: record }]);
   return record;
 }
 async function localExpenseDelete(id, coopId) {
@@ -925,6 +930,7 @@ async function localExpenseDelete(id, coopId) {
   await localPutMany("expenses", [{ ...(existing || { id }), deleted_at: now, updated_at: now }]);
   await queueOutbox({ resource: "expenses", op: "delete", id, payload: null });
   trySyncSoon("expenses", coopId);
+  if (existing) pushUndoAction(`Deleted ${existing.entry_type === "income" ? "income" : "expense"}: ${existing.category} (${fmtMoney(existing.amount)})`, [{ resource: "expenses", id, before: existing, after: null }]);
 }
 
 /** Creates many records at once, local-first -- all written to IndexedDB
@@ -933,14 +939,22 @@ async function localExpenseDelete(id, coopId) {
  * single entry syncs via the bulk-create endpoint in one request, instead
  * of turning into hundreds or thousands of sequential HTTP round-trips the
  * next time the outbox drains -- which is what actually crashed the server
- * on a 4000-item group before this existed. */
-async function localBulkCreate(resource, payloads) {
+ * on a 4000-item group before this existed.
+ *
+ * Also pushes exactly one undo action covering every record created, since
+ * "select a count and create a batch" is one user action regardless of how
+ * many records it produced -- undoing it removes all of them together. */
+async function localBulkCreate(resource, payloads, opts = {}) {
   const now = new Date().toISOString();
   const records = payloads.map(p => ({ id: newLocalId(), updated_at: now, deleted_at: null, ...p }));
   await localPutMany(resource, records);
   await queueOutbox({ resource, op: "bulk-create", id: null, payload: records });
   const coopId = records[0] && records[0].coop_id;
   if (coopId) trySyncSoon(resource, coopId);
+  if (!opts.suppressUndo && records.length > 0) {
+    const label = records.length === 1 ? `Added ${RESOURCE_LABELS[resource] || "an item"}` : `Added ${records.length} ${RESOURCE_LABELS_PLURAL[resource] || "items"}`;
+    pushUndoAction(label, records.map(r => ({ resource, id: r.id, before: null, after: r })));
+  }
   return records;
 }
 
@@ -948,39 +962,52 @@ async function localBulkCreate(resource, payloads) {
  * localBulkCreate, but for the delete side. This is what the group-count
  * "raise to add more, lower to remove" flow needs: reducing a pile of 4000
  * down to 4 used to mean 3996 individual delete operations (and eventually
- * 3996 individual sync requests) -- now it's one. */
-async function localBulkDelete(resource, ids, coopId) {
+ * 3996 individual sync requests) -- now it's one. Also pushes one combined
+ * undo action for the same reason localBulkCreate does. */
+async function localBulkDelete(resource, ids, coopId, opts = {}) {
   const now = new Date().toISOString();
   const existing = await Promise.all(ids.map(id => localGetOne(resource, id)));
   const records = ids.map((id, i) => ({ ...(existing[i] || { id }), deleted_at: now, updated_at: now }));
   await localPutMany(resource, records);
   await queueOutbox({ resource, op: "bulk-delete", id: null, payload: ids });
   if (coopId) trySyncSoon(resource, coopId);
+  if (!opts.suppressUndo && ids.length > 0) {
+    const label = ids.length === 1 ? `Deleted ${RESOURCE_LABELS[resource] || "an item"}` : `Deleted ${ids.length} ${RESOURCE_LABELS_PLURAL[resource] || "items"}`;
+    pushUndoAction(label, ids.map((id, i) => ({ resource, id, before: existing[i], after: null })));
+  }
+  return existing;
 }
 
 /** Same idea for updates -- payload is an array of {id, fields} objects. */
-async function localBulkUpdate(resource, updates, coopId) {
+async function localBulkUpdate(resource, updates, coopId, opts = {}) {
   const now = new Date().toISOString();
   const existingRecords = await Promise.all(updates.map(u => localGetOne(resource, u.id)));
   const records = updates.map((u, i) => ({ ...(existingRecords[i] || { id: u.id }), ...u.fields, updated_at: now }));
   await localPutMany(resource, records);
   await queueOutbox({ resource, op: "bulk-update", id: null, payload: updates });
   if (coopId) trySyncSoon(resource, coopId);
+  if (!opts.suppressUndo && updates.length > 0) {
+    const label = updates.length === 1 ? `Edited ${RESOURCE_LABELS[resource] || "an item"}` : `Edited ${updates.length} ${RESOURCE_LABELS_PLURAL[resource] || "items"}`;
+    pushUndoAction(label, updates.map((u, i) => ({ resource, id: u.id, before: existingRecords[i], after: records[i] })));
+  }
+  return records;
 }
 
-async function localSupplyCreate(payload) {
+async function localSupplyCreate(payload, opts = {}) {
   const record = { id: newLocalId(), updated_at: new Date().toISOString(), deleted_at: null, ...payload };
   await localPutMany("supplies", [record]);
   await queueOutbox({ resource: "supplies", op: "create", id: record.id, payload: record });
   trySyncSoon("supplies", payload.coop_id);
+  if (!opts.suppressUndo) pushUndoAction(`Added supply item: ${record.brand || record.description || record.category}`, [{ resource: "supplies", id: record.id, before: null, after: record }]);
   return record;
 }
-async function localSupplyUpdate(id, payload) {
+async function localSupplyUpdate(id, payload, opts = {}) {
   const existing = await localGetOne("supplies", id);
   const record = { ...(existing || { id }), ...payload, updated_at: new Date().toISOString() };
   await localPutMany("supplies", [record]);
   await queueOutbox({ resource: "supplies", op: "update", id, payload });
   trySyncSoon("supplies", payload.coop_id || (existing && existing.coop_id));
+  if (existing && !opts.suppressUndo) pushUndoAction(`Edited supply item: ${record.brand || record.description || record.category}`, [{ resource: "supplies", id, before: existing, after: record }]);
   return record;
 }
 async function localSupplyDelete(id, coopId) {
@@ -989,21 +1016,24 @@ async function localSupplyDelete(id, coopId) {
   await localPutMany("supplies", [{ ...(existing || { id }), deleted_at: now, updated_at: now }]);
   await queueOutbox({ resource: "supplies", op: "delete", id, payload: null });
   trySyncSoon("supplies", coopId);
+  if (existing) pushUndoAction(`Deleted supply item: ${existing.brand || existing.description || existing.category}`, [{ resource: "supplies", id, before: existing, after: null }]);
 }
 
-async function localSupplyProductCreate(payload) {
+async function localSupplyProductCreate(payload, opts = {}) {
   const record = { id: newLocalId(), updated_at: new Date().toISOString(), deleted_at: null, ...payload };
   await localPutMany("supply_products", [record]);
   await queueOutbox({ resource: "supply_products", op: "create", id: record.id, payload: record });
   trySyncSoon("supply_products", payload.coop_id);
+  if (!opts.suppressUndo) pushUndoAction(`Added saved product: ${record.brand}`, [{ resource: "supply_products", id: record.id, before: null, after: record }]);
   return record;
 }
-async function localSupplyProductUpdate(id, payload) {
+async function localSupplyProductUpdate(id, payload, opts = {}) {
   const existing = await localGetOne("supply_products", id);
   const record = { ...(existing || { id }), ...payload, updated_at: new Date().toISOString() };
   await localPutMany("supply_products", [record]);
   await queueOutbox({ resource: "supply_products", op: "update", id, payload });
   trySyncSoon("supply_products", payload.coop_id || (existing && existing.coop_id));
+  if (existing && !opts.suppressUndo) pushUndoAction(`Edited saved product: ${record.brand}`, [{ resource: "supply_products", id, before: existing, after: record }]);
 }
 async function localSupplyProductDelete(id, coopId) {
   const existing = await localGetOne("supply_products", id);
@@ -1011,21 +1041,24 @@ async function localSupplyProductDelete(id, coopId) {
   await localPutMany("supply_products", [{ ...(existing || { id }), deleted_at: now, updated_at: now }]);
   await queueOutbox({ resource: "supply_products", op: "delete", id, payload: null });
   trySyncSoon("supply_products", coopId);
+  if (existing) pushUndoAction(`Deleted saved product: ${existing.brand}`, [{ resource: "supply_products", id, before: existing, after: null }]);
 }
 
-async function localBeddingCreate(payload) {
+async function localBeddingCreate(payload, opts = {}) {
   const record = { id: newLocalId(), updated_at: new Date().toISOString(), deleted_at: null, ...payload };
   await localPutMany("bedding", [record]);
   await queueOutbox({ resource: "bedding", op: "create", id: record.id, payload: record });
   trySyncSoon("bedding", payload.coop_id);
+  if (!opts.suppressUndo) pushUndoAction(`Added bedding entry: ${record.area}`, [{ resource: "bedding", id: record.id, before: null, after: record }]);
   return record;
 }
-async function localBeddingUpdate(id, payload) {
+async function localBeddingUpdate(id, payload, opts = {}) {
   const existing = await localGetOne("bedding", id);
   const record = { ...(existing || { id }), ...payload, updated_at: new Date().toISOString() };
   await localPutMany("bedding", [record]);
   await queueOutbox({ resource: "bedding", op: "update", id, payload });
   trySyncSoon("bedding", payload.coop_id || (existing && existing.coop_id));
+  if (existing && !opts.suppressUndo) pushUndoAction(`Edited bedding entry: ${record.area}`, [{ resource: "bedding", id, before: existing, after: record }]);
   return record;
 }
 async function localBeddingDelete(id, coopId) {
@@ -1034,21 +1067,24 @@ async function localBeddingDelete(id, coopId) {
   await localPutMany("bedding", [{ ...(existing || { id }), deleted_at: now, updated_at: now }]);
   await queueOutbox({ resource: "bedding", op: "delete", id, payload: null });
   trySyncSoon("bedding", coopId);
+  if (existing) pushUndoAction(`Deleted bedding entry: ${existing.area}`, [{ resource: "bedding", id, before: existing, after: null }]);
 }
 
-async function localHatchCreate(payload) {
+async function localHatchCreate(payload, opts = {}) {
   const record = { id: newLocalId(), updated_at: new Date().toISOString(), deleted_at: null, ...payload };
   await localPutMany("hatches", [record]);
   await queueOutbox({ resource: "hatches", op: "create", id: record.id, payload: record });
   trySyncSoon("hatches", payload.coop_id);
+  if (!opts.suppressUndo) pushUndoAction(`Started clutch (${record.egg_count} eggs)`, [{ resource: "hatches", id: record.id, before: null, after: record }]);
   return record;
 }
-async function localHatchUpdate(id, payload) {
+async function localHatchUpdate(id, payload, opts = {}) {
   const existing = await localGetOne("hatches", id);
   const record = { ...(existing || { id }), ...payload, updated_at: new Date().toISOString() };
   await localPutMany("hatches", [record]);
   await queueOutbox({ resource: "hatches", op: "update", id, payload });
   trySyncSoon("hatches", payload.coop_id || (existing && existing.coop_id));
+  if (existing && !opts.suppressUndo) pushUndoAction(`Edited clutch (${record.egg_count} eggs)`, [{ resource: "hatches", id, before: existing, after: record }]);
   return record;
 }
 async function localHatchDelete(id, coopId) {
@@ -1057,21 +1093,24 @@ async function localHatchDelete(id, coopId) {
   await localPutMany("hatches", [{ ...(existing || { id }), deleted_at: now, updated_at: now }]);
   await queueOutbox({ resource: "hatches", op: "delete", id, payload: null });
   trySyncSoon("hatches", coopId);
+  if (existing) pushUndoAction(`Deleted clutch (${existing.egg_count} eggs, started ${fmtDate(existing.date_started)})`, [{ resource: "hatches", id, before: existing, after: null }]);
 }
 
-async function localNoteCreate(payload) {
+async function localNoteCreate(payload, opts = {}) {
   const record = { id: newLocalId(), updated_at: new Date().toISOString(), deleted_at: null, ...payload };
   await localPutMany("notes", [record]);
   await queueOutbox({ resource: "notes", op: "create", id: record.id, payload: record });
   trySyncSoon("notes", payload.coop_id);
+  if (!opts.suppressUndo) pushUndoAction(`Added note: ${record.title || "Untitled"}`, [{ resource: "notes", id: record.id, before: null, after: record }]);
   return record;
 }
-async function localNoteUpdate(id, payload) {
+async function localNoteUpdate(id, payload, opts = {}) {
   const existing = await localGetOne("notes", id);
   const record = { ...(existing || { id }), ...payload, updated_at: new Date().toISOString() };
   await localPutMany("notes", [record]);
   await queueOutbox({ resource: "notes", op: "update", id, payload });
   trySyncSoon("notes", payload.coop_id || (existing && existing.coop_id));
+  if (existing && !opts.suppressUndo) pushUndoAction(`Edited note: ${record.title || "Untitled"}`, [{ resource: "notes", id, before: existing, after: record }]);
   return record;
 }
 async function localNoteDelete(id, coopId) {
@@ -1080,21 +1119,24 @@ async function localNoteDelete(id, coopId) {
   await localPutMany("notes", [{ ...(existing || { id }), deleted_at: now, updated_at: now }]);
   await queueOutbox({ resource: "notes", op: "delete", id, payload: null });
   trySyncSoon("notes", coopId);
+  if (existing) pushUndoAction(`Deleted note: ${existing.title || "Untitled"}`, [{ resource: "notes", id, before: existing, after: null }]);
 }
 
-async function localBirdLogCreate(payload) {
+async function localBirdLogCreate(payload, opts = {}) {
   const record = { id: newLocalId(), updated_at: new Date().toISOString(), deleted_at: null, ...payload };
   await localPutMany("bird_logs", [record]);
   await queueOutbox({ resource: "bird_logs", op: "create", id: record.id, payload: record });
   trySyncSoon("bird_logs", payload.coop_id);
+  if (!opts.suppressUndo) pushUndoAction(`Added health log entry (${fmtDate(record.date)})`, [{ resource: "bird_logs", id: record.id, before: null, after: record }]);
   return record;
 }
-async function localBirdLogUpdate(id, payload) {
+async function localBirdLogUpdate(id, payload, opts = {}) {
   const existing = await localGetOne("bird_logs", id);
   const record = { ...(existing || { id }), ...payload, updated_at: new Date().toISOString() };
   await localPutMany("bird_logs", [record]);
   await queueOutbox({ resource: "bird_logs", op: "update", id, payload });
   trySyncSoon("bird_logs", payload.coop_id || (existing && existing.coop_id));
+  if (existing && !opts.suppressUndo) pushUndoAction(`Edited health log entry (${fmtDate(record.date)})`, [{ resource: "bird_logs", id, before: existing, after: record }]);
   return record;
 }
 async function localBirdLogDelete(id, coopId) {
@@ -1103,21 +1145,24 @@ async function localBirdLogDelete(id, coopId) {
   await localPutMany("bird_logs", [{ ...(existing || { id }), deleted_at: now, updated_at: now }]);
   await queueOutbox({ resource: "bird_logs", op: "delete", id, payload: null });
   trySyncSoon("bird_logs", coopId);
+  if (existing) pushUndoAction(`Deleted health log entry (${fmtDate(existing.date)})`, [{ resource: "bird_logs", id, before: existing, after: null }]);
 }
 
-async function localBirdCreate(payload) {
+async function localBirdCreate(payload, opts = {}) {
   const record = { id: newLocalId(), updated_at: new Date().toISOString(), deleted_at: null, ...payload };
   await localPutMany("birds", [record]);
   await queueOutbox({ resource: "birds", op: "create", id: record.id, payload: record });
   trySyncSoon("birds", payload.coop_id);
+  if (!opts.suppressUndo) pushUndoAction(`Added bird "${record.name}"`, [{ resource: "birds", id: record.id, before: null, after: record }]);
   return record;
 }
-async function localBirdUpdate(id, payload) {
+async function localBirdUpdate(id, payload, opts = {}) {
   const existing = await localGetOne("birds", id);
   const record = { ...(existing || { id }), ...payload, updated_at: new Date().toISOString() };
   await localPutMany("birds", [record]);
   await queueOutbox({ resource: "birds", op: "update", id, payload });
   trySyncSoon("birds", payload.coop_id || (existing && existing.coop_id));
+  if (existing && !opts.suppressUndo) pushUndoAction(`Edited bird "${record.name}"`, [{ resource: "birds", id, before: existing, after: record }]);
   return record;
 }
 async function localBirdDelete(id, coopId) {
@@ -1126,14 +1171,21 @@ async function localBirdDelete(id, coopId) {
   await localPutMany("birds", [{ ...(existing || { id }), deleted_at: now, updated_at: now }]);
   await queueOutbox({ resource: "birds", op: "delete", id, payload: null });
   await clearPendingPhoto(id); // no point uploading a photo for a bird that's gone
+  const operations = [{ resource: "birds", id, before: existing, after: null }];
   // If this bird came from a hatching clutch, un-name it there too -- the
   // clutch's pending-to-name queue should reflect that this chick no longer
-  // has a bird record, not silently think it's still resolved.
+  // has a bird record, not silently think it's still resolved. Captured as
+  // part of the same undo action as the bird itself, so undoing this
+  // restores both the bird and the clutch's count together, not just the bird.
   if (existing && existing.hatch_id) {
     const h = await localGetOne("hatches", existing.hatch_id);
-    if (h) await localHatchUpdate(h.id, { named_count: Math.max(0, (Number(h.named_count) || 0) - 1) });
+    if (h) {
+      const hatchUpdated = await localHatchUpdate(h.id, { named_count: Math.max(0, (Number(h.named_count) || 0) - 1) });
+      operations.push({ resource: "hatches", id: h.id, before: h, after: hatchUpdated });
+    }
   }
   trySyncSoon("birds", coopId);
+  if (existing) pushUndoAction(`Deleted bird "${existing.name}"`, operations);
 }
 
 /** Same as localBulkDelete, but for birds specifically -- preserves the
@@ -1151,11 +1203,17 @@ async function localBulkDeleteBirds(ids, coopId) {
   await Promise.all(ids.map(id => clearPendingPhoto(id)));
   const hatchDecrements = {};
   existing.forEach(b => { if (b && b.hatch_id) hatchDecrements[b.hatch_id] = (hatchDecrements[b.hatch_id] || 0) + 1; });
+  const hatchOps = [];
   await Promise.all(Object.entries(hatchDecrements).map(async ([hatchId, n]) => {
     const h = await localGetOne("hatches", hatchId);
-    if (h) await localHatchUpdate(h.id, { named_count: Math.max(0, (Number(h.named_count) || 0) - n) });
+    if (h) {
+      const updated = await localHatchUpdate(h.id, { named_count: Math.max(0, (Number(h.named_count) || 0) - n) }, { suppressUndo: true });
+      hatchOps.push({ resource: "hatches", id: h.id, before: h, after: updated });
+    }
   }));
   if (coopId) trySyncSoon("birds", coopId);
+  const birdOps = ids.map((id, i) => ({ resource: "birds", id, before: existing[i], after: null }));
+  pushUndoAction(ids.length === 1 ? "Deleted a bird" : `Deleted ${ids.length} birds`, [...birdOps, ...hatchOps]);
 }
 
 async function localCoopCreate(payload) {
@@ -2296,18 +2354,16 @@ function openProductModal(editingProduct, category) {
   editingProductId = editingProduct ? editingProduct.id : null;
   newProductFormOpen = !editingProduct;
   newProductCategory = category;
-  openModal(renderProductEditFormHtml(editingProduct, category, true), () => {
-    editingProductId = null;
-    newProductFormOpen = false;
-    newProductCategory = null;
-  });
-  const deleteBtn = document.getElementById("deleteProduct");
-  if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
-    "Remove this saved product? Any bags already using its photo will lose it too, not just future ones -- this can't be undone.",
-    () => localSupplyProductDelete(editingProduct.id, currentCoopId),
-    "Product removed",
-    async () => { STATE.supplyProducts = await localGetAll("supply_products", currentCoopId); renderProductsSection(); }
-  ));
+  openModal(
+    renderProductEditFormHtml(editingProduct, category, true),
+    () => { editingProductId = null; newProductFormOpen = false; newProductCategory = null; },
+    editingProduct ? () => confirmAndDelete(
+      "Remove this saved product? Any bags already using its photo will lose it too, not just future ones -- this can't be undone.",
+      () => localSupplyProductDelete(editingProduct.id, currentCoopId),
+      "Product removed",
+      async () => { STATE.supplyProducts = await localGetAll("supply_products", currentCoopId); renderProductsSection(); }
+    ) : null
+  );
   const saveBtn = document.getElementById("saveNewProduct");
   saveBtn.addEventListener("click", async () => {
     const brand = document.getElementById("np_brand").value.trim();
@@ -2429,15 +2485,23 @@ function wireBeddingThresholdsModal() {
     });
     // Same position, different name = a rename, not a different area --
     // update any bird currently assigned to the old name so its location
-    // tag reflects the rename instead of silently going stale.
-    const renamedBirdUpdates = [];
+    // tag reflects the rename instead of silently going stale. Combined
+    // into one undo action rather than one per bird, since renaming an
+    // area is a single settings action regardless of how many birds it touches.
+    const renamedBirdOps = [];
     areas.forEach((oldName, i) => {
       const newName = newAreas[i];
       if (newName && newName !== oldName) {
-        STATE.birds.filter(b => b.location === oldName).forEach(b => renamedBirdUpdates.push(localBirdUpdate(b.id, { location: newName })));
+        STATE.birds.filter(b => b.location === oldName).forEach(b => renamedBirdOps.push(b));
       }
     });
-    if (renamedBirdUpdates.length > 0) await Promise.all(renamedBirdUpdates);
+    if (renamedBirdOps.length > 0) {
+      const updated = await Promise.all(renamedBirdOps.map((b, i) => {
+        const newName = newAreas[areas.indexOf(b.location)];
+        return localBirdUpdate(b.id, { location: newName }, { suppressUndo: true });
+      }));
+      pushUndoAction(renamedBirdOps.length === 1 ? "Renamed a bedding area (1 bird reassigned)" : `Renamed a bedding area (${renamedBirdOps.length} birds reassigned)`, renamedBirdOps.map((b, i) => ({ resource: "birds", id: b.id, before: b, after: updated[i] })));
+    }
     await saveAreaSettings(newAreas, newThresholds);
   });
 }
@@ -2562,14 +2626,22 @@ function noteFormHtml(editing, presetCategory) {
     <label class="field" style="margin-top:10px"><span>Note</span><textarea id="n_body" rows="4" placeholder="e.g. Cornish Cross are typically processed around 8 weeks — go by weight and behavior, not just the calendar.">${editing ? esc(editing.body || "") : ""}</textarea></label>
     <div class="modal-actions">
       <button class="btn btn-confirm" id="saveNote">${editing ? "✓ Save changes" : "+ Add note"}</button>
-      ${editing ? `<button class="btn btn-close" id="deleteNote">🗑 Delete</button>` : ""}
     </div>
   `;
 }
 
 function openNoteModal(editing, presetCategory) {
   editingNoteId = editing ? editing.id : null;
-  openModal(noteFormHtml(editing, presetCategory), () => { editingNoteId = null; });
+  openModal(
+    noteFormHtml(editing, presetCategory),
+    () => { editingNoteId = null; },
+    editing ? () => confirmAndDelete(
+      "Delete this note?",
+      () => localNoteDelete(editing.id, currentCoopId),
+      "Note deleted",
+      async () => { await loadCoopData(); renderNotesSection(); }
+    ) : null
+  );
   if (!editing) { const titleInput = document.getElementById("n_title"); if (titleInput) titleInput.focus(); }
   document.getElementById("saveNote").addEventListener("click", async () => {
     const title = document.getElementById("n_title").value.trim();
@@ -2583,13 +2655,6 @@ function openNoteModal(editing, presetCategory) {
     await loadCoopData();
     renderNotesSection();
   });
-  const deleteBtn = document.getElementById("deleteNote");
-  if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
-    "Delete this note?",
-    () => localNoteDelete(editing.id, currentCoopId),
-    "Note deleted",
-    async () => { await loadCoopData(); renderNotesSection(); }
-  ));
 }
 
 // ================= COOPS =================
@@ -3667,6 +3732,7 @@ function ensureModalDom() {
   overlay.className = "modal-overlay";
   overlay.innerHTML = `
     <div class="modal-panel" id="modalPanel">
+      <button class="modal-delete" id="modalDeleteBtn" aria-label="Delete" title="Delete" style="display:none">🗑</button>
       <button class="modal-close" id="modalCloseBtn" aria-label="Close">✕</button>
       <div id="modalContent"></div>
     </div>
@@ -3683,14 +3749,22 @@ let modalOnClose = null;
  * once, however the modal ends up closing -- backdrop click, Escape, the X
  * button, or a form's own Cancel button calling closeModal() itself --
  * so cleanup (clearing an editing-id, resetting a sub-picker's state) only
- * has to be written once instead of once per dismissal path. */
-function openModal(html, onClose = null) {
+ * has to be written once instead of once per dismissal path.
+ *
+ * onDelete (optional) shows a trash icon in the header, next to the close
+ * button, instead of a form having to render its own Delete button in the
+ * footer -- keeps the destructive action grouped with "leave this record"
+ * rather than sitting next to the primary Save action at the bottom. */
+function openModal(html, onClose = null, onDelete = null) {
   ensureModalDom();
   modalOnClose = onClose;
   document.getElementById("modalContent").innerHTML = html;
   document.body.style.overflow = "hidden";
   const overlay = document.getElementById("modalOverlay");
   document.getElementById("modalPanel").scrollTop = 0;
+  const deleteBtn = document.getElementById("modalDeleteBtn");
+  deleteBtn.style.display = onDelete ? "flex" : "none";
+  deleteBtn.onclick = onDelete; // reassigning onclick (not addEventListener) so each open cleanly replaces the previous handler instead of stacking listeners
   // Adding the open class in the same tick as setting innerHTML can skip
   // straight to the end state with no visible transition -- one frame's
   // delay is enough for the browser to register the starting position first.
@@ -3702,6 +3776,8 @@ function closeModal() {
   if (!overlay || !overlay.classList.contains("open")) return;
   overlay.classList.remove("open");
   document.body.style.overflow = "";
+  const deleteBtn = document.getElementById("modalDeleteBtn");
+  if (deleteBtn) { deleteBtn.style.display = "none"; deleteBtn.onclick = null; }
   if (modalOnClose) { modalOnClose(); modalOnClose = null; }
   setTimeout(() => { const c = document.getElementById("modalContent"); if (c) c.innerHTML = ""; }, 320);
 }
@@ -3718,6 +3794,121 @@ function refreshModalContent(html) {
 /** The common shape behind every edit modal's Delete button: confirm,
  * delete, toast, close the modal, then refresh whatever needs to reflect
  * it. refreshFn can be sync or async (both are awaited safely). */
+// ---------- Undo / redo ----------
+//
+// Each entry on the stack represents one user-facing action, which may
+// touch several records at once (a bulk delete, or later, a chain reaction
+// like a hatched chick creating a bird record) -- one undo always reverses
+// the whole thing as a single step, never one record at a time.
+//
+// An action's `operations` array holds one {resource, id, before, after}
+// tuple per record it touched. before/after are full record snapshots, or
+// null -- null `before` means the record didn't exist yet (a create), null
+// `after` means it was deleted. That's enough information to reverse or
+// re-apply any create, update, or delete generically, through the exact
+// same code path, without this engine needing to know anything
+// resource-specific about birds vs eggs vs expenses.
+const UNDO_STACK_LIMIT = 10;
+let undoStack = [];
+let redoStack = [];
+
+/** Call this once, right after a save/delete actually completes, with the
+ * full set of record changes that one user action caused. Starts a fresh
+ * redo history, since redoing something from before this new action would
+ * no longer make sense against the current state. */
+function pushUndoAction(label, operations) {
+  undoStack.push({ id: newLocalId(), label, operations, timestamp: Date.now() });
+  if (undoStack.length > UNDO_STACK_LIMIT) undoStack.shift();
+  redoStack = [];
+  renderUndoRedoBar();
+}
+
+/** Writes a specific target state for one record, generically across any
+ * resource -- reused by both undo and redo, just with a different target.
+ * A null target means the record shouldn't exist right now (undoing a
+ * create, or redoing a delete); anything else means restoring it to
+ * exactly that snapshot. Goes through the same localPutMany + outbox shape
+ * every local*Update/*Delete function already uses, so this participates
+ * in sync normally -- an undo made offline queues and goes out later,
+ * exactly like any other change. */
+async function applyOperationTarget(resource, id, targetState, coopId) {
+  const now = new Date().toISOString();
+  if (targetState === null) {
+    const existing = await localGetOne(resource, id);
+    const record = { ...(existing || { id }), deleted_at: now, updated_at: now };
+    await localPutMany(resource, [record]);
+    await queueOutbox({ resource, op: "delete", id, payload: null });
+  } else {
+    const record = { ...targetState, deleted_at: null, updated_at: now };
+    await localPutMany(resource, [record]);
+    await queueOutbox({ resource, op: "update", id, payload: record });
+  }
+  trySyncSoon(resource, coopId || (targetState && targetState.coop_id));
+}
+
+async function applyAction(action, direction) {
+  const ops = direction === "undo" ? [...action.operations].reverse() : action.operations;
+  for (const op of ops) {
+    const target = direction === "undo" ? op.before : op.after;
+    await applyOperationTarget(op.resource, op.id, target, currentCoopId);
+  }
+}
+
+/** The confirmation popup itself -- reuses the existing confirm-dialog
+ * component rather than a bespoke one, so this looks and behaves like
+ * every other confirmation in the app instead of introducing a new style
+ * of popup for just this. */
+async function performUndo() {
+  if (undoStack.length === 0) return;
+  const action = undoStack[undoStack.length - 1];
+  if (!(await showConfirmDialog(`Undo this? ${action.label}`, "Undo"))) return;
+  await applyAction(action, "undo");
+  undoStack.pop();
+  redoStack.push(action);
+  if (redoStack.length > UNDO_STACK_LIMIT) redoStack.shift();
+  renderUndoRedoBar();
+  showToast(`Undone: ${action.label}`, "update");
+  await refreshAndRender();
+}
+
+async function performRedo() {
+  if (redoStack.length === 0) return;
+  const action = redoStack[redoStack.length - 1];
+  if (!(await showConfirmDialog(`Redo this? ${action.label}`, "Redo"))) return;
+  await applyAction(action, "redo");
+  redoStack.pop();
+  undoStack.push(action);
+  if (undoStack.length > UNDO_STACK_LIMIT) undoStack.shift();
+  renderUndoRedoBar();
+  showToast(`Redone: ${action.label}`, "update");
+  await refreshAndRender();
+}
+
+/** Small fixed corner bar, mirroring the existing "Local only" badge in
+ * the opposite corner -- invisible unless there's actually something to
+ * undo or redo, so it never costs any layout space the rest of the time. */
+function renderUndoRedoBar() {
+  let bar = document.getElementById("undoRedoBar");
+  if (undoStack.length === 0 && redoStack.length === 0) {
+    if (bar) bar.remove();
+    return;
+  }
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "undoRedoBar";
+    bar.className = "undo-redo-bar";
+    bar.innerHTML = `
+      <button id="undoBarBtn" title="Undo">↺</button>
+      <button id="redoBarBtn" title="Redo">↻</button>
+    `;
+    document.body.appendChild(bar);
+    document.getElementById("undoBarBtn").addEventListener("click", () => performUndo());
+    document.getElementById("redoBarBtn").addEventListener("click", () => performRedo());
+  }
+  document.getElementById("undoBarBtn").disabled = undoStack.length === 0;
+  document.getElementById("redoBarBtn").disabled = redoStack.length === 0;
+}
+
 async function confirmAndDelete(message, deleteFn, toastMessage, refreshFn) {
   if (!(await showConfirmDialog(message))) return;
   await deleteFn();
@@ -4520,11 +4711,19 @@ function showBirdForm(bird) {
 
       <div style="margin-top:12px"><label class="field"><span>Notes</span><textarea id="f_notes">${esc(f.notes)}</textarea></label></div>
       <div id="birdLogSection" style="margin-top:16px"></div>
-      <div class="modal-actions"><button class="btn btn-confirm" id="saveBird">✓ Save</button>${isEdit ? `<button class="btn btn-close" id="deleteBird">🗑 Delete</button>` : ""}</div>
+      <div class="modal-actions"><button class="btn btn-confirm" id="saveBird">✓ Save</button></div>
     `;
 
-    if (firstOpen) openModal(html);
-    else refreshModalContent(html);
+    if (firstOpen) {
+      openModal(html, null, isEdit ? () => confirmAndDelete(
+        "Delete this bird? This can't be undone.",
+        () => localBirdDelete(bird.id, currentCoopId),
+        "Bird deleted",
+        refreshAndRender
+      ) : null);
+    } else {
+      refreshModalContent(html);
+    }
 
     if (isEdit) renderBirdLogSection(bird.id);
     else document.getElementById("birdLogSection").innerHTML = `<div class="dim" style="font-size:12px">Save this bird first to start a health/notes log for it.</div>`;
@@ -4533,13 +4732,6 @@ function showBirdForm(bird) {
       const url = e.target.dataset ? e.target.dataset.viewPhoto : null;
       if (url) showPhotoLightbox(url);
     });
-    const deleteBtn = document.getElementById("deleteBird");
-    if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
-      "Delete this bird? This can't be undone.",
-      () => localBirdDelete(bird.id, currentCoopId),
-      "Bird deleted",
-      refreshAndRender
-    ));
 
     document.getElementById("f_type").addEventListener("change", (e) => { formState = readCurrentValues(); formState.type = e.target.value; render(false); });
     document.getElementById("f_status").addEventListener("change", (e) => { formState = readCurrentValues(); formState.status = e.target.value; render(false); });
@@ -4612,8 +4804,13 @@ function showBirdForm(bird) {
         // Clearing the reference locally works offline immediately; the
         // orphaned file on the server gets cleaned up next time this bird's
         // update actually reaches it. Not worth a whole separate removal
-        // queue for how rarely this happens.
-        await localBirdUpdate(birdId, { photo: null });
+        // queue for how rarely this happens. suppressUndo since the save
+        // just above already pushed one undo entry for this edit -- a
+        // second one here would look like two separate actions for what
+        // was one save. (Undo won't restore a removed photo either way,
+        // since photos are separately-queued blobs, not part of the JSON
+        // snapshot undo operates on.)
+        await localBirdUpdate(birdId, { photo: null }, { suppressUndo: true });
       }
       await refreshPendingPhotoUrls();
       showToast(isEdit ? `${payload.name} updated` : `${payload.name} added`, isEdit ? "update" : "create");
@@ -4903,10 +5100,15 @@ function renderHatching() {
     const name = document.getElementById(`qc_name_${h.id}`).value.trim();
     if (!name) return;
     const type = document.getElementById(`qc_type_${h.id}`).value;
-    await localBirdCreate({ coop_id: currentCoopId, name, breed: h.breed || "", type, status: "Active", hatch_date: todayStr(), hatch_id: h.id });
-    await localHatchUpdate(h.id, { named_count: (Number(h.named_count) || 0) + 1 });
+    const createdBird = await localBirdCreate({ coop_id: currentCoopId, name, breed: h.breed || "", type, status: "Active", hatch_date: todayStr(), hatch_id: h.id }, { suppressUndo: true });
+    const updatedHatch = await localHatchUpdate(h.id, { named_count: (Number(h.named_count) || 0) + 1 }, { suppressUndo: true });
+    pushUndoAction(`Added bird "${name}" from clutch`, [
+      { resource: "birds", id: createdBird.id, before: null, after: createdBird },
+      { resource: "hatches", id: h.id, before: h, after: updatedHatch },
+    ]);
     showToast(`${name} added to the flock`, "create");
     STATE.hatches = await localGetAll("hatches", currentCoopId);
+    STATE.birds = await localGetAll("birds", currentCoopId);
     renderHatching();
   }));
 }
@@ -4923,14 +5125,22 @@ function hatchFormHtml(editing) {
     <div class="note-box" style="margin-top:10px">Expected hatch date is day 21 from when the eggs went in -- the timeline below each clutch tracks it automatically, including candling and lockdown reminders.</div>
     <div class="modal-actions">
       <button class="btn btn-confirm" id="saveHatch">${editing ? "✓ Save changes" : "+ Start clutch"}</button>
-      ${editing ? `<button class="btn btn-close" id="deleteHatch">🗑 Delete</button>` : ""}
     </div>
   `;
 }
 
 function openHatchModal(editing) {
   editingHatchId = editing ? editing.id : null;
-  openModal(hatchFormHtml(editing), () => { editingHatchId = null; });
+  openModal(
+    hatchFormHtml(editing),
+    () => { editingHatchId = null; },
+    editing ? () => confirmAndDelete(
+      "Delete this clutch and its tracked outcomes? This can't be undone.",
+      () => localHatchDelete(editing.id, currentCoopId),
+      "Clutch deleted",
+      async () => { STATE.hatches = await localGetAll("hatches", currentCoopId); renderHatching(); }
+    ) : null
+  );
   document.getElementById("saveHatch").addEventListener("click", async () => {
     const breed = document.getElementById("h_breed").value.trim();
     const date_started = document.getElementById("h_date").value;
@@ -4949,13 +5159,6 @@ function openHatchModal(editing) {
     STATE.hatches = await localGetAll("hatches", currentCoopId);
     renderHatching();
   });
-  const deleteBtn = document.getElementById("deleteHatch");
-  if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
-    "Delete this clutch and its tracked outcomes? This can't be undone.",
-    () => localHatchDelete(editing.id, currentCoopId),
-    "Clutch deleted",
-    async () => { STATE.hatches = await localGetAll("hatches", currentCoopId); renderHatching(); }
-  ));
 }
 
 function renderEggsMain() {
@@ -5006,7 +5209,6 @@ function renderEggsMain() {
             <div class="list-card-desc dim">${e.count} egg${e.count !== 1 ? "s" : ""}${e.price_per_egg ? ` @ ${fmtMoney(e.price_per_egg)}/egg` : ""}${e.notes ? " · " + esc(e.notes) : ""}</div>
             ${eggCartonHtml(Number(e.count) || 0)}
           </div>
-          <button class="icon-btn" data-del="${e.id}" onclick="event.stopPropagation()">🗑</button>
         </div>`;
       }).join("")}
     </div>
@@ -5021,13 +5223,6 @@ function renderEggsMain() {
   const loadMoreEl = document.getElementById("loadMoreBtn");
   if (loadMoreEl) loadMoreEl.addEventListener("click", () => { eggsVisibleCount += PAGE_SIZE; renderEggsMain(); });
   el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => openEggModal(STATE.eggs.find(e => e.id === card.dataset.edit))));
-  el.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
-    await localEggDelete(b.dataset.del, currentCoopId);
-    showToast("Egg log deleted", "delete");
-    if (editingEggId === b.dataset.del) editingEggId = null;
-    STATE.eggs = await localGetAll("eggs", currentCoopId);
-    renderEggsMain();
-  }));
 }
 
 function eggFormHtml(editing) {
@@ -5041,14 +5236,22 @@ function eggFormHtml(editing) {
     </div>
     <div class="modal-actions">
       <button class="btn btn-confirm" id="saveEgg">${editing ? "✓ Save changes" : "+ Add entry"}</button>
-      ${editing ? `<button class="btn btn-close" id="deleteEgg">🗑 Delete</button>` : ""}
     </div>
   `;
 }
 
 function openEggModal(editing) {
   editingEggId = editing ? editing.id : null;
-  openModal(eggFormHtml(editing), () => { editingEggId = null; });
+  openModal(
+    eggFormHtml(editing),
+    () => { editingEggId = null; },
+    editing ? () => confirmAndDelete(
+      "Delete this egg log entry? This can't be undone.",
+      () => localEggDelete(editing.id, currentCoopId),
+      "Egg log deleted",
+      async () => { STATE.eggs = await localGetAll("eggs", currentCoopId); renderEggsMain(); }
+    ) : null
+  );
   document.getElementById("saveEgg").addEventListener("click", async () => {
     const count = document.getElementById("e_count").value;
     if (!count) return;
@@ -5061,13 +5264,6 @@ function openEggModal(editing) {
     STATE.eggs = await localGetAll("eggs", currentCoopId);
     renderEggsMain();
   });
-  const deleteBtn = document.getElementById("deleteEgg");
-  if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
-    "Delete this egg log entry? This can't be undone.",
-    () => localEggDelete(editing.id, currentCoopId),
-    "Egg log deleted",
-    async () => { STATE.eggs = await localGetAll("eggs", currentCoopId); renderEggsMain(); }
-  ));
 }
 
 // ================= EXPENSES =================
@@ -5279,7 +5475,6 @@ function renderExpenses() {
           </div>
           <div class="list-card-side">
             <span class="stamp stamp-lg tone-${isIncome ? "sage" : "rust"}">${isIncome ? "+" : "−"}${fmtMoney(x.amount)}</span>
-            <button class="icon-btn" data-del="${x.id}" onclick="event.stopPropagation()">🗑</button>
           </div>
         </div>`;
       }).join("")}
@@ -5369,13 +5564,6 @@ function renderExpenses() {
   const loadMoreEl = document.getElementById("loadMoreBtn");
   if (loadMoreEl) loadMoreEl.addEventListener("click", () => { expensesVisibleCount += PAGE_SIZE; renderExpenses(); });
   el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => openExpenseModal(STATE.expenses.find(x => x.id === card.dataset.edit))));
-  el.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
-    const wasIncome = STATE.expenses.find(x => x.id === b.dataset.del)?.entry_type === "income";
-    await localExpenseDelete(b.dataset.del, currentCoopId);
-    showToast(wasIncome ? "Income deleted" : "Expense deleted", "delete");
-    if (editingExpenseId === b.dataset.del) editingExpenseId = null;
-    refreshAndRender();
-  }));
 }
 
 function expenseFormHtml(editing) {
@@ -5401,7 +5589,6 @@ function expenseFormHtml(editing) {
     ${!editing && expenseFormEntryType === "expense" && QUANTITY_CATEGORIES.has(document.getElementById("x_cat") ? document.getElementById("x_cat").value : EXPENSE_CATEGORIES[0]) ? `<div id="productPickerHost">${renderProductPickerRow(document.getElementById("x_cat") ? document.getElementById("x_cat").value : EXPENSE_CATEGORIES[0])}</div>` : ""}
     <div class="modal-actions">
       <button class="btn btn-confirm" id="saveExpense">${editing ? "✓ Save changes" : "+ Add entry"}</button>
-      ${editing ? `<button class="btn btn-close" id="deleteExpense">🗑 Delete</button>` : ""}
     </div>
   `;
 }
@@ -5446,33 +5633,35 @@ function wireExpenseFormModal(editing) {
       await localExpenseUpdate(editing.id, payload);
       showToast(expenseFormEntryType === "income" ? "Income updated" : "Expense updated", "update");
     } else {
-      const created = await localExpenseCreate(payload);
+      const created = await localExpenseCreate(payload, { suppressUndo: true });
       showToast(expenseFormEntryType === "income" ? "Income added" : "Expense added", "create");
+      const undoOps = [{ resource: "expenses", id: created.id, before: null, after: created }];
       // A new purchase with a quantity, in a trackable category, becomes
       // fresh "Full" item(s) in the Supply tab's inventory automatically --
       // Supplies are local-first too now, so this works offline the same as
-      // the expense itself.
+      // the expense itself. Counted as part of the SAME action as the
+      // expense -- undoing "logged this purchase" should remove the
+      // inventory it created too, not leave orphaned bags behind.
       if (perItemQty && QUANTITY_CATEGORIES.has(category)) {
         const selectedProduct = selectedProductId ? STATE.supplyProducts.find(p => p.id === selectedProductId) : null;
-        if (selectedProductId) await localSupplyProductUpdate(selectedProductId, { last_used_at: todayStr() });
-        await localBulkCreate("supplies", Array.from({ length: count }, () => ({
+        if (selectedProductId) {
+          const productBefore = selectedProduct;
+          const productAfter = await localSupplyProductUpdate(selectedProductId, { last_used_at: todayStr() }, { suppressUndo: true });
+          undoOps.push({ resource: "supply_products", id: selectedProductId, before: productBefore, after: productAfter });
+        }
+        const createdSupplies = await localBulkCreate("supplies", Array.from({ length: count }, () => ({
           coop_id: currentCoopId, category, description: (selectedProduct && selectedProduct.default_description) || description || category, brand: selectedProduct ? selectedProduct.brand : null,
           quantity: Number(perItemQty), unit, status: "Full", date_added: date, source_expense_id: created.id,
           product_id: selectedProductId || null,
-        })));
+        })), { suppressUndo: true });
+        undoOps.push(...createdSupplies.map(s => ({ resource: "supplies", id: s.id, before: null, after: s })));
         showToast(count > 1 ? `${count} items added to inventory` : `Added to inventory: ${description || category}`, "create");
       }
+      pushUndoAction(`Added ${expenseFormEntryType === "income" ? "income" : "expense"}: ${category}${undoOps.length > 1 ? ` (+ ${undoOps.length - 1} inventory item${undoOps.length - 1 !== 1 ? "s" : ""})` : ""}`, undoOps);
     }
     closeModal();
     refreshAndRender();
   });
-  const deleteBtn = document.getElementById("deleteExpense");
-  if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
-    editing.entry_type === "income" ? "Delete this income entry? This can't be undone." : "Delete this expense entry? This can't be undone.",
-    () => localExpenseDelete(editing.id, currentCoopId),
-    editing.entry_type === "income" ? "Income deleted" : "Expense deleted",
-    refreshAndRender
-  ));
 }
 
 function openExpenseModal(editing) {
@@ -5482,13 +5671,16 @@ function openExpenseModal(editing) {
   selectedProductId = null;
   editingProductId = null;
   newProductFormOpen = false;
-  openModal(expenseFormHtml(editing), () => {
-    editingExpenseId = null;
-    pendingExpenseCategory = null;
-    selectedProductId = null;
-    editingProductId = null;
-    newProductFormOpen = false;
-  });
+  openModal(
+    expenseFormHtml(editing),
+    () => { editingExpenseId = null; pendingExpenseCategory = null; selectedProductId = null; editingProductId = null; newProductFormOpen = false; },
+    editing ? () => confirmAndDelete(
+      editing.entry_type === "income" ? "Delete this income entry? This can't be undone." : "Delete this expense entry? This can't be undone.",
+      () => localExpenseDelete(editing.id, currentCoopId),
+      editing.entry_type === "income" ? "Income deleted" : "Expense deleted",
+      refreshAndRender
+    ) : null
+  );
   wireExpenseFormModal(editing);
 }
 
@@ -5517,7 +5709,6 @@ function renderProductEditFormHtml(editingProduct, category, standalone = false)
       ${standalone ? `
       <div class="modal-actions">
         <button class="btn btn-confirm" id="saveNewProduct">✓ Save product</button>
-        ${editingProduct ? `<button class="btn btn-close" id="deleteProduct">🗑 Delete</button>` : ""}
       </div>
       ` : `
       <div style="display:flex;gap:8px;margin-top:8px">
@@ -5755,11 +5946,18 @@ function openSupplyGroupModal(key) {
     // request, not one request per bag -- this is what changing the count
     // by a lot (raising or lowering) used to turn into hundreds or
     // thousands of individual sync operations.
-    await Promise.all([
-      keepIds.length > 0 ? localBulkUpdate("supplies", keepIds.map(id => ({ id, fields: payload })), currentCoopId) : Promise.resolve(),
-      removeIds.length > 0 ? localBulkDelete("supplies", removeIds, currentCoopId) : Promise.resolve(),
-      addCount > 0 ? localBulkCreate("supplies", Array.from({ length: addCount }, () => payload)) : Promise.resolve(),
+    const [updatedRecords, deletedBefore, createdRecords] = await Promise.all([
+      keepIds.length > 0 ? localBulkUpdate("supplies", keepIds.map(id => ({ id, fields: payload })), currentCoopId, { suppressUndo: true }) : Promise.resolve([]),
+      removeIds.length > 0 ? localBulkDelete("supplies", removeIds, currentCoopId, { suppressUndo: true }) : Promise.resolve([]),
+      addCount > 0 ? localBulkCreate("supplies", Array.from({ length: addCount }, () => payload), { suppressUndo: true }) : Promise.resolve([]),
     ]);
+    const keptBefore = keepIds.map(id => members.find(m => m.id === id));
+    const undoOps = [
+      ...keepIds.map((id, i) => ({ resource: "supplies", id, before: keptBefore[i], after: updatedRecords[i] })),
+      ...removeIds.map((id, i) => ({ resource: "supplies", id, before: deletedBefore[i], after: null })),
+      ...createdRecords.map(r => ({ resource: "supplies", id: r.id, before: null, after: r })),
+    ];
+    pushUndoAction(`Edited group (${targetCount} full)`, undoOps);
     showToast(`Group updated (${targetCount} full)`, "update");
     closeModal();
     await loadCoopData();
@@ -6064,7 +6262,6 @@ function supplyFormHtml(editingSupply) {
     ${!editingSupply ? `<div class="dim" style="font-size:11px;margin-top:8px">Buying multiple bags at once? Set the count above -- each one is added as its own separate, independently trackable item rather than a single item marked "3 bags." Identical full bags collapse into one compact card automatically -- "Open one" peels a single bag off to track it on its own.</div>` : ""}
     <div class="modal-actions">
       <button class="btn btn-confirm" id="saveSupply">${editingSupply ? "✓ Save changes" : "+ Add item"}</button>
-      ${editingSupply ? `<button class="btn btn-close" id="deleteSupply">🗑 Delete</button>` : ""}
     </div>
   `;
 }
@@ -6106,26 +6303,24 @@ function wireSupplyForm(editingSupply) {
       await localSupplyUpdate(editingSupply.id, payload);
       showToast("Supply item updated", "update");
     } else {
+      const undoOps = [];
       if (selectedProductId) {
+        const productBefore = STATE.supplyProducts.find(p => p.id === selectedProductId);
+        const productAfter = await localSupplyProductUpdate(selectedProductId, { last_used_at: todayStr() }, { suppressUndo: true });
+        undoOps.push({ resource: "supply_products", id: selectedProductId, before: productBefore, after: productAfter });
         payload.product_id = selectedProductId;
-        await localSupplyProductUpdate(selectedProductId, { last_used_at: todayStr() });
       }
       const countEl = document.getElementById("sp_count");
       const count = countEl ? Math.max(1, Number(countEl.value) || 1) : 1;
       if (count > 500) { alert("That's a lot of separate items to add at once -- try 500 or fewer at a time"); return; }
-      await localBulkCreate("supplies", Array.from({ length: count }, () => payload));
+      const created = await localBulkCreate("supplies", Array.from({ length: count }, () => payload), { suppressUndo: true });
+      undoOps.push(...created.map(r => ({ resource: "supplies", id: r.id, before: null, after: r })));
+      pushUndoAction(count === 1 ? "Added supply item" : `Added ${count} supply items`, undoOps);
       showToast(count > 1 ? `${count} items added` : "Supply item added", "create");
     }
     closeModal();
     refreshAndRender();
   });
-  const deleteBtn = document.getElementById("deleteSupply");
-  if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
-    "Delete this supply item permanently? This can't be undone.",
-    () => localSupplyDelete(editingSupply.id, currentCoopId),
-    "Supply item deleted",
-    refreshAndRender
-  ));
 }
 
 /** Single entry point for both "+ Add supply item" (pass null) and editing
@@ -6137,11 +6332,16 @@ function openSupplyModal(supply) {
   selectedProductId = null;
   editingProductId = null;
   newProductFormOpen = false;
-  openModal(supplyFormHtml(supply), () => {
-    selectedProductId = null;
-    editingProductId = null;
-    newProductFormOpen = false;
-  });
+  openModal(
+    supplyFormHtml(supply),
+    () => { selectedProductId = null; editingProductId = null; newProductFormOpen = false; },
+    supply ? () => confirmAndDelete(
+      "Delete this supply item permanently? This can't be undone.",
+      () => localSupplyDelete(supply.id, currentCoopId),
+      "Supply item deleted",
+      refreshAndRender
+    ) : null
+  );
   wireSupplyForm(supply);
 }
 
@@ -6264,14 +6464,22 @@ function beddingFormHtml(editing) {
     <div class="note-box" style="margin-top:10px"><strong style="color:var(--text)">Top-off</strong> is adding fresh material without stirring. <strong style="color:var(--text)">Churn</strong> is stirring what's already there without adding anything. <strong style="color:var(--text)">Top-off + Churn</strong> is both in the same visit. Only Churn and Top-off + Churn count toward the churn-due countdown above -- topping off alone doesn't reset it. Use <strong style="color:var(--text)">Full Clean-out</strong> when the coop or run is emptied down to bare floor.</div>
     <div class="modal-actions">
       <button class="btn btn-confirm" id="saveBedding">${editing ? "✓ Save changes" : "+ Add entry"}</button>
-      ${editing ? `<button class="btn btn-close" id="deleteBedding">🗑 Delete</button>` : ""}
     </div>
   `;
 }
 
 function openBeddingModal(editing) {
   editingBeddingId = editing ? editing.id : null;
-  openModal(beddingFormHtml(editing), () => { editingBeddingId = null; });
+  openModal(
+    beddingFormHtml(editing),
+    () => { editingBeddingId = null; },
+    editing ? () => confirmAndDelete(
+      "Delete this bedding entry? This can't be undone.",
+      () => localBeddingDelete(editing.id, currentCoopId),
+      "Bedding entry deleted",
+      refreshAndRender
+    ) : null
+  );
   document.getElementById("saveBedding").addEventListener("click", async () => {
     const payload = {
       coop_id: currentCoopId,
@@ -6287,13 +6495,6 @@ function openBeddingModal(editing) {
     closeModal();
     refreshAndRender();
   });
-  const deleteBtn = document.getElementById("deleteBedding");
-  if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
-    "Delete this bedding entry? This can't be undone.",
-    () => localBeddingDelete(editing.id, currentCoopId),
-    "Bedding entry deleted",
-    refreshAndRender
-  ));
 }
 
 // ---------- Init ----------

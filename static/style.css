@@ -199,7 +199,7 @@ h1 { font-family: 'Roboto Slab', serif; font-size: 32px; margin: 2px 0 0; font-w
 /* Modal form footers (Save/Delete row): a dashed divider plus real
    breathing room, so it reads as a distinct action area rather than just
    wherever the last field happened to end. */
-.modal-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 20px; padding-top: 16px; border-top: 2px dashed var(--border); }
+.modal-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 20px; padding-top: 16px; border-top: 2px dashed var(--border); }
 .form-head { display: flex; justify-content: space-between; margin-bottom: 12px; font-weight: 700; font-family: 'Roboto Slab', serif; }
 
 label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
@@ -492,6 +492,21 @@ tr:hover td { background: var(--surface-raised); }
 }
 body:has(.local-only-badge) .wrap { padding-top: 54px; }
 
+.undo-redo-bar {
+  position: fixed; top: 0; right: 0; z-index: 999;
+  background: var(--surface-raised); display: flex; gap: 2px;
+  padding: 6px 9px 6px 12px; border-radius: 0 0 0 10px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+}
+.undo-redo-bar button {
+  background: transparent; border: none; color: var(--text); font-size: 17px;
+  width: 30px; height: 30px; border-radius: 6px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.undo-redo-bar button:hover:not(:disabled) { background: var(--surface); }
+.undo-redo-bar button:disabled { color: var(--border); cursor: default; }
+body:has(.undo-redo-bar) .wrap { padding-top: 54px; }
+
 .photo-lightbox-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 2000;
   display: flex; align-items: center; justify-content: center; padding: 24px;
@@ -532,6 +547,13 @@ body:has(.local-only-badge) .wrap { padding-top: 54px; }
   cursor: pointer; color: var(--text-dim); font-size: 15px; padding: 0;
 }
 .modal-close:hover { color: var(--text); border-color: var(--gold); }
+.modal-delete {
+  position: absolute; top: 10px; right: 52px; z-index: 2;
+  background: var(--surface-raised); border: 1px solid var(--border); border-radius: 50%;
+  width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: var(--rust); font-size: 14px; padding: 0;
+}
+.modal-delete:hover { background: var(--rust); color: #F2E9DC; border-color: var(--rust); }
 
 @media (min-width: 720px) {
   /* Desktop gets a centered dialog with a fade + slight scale-in instead
