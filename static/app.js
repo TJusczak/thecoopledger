@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-96";
+const APP_VERSION = "2026.07.06-97";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -5609,6 +5609,7 @@ function renderSupplyGroupModal() {
       date_added: document.getElementById("grp_date").value,
       status: "Full",
       date_emptied: null,
+      product_id: members[0] ? (members[0].product_id || null) : null,
     };
     const targetCount = Math.max(0, Math.floor(Number(document.getElementById("grp_count").value) || 0));
     if (targetCount > 500) { alert("That's a lot of bags for one group -- try 500 or fewer at a time"); return; }
