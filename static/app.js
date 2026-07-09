@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-116";
+const APP_VERSION = "2026.07.06-117";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -952,13 +952,13 @@ function startEventStream() {
   try {
     sseStatus = "connecting";
     _eventSource = new EventSource(apiUrl(`/api/events?coop_id=${encodeURIComponent(currentCoopId)}&token=${encodeURIComponent(getAuthToken())}`));
-    _eventSource.onopen = () => { sseStatus = "connected"; refreshSyncStatus(); };
+    _eventSource.onopen = () => { sseStatus = "connected"; refreshSyncStatus(); updateServerConnectionStatusUi(); };
     _eventSource.onmessage = () => { backgroundSyncTick(); };
     // EventSource retries on its own with backoff after an error -- onerror
     // fires both for "temporarily reconnecting" and genuine failures, so
     // this just reflects "not currently connected" rather than giving up;
     // the polling timer covers us regardless while it's down.
-    _eventSource.onerror = () => { sseStatus = "error"; refreshSyncStatus(); };
+    _eventSource.onerror = () => { sseStatus = "error"; refreshSyncStatus(); updateServerConnectionStatusUi(); };
   } catch (err) {
     sseStatus = "error"; // EventSource unsupported or failed to construct -- polling still covers this device fine
   }
@@ -2025,6 +2025,7 @@ function renderActivityLogSection() {
 function renderConnectionSection() {
   const el = document.getElementById("settingsContent");
   const current = getServerUrl();
+  const groupHeaderStyle = "font-family:'Roboto Slab',serif;font-weight:700;font-size:15px;color:var(--gold);margin:26px 0 2px";
   el.innerHTML = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
       <div class="dim" style="font-size:11px;font-family:'JetBrains Mono',monospace">App version: ${esc(APP_VERSION)}</div>
@@ -2042,35 +2043,37 @@ function renderConnectionSection() {
       }
     </div>
 
-    ${SYNC_FOLDER_SUPPORTED ? `
-    <div class="card" style="margin-top:16px" id="syncFolderCard">
-      <div class="card-title">Synced folder</div>
-      <div class="dim" style="font-size:12px;margin-bottom:10px" id="syncFolderStatus">Checking...</div>
-      <div class="dim" style="font-size:12px;margin-bottom:12px">Point this at a folder that Dropbox, Google Drive, OneDrive, or anything similar already watches on this device, and a backup can be saved straight into it -- no account or setup with any specific provider needed here, since whatever syncs that folder handles getting it off this device on its own.</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap" id="syncFolderButtons"></div>
-    </div>
-    ` : `
-    <div class="card" style="margin-top:16px">
-      <div class="card-title">Synced folder</div>
-      <div class="dim" style="font-size:12px">Not available in this browser -- this needs a Chromium-based desktop browser (Chrome or Edge on Windows, Mac, Linux, or ChromeOS). It isn't available on Android in any browser, including this app if installed there, since Android has no matching system file picker for it. Exporting a backup manually and saving it into a synced folder yourself works everywhere as an alternative.</div>
-    </div>
-    `}
-
-    <div class="card" style="margin-top:16px">
-      <div class="card-title">Your name</div>
-      <div class="dim" style="font-size:12px;margin-bottom:12px">Used to label changes when syncing with someone else -- so "Alex added an egg entry" shows up on their device instead of a generic notice. Leave blank to skip attribution; per-device, not synced anywhere itself.</div>
-      <div style="display:flex;gap:8px">
-        <input id="userNameInput" placeholder="e.g. Alex" value="${esc(getUserName())}" style="flex:1">
-        <button class="btn btn-confirm" id="saveUserNameBtn">✓ Save</button>
-      </div>
-    </div>
-
     <div class="card" style="margin-top:16px">
       <div class="card-title">How this app runs</div>
       <div class="dim" style="font-size:12px;margin-bottom:12px">Switch anytime -- nothing is lost either way. Turning sync on later automatically pushes out everything you did while local-only.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn ${localOnlyMode ? "btn-confirm" : "ghost"}" id="modeLocalBtn">📱 Local only</button>
         <button class="btn ${!localOnlyMode ? "btn-confirm" : "ghost"}" id="modeSyncBtn">☁️ Sync with a server</button>
+      </div>
+    </div>
+
+    <div style="${groupHeaderStyle}">Local backup</div>
+    ${SYNC_FOLDER_SUPPORTED ? `
+    <div class="card" style="margin-top:10px" id="syncFolderCard">
+      <div class="card-title">Synced folder</div>
+      <div class="dim" style="font-size:12px;margin-bottom:10px" id="syncFolderStatus">Checking...</div>
+      <div class="dim" style="font-size:12px;margin-bottom:12px">Point this at a folder that Dropbox, Google Drive, OneDrive, or anything similar already watches on this device, and a backup can be saved straight into it -- no account or setup with any specific provider needed here, since whatever syncs that folder handles getting it off this device on its own.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap" id="syncFolderButtons"></div>
+    </div>
+    ` : `
+    <div class="card" style="margin-top:10px">
+      <div class="card-title">Synced folder</div>
+      <div class="dim" style="font-size:12px">Not available in this browser -- this needs a Chromium-based desktop browser (Chrome or Edge on Windows, Mac, Linux, or ChromeOS). It isn't available on Android in any browser, including this app if installed there, since Android has no matching system file picker for it. Exporting a backup manually and saving it into a synced folder yourself works everywhere as an alternative.</div>
+    </div>
+    `}
+
+    <div style="${groupHeaderStyle}">Online sync</div>
+    <div class="card" style="margin-top:10px">
+      <div class="card-title">Your name</div>
+      <div class="dim" style="font-size:12px;margin-bottom:12px">Used to label changes when syncing with someone else -- so "Alex added an egg entry" shows up on their device instead of a generic notice. Leave blank to skip attribution; per-device, not synced anywhere itself.</div>
+      <div style="display:flex;gap:8px">
+        <input id="userNameInput" placeholder="e.g. Alex" value="${esc(getUserName())}" style="flex:1">
+        <button class="btn btn-confirm" id="saveUserNameBtn">✓ Save</button>
       </div>
     </div>
 
@@ -2086,6 +2089,8 @@ function renderConnectionSection() {
       <div class="dim" style="font-size:12px;margin-bottom:10px">
         ${current ? `Currently using: <strong style="color:var(--text)">${esc(current)}</strong>` : `No server address set.`}
       </div>
+      <div id="serverVersionLine" class="dim" style="font-size:12px;margin-bottom:10px">Sync server version: checking...</div>
+      <div id="liveUpdatesLine" class="dim" style="font-size:12px;margin-bottom:14px">Live updates: checking...</div>
       <div class="dim" style="font-size:12px;margin-bottom:14px">
         Only change this if you've installed/cached this app separately and need to point it at a specific server -- for example, a wrapped native copy that should always reach your home server directly.
       </div>
@@ -2099,7 +2104,7 @@ function renderConnectionSection() {
     </div>
 
     <div class="card" style="margin-top:16px">
-      <div class="card-title">Local-first sync</div>
+      <div class="card-title">Sync status</div>
       <div class="dim" style="font-size:12px;margin-bottom:12px">
         Everything is stored on this device first and syncs with the server in the background -- birds, eggs, expenses, supplies, bedding, notes, health/medical logs, and coop management (creating, renaming, deleting a coop, and settings like defaults and bedding areas). Photos queue separately (they're files, not data rows) and upload as soon as a connection is available. Exporting a full backup works with or without a connection.
       </div>
@@ -2220,6 +2225,7 @@ function renderConnectionSection() {
     }
   });
   refreshSyncStatus();
+  refreshServerConnectionStatus();
   (async () => {
     const pendingPhotos = await getAllPendingPhotos();
     const outbox = await getOutbox();
@@ -2242,6 +2248,7 @@ function renderConnectionSection() {
       showToast("Sync failed -- still offline?", "delete");
     }
     refreshSyncStatus();
+    refreshServerConnectionStatus();
   });
   const intervalSelect = document.getElementById("syncIntervalSelect");
   if (intervalSelect) intervalSelect.addEventListener("change", (e) => {
@@ -2351,10 +2358,8 @@ async function refreshSyncStatus() {
     : [];
   const successTimes = perResource.map(x => x.lastSync).filter(Boolean);
   const oldestSuccess = successTimes.length ? successTimes.sort()[0] : null; // earliest of all of them -- the more conservative, honest answer
-  const sseLabel = { off: `<span style="color:var(--text-dim)">off</span>`, connecting: `<span style="color:var(--gold)">connecting...</span>`, connected: `<span style="color:var(--sage)">● connected</span>`, error: `<span style="color:var(--rust)">reconnecting...</span>`, unsupported: `<span style="color:var(--text-dim)">not supported by this browser</span>` }[sseStatus] || sseStatus;
   statusEl.innerHTML = `
     <div>${pending ? `<strong style="color:var(--gold)">${pending} change${pending !== 1 ? "s" : ""} waiting to sync</strong>` : `<span style="color:var(--sage)">Up to date</span>`}</div>
-    <div style="margin-top:4px">Live updates: ${sseLabel}</div>
     <div style="margin-top:4px">Last sync attempt: ${relativeTime(getLastSyncAttempt())}</div>
     <div>Last successful server sync: ${relativeTime(oldestSuccess)}</div>
     <details style="margin-top:6px"><summary style="cursor:pointer">Per-resource detail</summary>
@@ -2363,6 +2368,32 @@ async function refreshSyncStatus() {
       </div>
     </details>
   `;
+}
+
+/** Lightweight, DOM-only update from whatever's currently known (no network
+ * call) -- safe to call often, e.g. on every SSE status change. */
+function updateServerConnectionStatusUi() {
+  const versionEl = document.getElementById("serverVersionLine");
+  const liveEl = document.getElementById("liveUpdatesLine");
+  if (versionEl) {
+    versionEl.innerHTML = lastKnownServerVersion
+      ? (serverVersionMismatch
+          ? `⚠️ <span style="color:var(--rust)">Sync server version: ${esc(lastKnownServerVersion)} (outdated -- this app is running ${esc(APP_VERSION)}. Restart the sync server.)</span>`
+          : `Sync server version: ${esc(lastKnownServerVersion)} <span style="color:var(--sage)">✓ up to date</span>`)
+      : `Sync server version: unknown (unreachable)`;
+  }
+  if (liveEl) {
+    const sseLabel = { off: `<span style="color:var(--text-dim)">off</span>`, connecting: `<span style="color:var(--gold)">connecting...</span>`, connected: `<span style="color:var(--sage)">● connected</span>`, error: `<span style="color:var(--rust)">reconnecting...</span>`, unsupported: `<span style="color:var(--text-dim)">not supported by this browser</span>` }[sseStatus] || sseStatus;
+    liveEl.innerHTML = `Live updates: ${sseLabel}`;
+  }
+}
+/** Re-verifies with the server first, then updates the DOM -- called when
+ * the settings page opens, so it shows current state rather than whatever
+ * the last background timer tick (up to 30 seconds ago) happened to see. */
+async function refreshServerConnectionStatus() {
+  if (!document.getElementById("serverVersionLine") && !document.getElementById("liveUpdatesLine")) return;
+  await checkConnection();
+  updateServerConnectionStatusUi();
 }
 
 function getCoopDefaults() {
@@ -6914,6 +6945,8 @@ function openBeddingModal(editing) {
  * navigator.onLine alone only tells you the device has *some* network, not
  * that this specific server is reachable (e.g. Tailscale drops, VPN issues,
  * the server itself being down). */
+let lastKnownServerVersion = null; // the raw version string from the last successful /api/health check, kept regardless of whether it matched -- serverVersionMismatch alone couldn't answer "what version is it running" once it matched
+
 async function checkConnection() {
   const dot = document.querySelector("#connIndicator .conn-dot");
   const label = document.getElementById("connLabel");
@@ -6922,6 +6955,7 @@ async function checkConnection() {
     dot.className = "conn-dot local";
     label.textContent = "Local only";
     serverVersionMismatch = null;
+    lastKnownServerVersion = null;
     renderServerVersionBadge();
     return;
   }
@@ -6931,12 +6965,14 @@ async function checkConnection() {
     dot.className = "conn-dot online";
     label.textContent = "Online";
     const data = await res.json();
+    lastKnownServerVersion = data.version || null;
     serverVersionMismatch = (data.version && data.version !== APP_VERSION) ? { server: data.version, client: APP_VERSION } : null;
     renderServerVersionBadge();
   } catch (err) {
     dot.className = "conn-dot offline";
     label.textContent = "Offline";
     serverVersionMismatch = null; // can't tell while unreachable -- don't claim outdated when it might just be offline
+    lastKnownServerVersion = null;
     renderServerVersionBadge();
   }
 }
