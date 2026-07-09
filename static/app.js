@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-117";
+const APP_VERSION = "2026.07.06-118";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -36,6 +36,83 @@ let flockFiltersOpen = false;
 let flockSort = "name"; // "name" | "age" | "target"
 let selectedBirdIds = new Set();
 let selectedSupplyIds = new Set();
+
+const selectionState = {
+  birds: { mode: false, lastClicked: null },
+  supplies: { mode: false, lastClicked: null },
+};
+
+/** Wires selection interaction onto a set of already-rendered cards.
+ * cards: NodeList/array of elements, each carrying a data-id.
+ * idsSet: the Set tracking selected ids (selectedBirdIds / selectedSupplyIds).
+ * stateKey: "birds" | "supplies" -- which entry in selectionState above.
+ * orderedIds: () => array of ids in current display order, for shift-click range-select.
+ * onOpen: (id) => void -- the normal "open this item" action when not in selection mode.
+ * onChange: () => void -- re-render after any selection change. */
+function wireCardSelection(cards, idsSet, stateKey, orderedIds, onOpen, onChange) {
+  const state = selectionState[stateKey];
+  const toggle = (id) => { if (idsSet.has(id)) idsSet.delete(id); else idsSet.add(id); };
+  cards.forEach(card => {
+    const id = card.dataset.id;
+    if (!id) return;
+    let pressTimer = null, longPressFired = false, startXY = null;
+
+    card.addEventListener("touchstart", (e) => {
+      longPressFired = false;
+      const t = e.touches[0];
+      startXY = { x: t.clientX, y: t.clientY };
+      pressTimer = setTimeout(() => {
+        longPressFired = true;
+        state.mode = true;
+        toggle(id);
+        state.lastClicked = id;
+        if (navigator.vibrate) navigator.vibrate(12);
+        onChange();
+      }, 500);
+    }, { passive: true });
+    card.addEventListener("touchmove", (e) => {
+      if (!pressTimer || !startXY) return;
+      const t = e.touches[0];
+      if (Math.abs(t.clientX - startXY.x) > 10 || Math.abs(t.clientY - startXY.y) > 10) { clearTimeout(pressTimer); pressTimer = null; }
+    }, { passive: true });
+    card.addEventListener("touchend", () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
+
+    card.addEventListener("click", (e) => {
+      if (longPressFired) { longPressFired = false; return; } // the long-press already acted on this tap
+      if (e.shiftKey && state.lastClicked) {
+        e.preventDefault();
+        state.mode = true;
+        const order = orderedIds();
+        const a = order.indexOf(state.lastClicked), b = order.indexOf(id);
+        if (a !== -1 && b !== -1) {
+          const [lo, hi] = a < b ? [a, b] : [b, a];
+          for (let i = lo; i <= hi; i++) idsSet.add(order[i]);
+        } else {
+          toggle(id);
+        }
+        state.lastClicked = id;
+        onChange();
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        state.mode = true;
+        toggle(id);
+        state.lastClicked = id;
+        onChange();
+        return;
+      }
+      if (state.mode) {
+        toggle(id);
+        state.lastClicked = id;
+        onChange();
+        return;
+      }
+      onOpen(id);
+    });
+  });
+}
+
 let expandedBatches = new Set();
 let eggFilters = { year: "" };
 let editingEggId = null;
@@ -425,10 +502,18 @@ function photoZoom(record) {
 /** For <img>-based display sites: object-fit:cover already handles the
  * aspect-ratio-correct base fit, so scaling the element itself zooms in
  * further from that already-correct baseline -- no natural-dimension
- * computation needed here, unlike the crop frame's own background-size math. */
+ * computation needed here, unlike the crop frame's own background-size math.
+ * transform-origin is set to match object-position (rather than the
+ * transform default of the box's own center) -- without this, scale()
+ * always zooms toward the middle of the box regardless of where the photo
+ * was actually panned to, since transform-origin and object-position are
+ * otherwise completely independent of each other. */
 function photoTransformStyle(record) {
   const zoom = photoZoom(record);
-  return zoom !== 1 ? `transform:scale(${zoom});` : "";
+  if (zoom === 1) return "";
+  const x = (record && record.photo_pos_x != null) ? record.photo_pos_x : 50;
+  const y = (record && record.photo_pos_y != null) ? record.photo_pos_y : 50;
+  return `transform:scale(${zoom});transform-origin:${x}% ${y}%;`;
 }
 
 /** Drag-to-reframe UI for a photo that's already been uploaded (or is about
@@ -4435,9 +4520,9 @@ function birdCardHtml(b) {
   const nameHtml = accent
     ? `<div class="flock-card-name-ribbon" style="background:color-mix(in srgb, ${esc(accent)} 55%, var(--surface))"><div class="flock-card-name">${displayName}</div></div>`
     : `<div class="flock-card-name">${displayName}</div>`;
-  return `<div class="flock-card${accent ? " custom-color" : ""}" data-edit="${b.id}" style="${cardStyle}">
+  return `<div class="flock-card${accent ? " custom-color" : ""}${selectedBirdIds.has(b.id) ? " card-selected" : ""}" data-edit="${b.id}" data-id="${b.id}" style="${cardStyle}">
     <div class="flock-card-photo">
-      <input type="checkbox" class="flock-card-check bird-check" data-id="${b.id}" ${selectedBirdIds.has(b.id) ? "checked" : ""} onclick="event.stopPropagation()">
+      ${selectionState.birds.mode ? `<input type="checkbox" class="flock-card-check bird-check" data-id="${b.id}" ${selectedBirdIds.has(b.id) ? "checked" : ""} onclick="event.stopPropagation()">` : ""}
       ${birdPhotoUrl(b) ? `<img src="${birdPhotoUrl(b)}" style="object-position:${photoPosition(b)};${photoTransformStyle(b)}">` : "🐔"}
       <span class="stamp stamp-lg stamp-on-photo tone-${statusTone(b.status)} flock-card-status-badge">${esc(b.status)}</span>
       ${b.status === "Processed" && b.harvest_date ? `<div class="flock-card-harvest-badge">Harvested ${fmtDate(b.harvest_date)}</div>` : ""}
@@ -4585,6 +4670,7 @@ function renderFlockBirds() {
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         ${flockSortSelectHtml("flockSortSelect")}
         <button class="btn ghost small" id="toggleFlockFilters">Filters${nonDefaultFilterCount ? ` (${nonDefaultFilterCount})` : ""} ${flockFiltersOpen ? "▾" : "▸"}</button>
+        <button class="btn ${selectionState.birds.mode ? "btn-close" : "ghost"} small" id="toggleBirdSelectMode">${selectionState.birds.mode ? "✕ Cancel selection" : "☑ Select"}</button>
         <button class="btn" id="newBatchBtn">+ Add batch</button>
         <button class="btn" id="newBirdBtn">+ Add bird</button>
       </div>
@@ -4624,6 +4710,11 @@ function renderFlockBirds() {
   document.getElementById("flockSortSelect").addEventListener("change", (e) => { flockSort = e.target.value; renderFlockBirds(); });
   document.getElementById("toggleFlockFilters").addEventListener("click", () => { flockFiltersOpen = !flockFiltersOpen; renderFlockBirds(); });
   document.getElementById("newBirdBtn").addEventListener("click", () => showBirdForm(null));
+  document.getElementById("toggleBirdSelectMode").addEventListener("click", () => {
+    selectionState.birds.mode = !selectionState.birds.mode;
+    if (!selectionState.birds.mode) selectedBirdIds.clear();
+    renderFlockBirds();
+  });
   document.getElementById("newBatchBtn").addEventListener("click", () => showBulkForm());
   wireFlockCardHandlers(el);
 
@@ -4665,7 +4756,14 @@ function renderFlockBirds() {
 
 /** Shared click wiring for both the active grid and the archive grid. */
 function wireFlockCardHandlers(el) {
-  el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => showBirdForm(STATE.birds.find(x => x.id === card.dataset.edit))));
+  wireCardSelection(
+    el.querySelectorAll("[data-edit]"),
+    selectedBirdIds,
+    "birds",
+    () => [...el.querySelectorAll("[data-edit]")].map(c => c.dataset.id),
+    (id) => showBirdForm(STATE.birds.find(x => x.id === id)),
+    renderFlockBirds
+  );
   el.querySelectorAll("[data-open-batch]").forEach(card => card.addEventListener("click", () => { currentOpenBatchName = card.dataset.openBatch; renderFlockBirds(); }));
 }
 
@@ -4725,7 +4823,14 @@ function showBatchPanel(batchName) {
     if (e.target.checked) selectedBirdIds.add(cb.dataset.id); else selectedBirdIds.delete(cb.dataset.id);
     showBatchPanel(batchName);
   }));
-  host.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => showBirdForm(STATE.birds.find(x => x.id === card.dataset.edit))));
+  wireCardSelection(
+    host.querySelectorAll("[data-edit]"),
+    selectedBirdIds,
+    "birds",
+    () => birds.map(b => b.id),
+    (id) => showBirdForm(STATE.birds.find(x => x.id === id)),
+    () => showBatchPanel(batchName)
+  );
   host.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async (e) => {
     e.stopPropagation();
     if (!(await showConfirmDialog("Delete this bird? This can't be undone."))) return;
@@ -5048,7 +5153,7 @@ function showBirdForm(bird) {
       <div class="form-head">${isEdit ? "Edit bird" : "New bird"}</div>
       ${isEdit ? `<div class="dim" style="font-size:12px;margin:-8px 0 14px">${ageFromDate(f.hatch_date || f.acquired_date)}${f.hatch_date ? ` (hatched ${fmtDate(f.hatch_date)})` : f.acquired_date ? ` (acquired ${fmtDate(f.acquired_date)})` : ""}</div>` : ""}
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;align-items:flex-start">
-        <div id="photoPreview">${previewUrl ? `<img src="${previewUrl}" data-view-photo="${esc(previewUrl)}" class="thumb-clickable" style="width:84px;height:84px;object-fit:cover;object-position:${photoPosition(formState)};${photoTransformStyle(formState)}border-radius:8px;border:1px solid var(--border);cursor:zoom-in">` : `<div style="width:84px;height:84px;border-radius:8px;background:var(--bg);border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:28px">🐔</div>`}</div>
+        <div id="photoPreview" style="width:84px;height:84px;border-radius:8px;overflow:hidden">${previewUrl ? `<img src="${previewUrl}" data-view-photo="${esc(previewUrl)}" class="thumb-clickable" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(formState)};${photoTransformStyle(formState)}border:1px solid var(--border);cursor:zoom-in" >` : `<div style="width:84px;height:84px;border-radius:8px;background:var(--bg);border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:28px">🐔</div>`}</div>
         <div>
           <label class="field"><span>Photo</span><input type="file" id="f_photo" accept="image/*"></label>
           <div style="display:flex;gap:6px;margin-top:6px">
@@ -6135,7 +6240,7 @@ function renderProductEditFormHtml(editingProduct, category, standalone = false)
       <div class="dim" style="font-size:11px;margin-bottom:6px">${editingProduct ? `Editing "${esc(editingProduct.brand)}"` : "New saved product"}</div>
       ${standalone && photo ? `
       <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px">
-        <div id="productPhotoPreview"><img src="${photo}" data-view-photo="${esc(photo)}" class="thumb-clickable" style="width:64px;height:64px;object-fit:cover;object-position:${photoPosition(editingProduct)};${photoTransformStyle(editingProduct)}border-radius:8px;border:1px solid var(--border);cursor:zoom-in"></div>
+        <div id="productPhotoPreview" style="width:64px;height:64px;border-radius:8px;overflow:hidden"><img src="${photo}" data-view-photo="${esc(photo)}" class="thumb-clickable" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(editingProduct)};${photoTransformStyle(editingProduct)}border:1px solid var(--border);cursor:zoom-in"></div>
         <button class="btn ghost small" id="repositionProductPhoto">↔ Reposition</button>
       </div>
       ` : ""}
@@ -6325,8 +6430,8 @@ function supplyCardHtml(s) {
     : `<div class="supply-bag-fill" style="height:${fillPct}%;background:var(--${tone})"></div>`;
   const line1 = s.brand || s.description || s.category;
   const line2 = (s.description && s.description !== line1) ? s.description : "";
-  return `<div class="supply-card" data-edit-supply="${s.id}" style="border-color:var(--${catTone})">
-    <input type="checkbox" class="supply-card-check supply-check" data-id="${s.id}" ${selectedSupplyIds.has(s.id) ? "checked" : ""} onclick="event.stopPropagation()">
+  return `<div class="supply-card${selectedSupplyIds.has(s.id) ? " card-selected" : ""}" data-edit-supply="${s.id}" data-id="${s.id}" style="border-color:var(--${catTone})">
+    ${selectionState.supplies.mode ? `<input type="checkbox" class="supply-card-check supply-check" data-id="${s.id}" ${selectedSupplyIds.has(s.id) ? "checked" : ""} onclick="event.stopPropagation()">` : ""}
     <div class="supply-card-header-bar" style="background:var(--${catTone});color:${headerText}">
       <div class="supply-card-header-name">${esc(line1)}</div>
       ${line2 ? `<div class="supply-card-header-sub">${esc(line2)}</div>` : ""}
@@ -6596,6 +6701,7 @@ function renderSupplyInventory() {
       <div class="dim">${pagedFeed.length + pagedBedding.length} of ${feedEntries.length + beddingEntries.length} shown</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         ${emptyCount ? `<button class="btn ghost small" id="openEmptyModal">📦 Emptied (${emptyCount})</button>` : ""}
+        <button class="btn ${selectionState.supplies.mode ? "btn-close" : "ghost"} small" id="toggleSupplySelectMode">${selectionState.supplies.mode ? "✕ Cancel selection" : "☑ Select"}</button>
         <button class="btn" id="toggleSupplyForm">+ Add supply item</button>
       </div>
     </div>
@@ -6633,6 +6739,11 @@ function renderSupplyInventory() {
 
   // ---- Supply inventory handlers ----
   document.getElementById("toggleSupplyForm").addEventListener("click", () => openSupplyModal(null));
+  document.getElementById("toggleSupplySelectMode").addEventListener("click", () => {
+    selectionState.supplies.mode = !selectionState.supplies.mode;
+    if (!selectionState.supplies.mode) selectedSupplyIds.clear();
+    renderSupplyInventory();
+  });
   const openEmptyBtn = document.getElementById("openEmptyModal");
   if (openEmptyBtn) openEmptyBtn.addEventListener("click", () => openEmptySupplyModal());
   el.querySelectorAll(".supply-check").forEach(cb => cb.addEventListener("change", (e) => {
@@ -6655,7 +6766,14 @@ function renderSupplyInventory() {
   if (loadMoreFeedEl) loadMoreFeedEl.addEventListener("click", () => { feedSupplyVisibleCount += PAGE_SIZE; renderSupplyInventory(); });
   const loadMoreBeddingSupplyEl = document.getElementById("loadMoreBeddingSupplyBtn");
   if (loadMoreBeddingSupplyEl) loadMoreBeddingSupplyEl.addEventListener("click", () => { beddingSupplyVisibleCount += PAGE_SIZE; renderSupplyInventory(); });
-  el.querySelectorAll("[data-edit-supply]").forEach(card => card.addEventListener("click", () => openSupplyModal(STATE.supplies.find(s => s.id === card.dataset.editSupply))));
+  wireCardSelection(
+    el.querySelectorAll("[data-edit-supply]"),
+    selectedSupplyIds,
+    "supplies",
+    () => [...el.querySelectorAll("[data-edit-supply]")].map(c => c.dataset.id),
+    (id) => openSupplyModal(STATE.supplies.find(s => s.id === id)),
+    renderSupplyInventory
+  );
   el.querySelectorAll("[data-open-one-supply]").forEach(b => b.addEventListener("click", async (e) => {
     e.stopPropagation();
     b.classList.add("tearing");
