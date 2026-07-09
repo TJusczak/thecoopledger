@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-121";
+const APP_VERSION = "2026.07.06-122";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], activityLog: [], supplyProducts: [] };
@@ -5663,16 +5663,34 @@ function hatchDayInfo(dateStarted) {
 }
 
 /** A horizontal timeline bar spanning the 21-day incubation window, shaded
- * by phase (setting / lockdown / hatch), with a marker for today. */
+ * by phase (setting / lockdown / hatch), with a white arrow pointing at
+ * today's exact position. Milestone labels are positioned at their true
+ * day/21 proportion -- NOT evenly spaced -- so a label always lines up
+ * with where the marker actually sits when today matches that day. */
 function hatchTimelineBarHtml(dateStarted) {
   const daysIn = Math.max(0, Math.min(22, daysSince(dateStarted)));
-  const pct = Math.min(100, (daysIn / 21) * 100);
+  const milestones = [
+    { day: 0, label: "Day 0" },
+    { day: 7, label: "Candle d7" },
+    { day: 14, label: "Candle d14" },
+    { day: 18, label: "Lockdown d18" },
+    { day: 21, label: "Hatch d21" },
+  ];
+  // Clamped, always centered -- the line, arrow, and every label share this
+  // exact same function, so whatever width each one happens to have, they
+  // still land on the identical point rather than diverging based on their
+  // own width (which is what pinning-without-centering at the edges used to do).
+  const clampedPct = (day) => Math.max(3, Math.min(97, (day / 21) * 100));
+  const posStyle = (day) => `left:${clampedPct(day)}%;transform:translateX(-50%)`;
   return `
-    <div style="position:relative;height:20px;border-radius:6px;overflow:hidden;background:linear-gradient(to right, var(--sage) 0%, var(--sage) 85.7%, var(--gold) 85.7%, var(--gold) 95.2%, var(--danger) 95.2%, var(--danger) 100%);margin:8px 0 4px">
-      <div style="position:absolute;top:0;bottom:0;left:${pct}%;width:3px;background:var(--gold);box-shadow:0 0 0 2px var(--bg), 0 0 6px var(--gold)"></div>
-    </div>
-    <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em">
-      <span>Day 0</span><span>Candle d7</span><span>Candle d14</span><span>Lockdown d18</span><span>Hatch d21</span>
+    <div style="position:relative;margin:20px 0 4px">
+      <div style="position:absolute;${posStyle(daysIn)};top:-14px;font-size:13px;color:#fff;line-height:1;text-shadow:0 1px 2px rgba(0,0,0,0.6)">▼</div>
+      <div style="position:relative;height:20px;border-radius:6px;overflow:hidden;background:linear-gradient(to right, var(--sage) 0%, var(--sage) 85.7%, var(--gold) 85.7%, var(--gold) 95.2%, var(--danger) 95.2%, var(--danger) 100%)">
+        <div style="position:absolute;top:0;bottom:0;left:${clampedPct(daysIn)}%;width:2px;background:#fff;box-shadow:0 0 0 1px var(--bg)"></div>
+      </div>
+      <div style="position:relative;height:13px;margin-top:2px">
+        ${milestones.map(m => `<span style="position:absolute;${posStyle(m.day)};font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em;white-space:nowrap">${m.label}</span>`).join("")}
+      </div>
     </div>`;
 }
 
@@ -5689,9 +5707,9 @@ function eggTileColor(egg) {
 }
 function eggTileIcon(egg) {
   if (egg.status === "Hatched") return "🐣";
-  if (egg.status === "Clear") return "○";
-  if (egg.status === "Quit") return "✕";
-  if (egg.status === "Failed to Hatch") return "⧖";
+  if (egg.status === "Clear") return "✖️";
+  if (egg.status === "Quit") return "❌";
+  if (egg.status === "Failed to Hatch") return "🪦";
   return "🥚";
 }
 function eggTileHtml(egg) {
@@ -5859,7 +5877,7 @@ function renderHatching() {
       ` : `<div class="stamp tone-sage" style="margin-top:8px">Complete</div>`}
 
       ${eggGridHtml(h.id)}
-      <div class="dim" style="font-size:10.5px;margin-top:8px">🥚 incubating · 🐣 hatched (gold ring once in the flock) · ○ clear · ✕ quit · ⧖ failed to hatch — pink or blue once gender's known. Tap an egg to update it.</div>
+      <div class="dim" style="font-size:10.5px;margin-top:8px">🥚 incubating · 🐣 hatched (gold ring once in the flock) · ✖️ clear · ❌ quit · 🪦 failed to hatch — pink or blue once gender's known. Tap an egg to update it.</div>
 
       <div class="dim" style="font-size:11px;margin-top:10px">${hatchedCount} hatched · ${clearCount} clear · ${quitCount} quit · ${failedCount} failed to hatch · ${incubatingCount} still incubating${pendingToName > 0 ? ` · ${pendingToName} waiting to be named` : ""}</div>
       ${allAccountedFor && !isComplete ? `<button class="btn ghost small" data-complete-hatch="${h.id}" style="margin-top:6px">✓ Mark clutch complete</button>` : ""}

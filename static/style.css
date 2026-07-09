@@ -364,10 +364,10 @@ tr:hover td { background: var(--surface-raised); }
 .flock-card-check { position: absolute; top: 6px; left: 6px; width: 20px; height: 20px; z-index: 2; }
 .card-selected { outline: 3px solid var(--gold); outline-offset: -1px; }
 .list-card-check { flex: 0 0 auto; width: 20px; height: 20px; margin-top: 2px; cursor: pointer; }
-.egg-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.egg-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .egg-tile {
-  width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--border);
-  font-size: 16px; display: flex; align-items: center; justify-content: center;
+  width: 46px; height: 46px; border-radius: 50%; border: 1px solid var(--border);
+  font-size: 22px; display: flex; align-items: center; justify-content: center;
   cursor: pointer; padding: 0; transition: transform 0.1s;
 }
 .egg-tile:hover { transform: scale(1.1); }
