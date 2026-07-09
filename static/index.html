@@ -17,15 +17,19 @@
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="sticky-header-bar">
-    <div class="sticky-header-inner">
-      <h1 class="sticky-header-title">The Coop Ledger</h1>
-      <div class="sticky-header-right">
-        <div id="todayDate" class="today"></div>
-        <div id="connIndicator" class="conn-indicator"><span class="conn-dot"></span><span id="connLabel">Checking...</span></div>
-        <div id="undoRedoSlot"></div>
+  <div class="sticky-header-group">
+    <div class="sticky-header-bar">
+      <div class="sticky-header-inner">
+        <h1 class="sticky-header-title">The Coop Ledger</h1>
+        <div class="sticky-header-right">
+          <div id="todayDate" class="today"></div>
+          <div id="connIndicator" class="conn-indicator"><span class="conn-dot"></span><span id="connLabel">Checking...</span></div>
+          <div id="syncIndicator" class="sync-indicator" style="display:none"></div>
+          <div id="undoRedoSlot"></div>
+        </div>
       </div>
     </div>
+    <div id="statusBannerSlot"></div>
   </div>
   <div class="wrap">
     <div class="coop-banner">

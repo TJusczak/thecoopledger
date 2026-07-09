@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-120";
+const APP_VERSION = "2026.07.06-121";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], activityLog: [], supplyProducts: [] };
@@ -795,6 +795,27 @@ const OP_VERBS = { create: "added", update: "updated", delete: "deleted" };
 
 let _suppressActivityLogging = false;
 
+/** Lightweight header indicator, unlike refreshSyncStatus (which only
+ * updates anything when the settings/connection page happens to be open) --
+ * this is meant to be visible from anywhere in the app, so someone doesn't
+ * need to go digging in Settings to notice "oh, it's still pushing changes
+ * out." Hidden entirely in local-only mode, since there's no server to
+ * sync to. */
+async function updateSyncIndicator() {
+  const el = document.getElementById("syncIndicator");
+  if (!el) return;
+  if (localOnlyMode || !currentCoopId) { el.style.display = "none"; return; }
+  const outbox = await getOutbox();
+  const pendingPhotos = await getAllPendingPhotos();
+  const pending = outbox.filter(o => LOCAL_FIRST_RESOURCES.includes(o.resource)).length + pendingPhotos.length;
+  if (pending > 0) {
+    el.style.display = "flex";
+    el.innerHTML = `<span class="sync-indicator-spin">↻</span> Syncing ${pending} change${pending !== 1 ? "s" : ""}...`;
+  } else {
+    el.style.display = "none";
+  }
+}
+
 async function queueOutbox(entry) {
   const db = await openLocalDb();
   const tx = db.transaction("_outbox", "readwrite");
@@ -808,13 +829,14 @@ async function queueOutbox(entry) {
   // (still-growing) table on every call -- fine for one record at a time,
   // but turns a loop of thousands into a freeze.
   if (entry.resource !== "activity_log" && !_suppressActivityLogging) await logActivity(entry.resource, entry.op, entry.payload);
+  if (!_suppressActivityLogging) updateSyncIndicator();
 }
 
 /** Records "who did what" as its own local-first, syncing resource -- so
  * both devices end up with the same shared history, not just their own. */
 async function logActivity(resource, op, payload) {
-  const name = getUserName();
-  if (!name || !currentCoopId) return; // no identity set for this device -- skip rather than log "Someone"
+  const name = getUserName() || "Unnamed";
+  if (!currentCoopId) return;
   const summary = buildActivitySummary(resource, op, payload);
   const record = { id: newLocalId(), coop_id: currentCoopId, resource, op, changed_by: name, summary, updated_at: new Date().toISOString(), deleted_at: null };
   await localPutMany("activity_log", [record]);
@@ -1020,6 +1042,7 @@ async function backgroundSyncTick() {
     }
   }
   refreshSyncStatus(); // the underlying timestamps advance on every successful attempt, whether or not anything new came in -- keep the display honest about that
+  updateSyncIndicator();
   if (!anyChanged) return;
   const stateKeyFor = { eggs: "eggs", expenses: "expenses", supplies: "supplies", bedding: "bedding", notes: "notes", bird_logs: "birdLogs", birds: "birds", hatches: "hatches", activity_log: "activityLog", supply_products: "supplyProducts" };
   for (const [resource, stateKey] of Object.entries(stateKeyFor)) {
@@ -1925,12 +1948,10 @@ async function importLocalBundle(bundle, photoBlobs, onProgress) {
   // logging individually -- against the coop actually being imported into,
   // not whatever was active before this (currentCoopId doesn't switch to
   // the new coop until after this function returns).
-  const name = getUserName();
-  if (name) {
-    const summaryRecord = { id: newLocalId(), coop_id: newCoop.id, resource: "coops", op: "import", changed_by: name, summary: `imported ${doneRows} records`, updated_at: new Date().toISOString(), deleted_at: null };
-    await localPutMany("activity_log", [summaryRecord]);
-    await queueOutbox({ resource: "activity_log", op: "create", id: summaryRecord.id, payload: summaryRecord });
-  }
+  const name = getUserName() || "Unnamed";
+  const summaryRecord = { id: newLocalId(), coop_id: newCoop.id, resource: "coops", op: "import", changed_by: name, summary: `imported ${doneRows} records`, updated_at: new Date().toISOString(), deleted_at: null };
+  await localPutMany("activity_log", [summaryRecord]);
+  await queueOutbox({ resource: "activity_log", op: "create", id: summaryRecord.id, payload: summaryRecord });
   trySyncSoon("birds", newCoop.id);
   trySyncSoon("supply_products", newCoop.id);
   return newCoop;
@@ -2014,7 +2035,7 @@ async function loadCoopData() {
   return newActivityRows;
 }
 
-async function refreshAndRender() { await loadCoopData(); renderActiveTab(); }
+async function refreshAndRender() { await loadCoopData(); renderActiveTab(); updateSyncIndicator(); }
 
 function showWelcomeBackSummary(rows) {
   const myName = getUserName();
@@ -2082,19 +2103,22 @@ function renderLocalOnlyBadge() {
   if (!badge) {
     badge = document.createElement("div");
     badge.id = "localOnlyBadge";
-    badge.addEventListener("click", () => {
+    badge.className = "status-banner-inner";
+    badge.innerHTML = `<div class="local-only-badge"></div>`;
+    badge.querySelector(".local-only-badge").addEventListener("click", () => {
       switchTab("settings");
       settingsSubTab = "connection";
       renderSettingsHub();
       window.scrollTo({ top: 0, behavior: "smooth" });
     });
-    document.body.appendChild(badge);
+    document.getElementById("statusBannerSlot").appendChild(badge);
   }
-  badge.className = overdue ? "local-only-badge local-only-badge-overdue" : "local-only-badge";
-  badge.innerHTML = overdue
+  const inner = badge.querySelector(".local-only-badge");
+  inner.className = overdue ? "local-only-badge local-only-badge-overdue" : "local-only-badge";
+  inner.innerHTML = overdue
     ? `⚠️ Local only <span class="local-only-badge-sub">back up now</span>`
     : `📱 Local only <span class="local-only-badge-sub">not backed up</span>`;
-  badge.title = overdue
+  inner.title = overdue
     ? "It's been a while since your last backup, and this coop's data lives only in this browser. Clearing this browser's site data, or uninstalling/removing the browser, will permanently delete it -- tap to back it up now."
     : "This coop's data lives only in this browser. Clearing this browser's site data, or uninstalling/removing the browser, will permanently delete it -- tap to export a backup or switch to a synced server.";
 }
@@ -2114,8 +2138,9 @@ function renderServerVersionBadge() {
   if (!badge) {
     badge = document.createElement("div");
     badge.id = "serverVersionBadge";
-    badge.className = "server-version-badge";
-    badge.addEventListener("click", () => {
+    badge.className = "status-banner-inner";
+    badge.innerHTML = `<div class="server-version-badge"></div>`;
+    badge.querySelector(".server-version-badge").addEventListener("click", () => {
       alert(
         `This sync server is running an older version than the app you're using.\n\n` +
         `App version: ${serverVersionMismatch.client}\nServer version: ${serverVersionMismatch.server}\n\n` +
@@ -2124,9 +2149,9 @@ function renderServerVersionBadge() {
         `Restart the sync server to resolve this.`
       );
     });
-    document.body.appendChild(badge);
+    document.getElementById("statusBannerSlot").appendChild(badge);
   }
-  badge.innerHTML = `⚠️ Sync server outdated <span class="server-version-badge-sub">tap for details</span>`;
+  badge.querySelector(".server-version-badge").innerHTML = `⚠️ Sync server outdated <span class="server-version-badge-sub">tap for details</span>`;
 }
 
 function updateTabVisibility() {
@@ -2392,6 +2417,7 @@ function renderConnectionSection() {
     showToast("Switched to local-only", "update");
     renderConnectionSection();
     checkConnection();
+    updateSyncIndicator();
   });
   document.getElementById("modeSyncBtn").addEventListener("click", () => {
     if (!localOnlyMode) return;
@@ -2405,6 +2431,7 @@ function renderConnectionSection() {
     renderConnectionSection();
     checkConnection();
     startEventStream();
+    updateSyncIndicator();
     if (currentCoopId) refreshAndRender();
   });
 
@@ -2462,6 +2489,7 @@ function renderConnectionSection() {
     }
     refreshSyncStatus();
     refreshServerConnectionStatus();
+    updateSyncIndicator();
   });
   const intervalSelect = document.getElementById("syncIntervalSelect");
   if (intervalSelect) intervalSelect.addEventListener("change", (e) => {
@@ -3254,8 +3282,10 @@ function renderCoopsSection() {
         closeProgressModal();
       }
       showToast(`"${coop.name}" imported`, "create");
+      if (!localOnlyMode) showToast("Now pushing everything to your sync server -- keep this open a moment", "update");
       await switchCoop(coop.id);
       switchTab("dashboard");
+      updateSyncIndicator();
     } catch (err) {
       closeProgressModal();
       alert("Could not import that file — make sure it's a backup exported from this app.\n\n" + err.message);
@@ -7426,6 +7456,7 @@ async function checkConnection() {
 }
 window.addEventListener("online", () => {
   checkConnection();
+  updateSyncIndicator();
   if (!localOnlyMode && currentCoopId) refreshAndRender();
 });
 window.addEventListener("offline", checkConnection);
@@ -7627,6 +7658,7 @@ async function init() {
     showWelcomeBackSummary(newActivityRows);
   }
   updateHeader();
+  updateSyncIndicator();
   await loadUndoHistory();
   renderUndoRedoBar();
   updateTabVisibility();
