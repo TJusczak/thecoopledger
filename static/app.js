@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-123";
+const APP_VERSION = "2026.07.06-124";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], activityLog: [], supplyProducts: [] };
@@ -3890,14 +3890,44 @@ function renderCoopOverview() {
 
       ${(() => {
         const low = lowSupplyCategories(STATE.supplies);
-        if (!low.length) return "";
+        const activeClutches = STATE.hatches.filter(h => h.status !== "Complete").sort((a, b) => a.date_started.localeCompare(b.date_started));
+        if (!low.length && !activeClutches.length) return "";
         const STATUS_TEXT = { "1/2": "1/2 left", "1/4": "1/4 left", "Empty": "out" };
-        const worstTone = low.some(l => l.tone === "danger") ? "var(--danger)" : low.some(l => l.tone === "rust") ? "var(--rust)" : "var(--gold)";
-        return `<div class="card" style="border-color:${worstTone}">
-          <div class="card-title">⚠️ Running low</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
+        const anyToday = activeClutches.some(h => hatchNextEventInfo(h.date_started).isToday);
+        const anyOverdue = activeClutches.some(h => hatchNextEventInfo(h.date_started).overdue);
+        const anySevereSupply = low.some(l => l.tone === "danger");
+        const borderColor = (anySevereSupply || anyOverdue) ? "var(--danger)" : (low.length || anyToday) ? "var(--gold)" : "var(--border)";
+        const sectionHeaderStyle = "font-size:13px;border-bottom:2px dotted var(--border);padding-bottom:4px;margin-top:12px";
+        return `<div class="card" style="border-color:${borderColor}">
+          <div class="card-title">🔔 Alerts</div>
+          ${low.length ? `
+          <div class="flock-section-header" style="${sectionHeaderStyle};margin-top:0">⚠️ Running low</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
             ${low.map(l => `<span class="stamp tone-${l.tone}">${esc(l.category)} -- ${STATUS_TEXT[l.status] || l.status}</span>`).join("")}
           </div>
+          ` : ""}
+          ${activeClutches.length ? `
+          <div class="flock-section-header" style="${sectionHeaderStyle}">🐣 Hatching</div>
+          <div style="display:flex;flex-direction:column;gap:4px;margin-top:8px">
+            ${activeClutches.map(h => {
+              const info = hatchNextEventInfo(h.date_started);
+              const breed = esc(h.breed) || "Mixed";
+              const eggCount = Number(h.egg_count) || 0;
+              let statusHtml;
+              if (info.overdue) {
+                statusHtml = `<span class="stamp tone-danger">Overdue ${info.daysOverdue}d</span>`;
+              } else if (info.isToday) {
+                statusHtml = `<span class="stamp stamp-lg tone-gold">🔦 Today -- ${esc(info.label)}</span>`;
+              } else {
+                statusHtml = `<span class="dim" style="font-size:12px">${esc(info.label)} in ${info.daysUntil}d</span>`;
+              }
+              return `<div data-goto-hatching="1" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:6px 8px;border-radius:6px;cursor:pointer;${info.isToday ? "background:color-mix(in srgb, var(--gold) 16%, transparent)" : ""}">
+                <div style="font-size:13px">${breed} · ${eggCount} egg${eggCount !== 1 ? "s" : ""}</div>
+                ${statusHtml}
+              </div>`;
+            }).join("")}
+          </div>
+          ` : ""}
         </div>`;
       })()}
 
@@ -3975,6 +4005,11 @@ function renderCoopOverview() {
   });
   const jumpBtn = document.getElementById("jumpToAll");
   if (jumpBtn) jumpBtn.addEventListener("click", () => { chartRangeDays = null; renderCoopOverview(); });
+  el.querySelectorAll("[data-goto-hatching]").forEach(row => row.addEventListener("click", () => {
+    switchTab("eggs");
+    eggsSubTab = "hatching";
+    renderEggsHub();
+  }));
   drawCharts();
 }
 
@@ -5670,6 +5705,25 @@ function hatchDayInfo(dateStarted) {
   else if (daysIn === 21) { phase = "🐣 Hatch day!"; tone = "danger"; }
   else { phase = `Overdue ${daysIn - 21}d — some chicks take a little longer than 21 days`; tone = "danger"; }
   return { daysIn, phase, tone, milestone, candle1Date, candle2Date, lockdownDate, expectedHatchDate };
+}
+
+/** Which milestone (candling #1/#2, lockdown, hatch day) is next for a
+ * clutch, and whether it's today, upcoming, or overdue -- built for the
+ * dashboard alerts list, which needs a single clear "what's next" per
+ * clutch rather than hatchDayInfo's fuller phase/tone description. */
+function hatchNextEventInfo(dateStarted) {
+  const { daysIn } = hatchDayInfo(dateStarted);
+  const events = [
+    { day: 7, label: "Candling #1" },
+    { day: 14, label: "Candling #2" },
+    { day: 18, label: "Lockdown" },
+    { day: 21, label: "Hatch day" },
+  ];
+  if (daysIn > 21) return { overdue: true, daysOverdue: daysIn - 21 };
+  const today = events.find(e => e.day === daysIn);
+  if (today) return { isToday: true, label: today.label };
+  const next = events.find(e => e.day > daysIn);
+  return { daysUntil: next.day - daysIn, label: next.label };
 }
 
 /** A horizontal timeline bar spanning the 21-day incubation window, shaded
