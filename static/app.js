@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-100";
+const APP_VERSION = "2026.07.06-101";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -58,8 +58,6 @@ let beddingFilters = { area: "", entryType: "", year: "" };
 let editingBeddingId = null;
 let beddingFormOpen = false;
 let beddingFiltersOpen = false;
-let editingSupplyId = null;
-let supplyFormOpen = false;
 let selectedProductId = null; // shared by both the direct supply form and the expense form's auto-create flow
 let newProductFormOpen = false;
 let editingProductId = null;
@@ -3649,6 +3647,52 @@ function showPhotoLightbox(url) {
   overlay.querySelector(".photo-lightbox-close").addEventListener("click", close);
 }
 
+function ensureModalDom() {
+  if (document.getElementById("modalOverlay")) return;
+  const overlay = document.createElement("div");
+  overlay.id = "modalOverlay";
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-panel" id="modalPanel">
+      <button class="modal-close" id="modalCloseBtn" aria-label="Close">✕</button>
+      <div id="modalContent"></div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeModal(); });
+  document.getElementById("modalCloseBtn").addEventListener("click", () => closeModal());
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && overlay.classList.contains("open")) closeModal(); });
+}
+
+let modalOnClose = null;
+
+/** Renders html into the shared modal/bottom-sheet. onClose (optional) runs
+ * once, however the modal ends up closing -- backdrop click, Escape, the X
+ * button, or a form's own Cancel button calling closeModal() itself --
+ * so cleanup (clearing an editing-id, resetting a sub-picker's state) only
+ * has to be written once instead of once per dismissal path. */
+function openModal(html, onClose = null) {
+  ensureModalDom();
+  modalOnClose = onClose;
+  document.getElementById("modalContent").innerHTML = html;
+  document.body.style.overflow = "hidden";
+  const overlay = document.getElementById("modalOverlay");
+  document.getElementById("modalPanel").scrollTop = 0;
+  // Adding the open class in the same tick as setting innerHTML can skip
+  // straight to the end state with no visible transition -- one frame's
+  // delay is enough for the browser to register the starting position first.
+  requestAnimationFrame(() => overlay.classList.add("open"));
+}
+
+function closeModal() {
+  const overlay = document.getElementById("modalOverlay");
+  if (!overlay || !overlay.classList.contains("open")) return;
+  overlay.classList.remove("open");
+  document.body.style.overflow = "";
+  if (modalOnClose) { modalOnClose(); modalOnClose = null; }
+  setTimeout(() => { const c = document.getElementById("modalContent"); if (c) c.innerHTML = ""; }, 320);
+}
+
 function showConfirmDialog(message, confirmLabel = "Delete") {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
@@ -5812,8 +5856,6 @@ function renderSupplyHub() {
 function renderSupplyInventory() {
   const el = document.getElementById("supplySubContent");
   if (!currentCoopId) { el.innerHTML = noCoopMessage(); return; }
-  const editingSupply = editingSupplyId ? STATE.supplies.find(s => s.id === editingSupplyId) : null;
-  const showSupplyForm = supplyFormOpen || !!editingSupply;
   const emptyCount = STATE.supplies.filter(s => s.status === "Empty").length;
   const activeSupplies = STATE.supplies.filter(s => s.status !== "Empty");
   const feedEntries = buildSupplyEntries(activeSupplies.filter(s => FEED_SUPPLY_CATEGORIES.has(s.category)));
@@ -5828,7 +5870,7 @@ function renderSupplyInventory() {
       <div class="dim">${pagedFeed.length + pagedBedding.length} of ${feedEntries.length + beddingEntries.length} shown</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         ${emptyCount ? `<button class="btn ghost small" id="openEmptyModal">📦 Emptied (${emptyCount})</button>` : ""}
-        <button class="btn ${showSupplyForm ? "btn-close" : ""}" id="toggleSupplyForm">${showSupplyForm ? "✕ Close" : "+ Add supply item"}</button>
+        <button class="btn" id="toggleSupplyForm">+ Add supply item</button>
       </div>
     </div>
 
@@ -5840,30 +5882,6 @@ function renderSupplyInventory() {
           <button class="btn ghost small" id="supplyClearSelection">Clear selection</button>
         </div>
       </div>
-    ` : ""}
-
-    ${showSupplyForm ? `
-    <div class="form-block" style="${editingSupply ? "border-color:var(--rust)" : ""}">
-      <div class="form-head">${editingSupply ? "Edit supply item" : "Add a supply item"}</div>
-      <div class="grid-form">
-        <label class="field"><span>Category</span><select id="sp_category">${[...QUANTITY_CATEGORIES].map(c => `<option ${editingSupply && editingSupply.category === c ? "selected" : ""}>${c}</option>`).join("")}</select></label>
-        <label class="field"><span>Brand</span><input id="sp_brand" placeholder="e.g. Purina Layena" value="${editingSupply ? esc(editingSupply.brand || "") : ""}"></label>
-        <label class="field"><span>Description</span><input id="sp_desc" placeholder="e.g. large bag, opened" value="${editingSupply ? esc(editingSupply.description || "") : ""}"></label>
-        <label class="field"><span>Quantity (per item)</span><input type="number" step="0.01" id="sp_qty" value="${editingSupply && editingSupply.quantity != null ? editingSupply.quantity : ""}"></label>
-        <label class="field"><span>Unit</span><select id="sp_unit">${EXPENSE_UNITS.map(u => `<option ${editingSupply && editingSupply.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>
-        <label class="field"><span>Status</span><select id="sp_status">${SUPPLY_STATUSES.map(s => `<option ${(editingSupply ? editingSupply.status === s : s === "Full") ? "selected" : ""}>${s}</option>`).join("")}</select></label>
-        <label class="field"><span>Date added</span><input type="date" id="sp_date" value="${editingSupply ? (editingSupply.date_added || todayStr()) : todayStr()}"></label>
-        ${editingSupply ? `<label class="field"><span>Date emptied${editingSupply.status !== "Empty" ? " (if applicable)" : ""}</span><input type="date" id="sp_date_emptied" value="${editingSupply.date_emptied || ""}"></label>` : ""}
-        ${!editingSupply ? `<label class="field"><span>Number of items</span><input type="number" min="1" max="500" step="1" id="sp_count" value="1" placeholder="e.g. 3 for three separate bags"></label>` : ""}
-      </div>
-      ${!editingSupply ? `<div id="productPickerHost">${renderProductPickerRow(document.getElementById("sp_category") ? document.getElementById("sp_category").value : [...QUANTITY_CATEGORIES][0])}</div>` : ""}
-      ${editingSupply ? `<label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="sp_opened" ${editingSupply.opened_at ? "checked" : ""} style="width:auto"><span>Opened -- won't group with sealed spares even at Full</span></label>` : ""}
-      ${!editingSupply ? `<div class="dim" style="font-size:11px;margin-top:8px">Buying multiple bags at once? Set the count above -- each one is added as its own separate, independently trackable item rather than a single item marked "3 bags." Identical full bags collapse into one compact card automatically -- "Open one" peels a single bag off to track it on its own.</div>` : ""}
-      <div style="margin-top:12px;display:flex;gap:8px">
-        <button class="btn btn-confirm" id="saveSupply">${editingSupply ? "✓ Save changes" : "+ Add item"}</button>
-        <button class="btn btn-close" id="cancelSupplyForm">Cancel</button>
-      </div>
-    </div>
     ` : ""}
 
     ${feedEntries.length === 0 && beddingEntries.length === 0 ? `<div class="card"><div class="empty">${STATE.supplies.length === 0 ? "No supplies logged yet -- log a Feed or Bedding expense with a quantity, or add one directly." : "Nothing currently in stock -- check Emptied above, or add a new item."}</div></div>` : `
@@ -5888,23 +5906,7 @@ function renderSupplyInventory() {
     `;
 
   // ---- Supply inventory handlers ----
-  document.getElementById("toggleSupplyForm").addEventListener("click", () => {
-    if (showSupplyForm) { supplyFormOpen = false; editingSupplyId = null; } else { supplyFormOpen = true; }
-    selectedProductId = null;
-    editingProductId = null;
-    newProductFormOpen = false;
-    renderSupplyInventory();
-  });
-  if (showSupplyForm) applyFeedUnitLock("sp_category", "sp_unit");
-  const productPickerHost = document.getElementById("productPickerHost");
-  if (productPickerHost) {
-    wireProductPicker(productPickerHost, { categoryFieldId: "sp_category", brandFieldId: "sp_brand", descFieldId: "sp_desc", qtyFieldId: "sp_qty", unitFieldId: "sp_unit", rerenderFn: renderSupplyInventory });
-    const spCategoryEl = document.getElementById("sp_category");
-    if (spCategoryEl) spCategoryEl.addEventListener("change", (e) => {
-      productPickerHost.innerHTML = renderProductPickerRow(e.target.value);
-      wireProductPicker(productPickerHost, { categoryFieldId: "sp_category", brandFieldId: "sp_brand", descFieldId: "sp_desc", qtyFieldId: "sp_qty", unitFieldId: "sp_unit", rerenderFn: renderSupplyInventory });
-    });
-  }
+  document.getElementById("toggleSupplyForm").addEventListener("click", () => openSupplyModal(null));
   const openEmptyBtn = document.getElementById("openEmptyModal");
   if (openEmptyBtn) openEmptyBtn.addEventListener("click", () => { showEmptySupplyModal = true; emptySupplyVisibleCount = PAGE_SIZE; renderEmptySupplyModal(); });
   el.querySelectorAll(".supply-check").forEach(cb => cb.addEventListener("change", (e) => {
@@ -5927,51 +5929,7 @@ function renderSupplyInventory() {
   if (loadMoreFeedEl) loadMoreFeedEl.addEventListener("click", () => { feedSupplyVisibleCount += PAGE_SIZE; renderSupplyInventory(); });
   const loadMoreBeddingSupplyEl = document.getElementById("loadMoreBeddingSupplyBtn");
   if (loadMoreBeddingSupplyEl) loadMoreBeddingSupplyEl.addEventListener("click", () => { beddingSupplyVisibleCount += PAGE_SIZE; renderSupplyInventory(); });
-  const saveSupplyBtn = document.getElementById("saveSupply");
-  if (saveSupplyBtn) saveSupplyBtn.addEventListener("click", async () => {
-    const status = document.getElementById("sp_status").value;
-    const dateEmptiedEl = document.getElementById("sp_date_emptied");
-    const openedEl = document.getElementById("sp_opened");
-    const payload = {
-      coop_id: currentCoopId,
-      category: document.getElementById("sp_category").value,
-      brand: document.getElementById("sp_brand").value,
-      description: document.getElementById("sp_desc").value,
-      quantity: document.getElementById("sp_qty").value ? Number(document.getElementById("sp_qty").value) : null,
-      unit: document.getElementById("sp_unit").value,
-      status,
-      date_added: document.getElementById("sp_date").value,
-      // Respects an explicitly back-dated value, but only when the final
-      // status is actually Empty -- still forced to null otherwise, same
-      // reasoning as the earlier fix: a status corrected away from Empty
-      // must not leave a stale emptied date behind.
-      date_emptied: status === "Empty" ? ((dateEmptiedEl && dateEmptiedEl.value) || editingSupply?.date_emptied || todayStr()) : null,
-      opened_at: openedEl ? (openedEl.checked ? (editingSupply?.opened_at || todayStr()) : null) : (editingSupply?.opened_at || null),
-    };
-    if (editingSupply) {
-      await localSupplyUpdate(editingSupply.id, payload);
-      showToast("Supply item updated", "update");
-    } else {
-      if (selectedProductId) {
-        payload.product_id = selectedProductId;
-        await localSupplyProductUpdate(selectedProductId, { last_used_at: todayStr() });
-      }
-      const countEl = document.getElementById("sp_count");
-      const count = countEl ? Math.max(1, Number(countEl.value) || 1) : 1;
-      if (count > 500) { alert("That's a lot of separate items to add at once -- try 500 or fewer at a time"); return; }
-      await localBulkCreate("supplies", Array.from({ length: count }, () => payload));
-      showToast(count > 1 ? `${count} items added` : "Supply item added", "create");
-    }
-    selectedProductId = null;
-    editingProductId = null;
-    newProductFormOpen = false;
-    editingSupplyId = null;
-    supplyFormOpen = false;
-    refreshAndRender();
-  });
-  const cancelSupplyBtn = document.getElementById("cancelSupplyForm");
-  if (cancelSupplyBtn) cancelSupplyBtn.addEventListener("click", () => { editingSupplyId = null; supplyFormOpen = false; selectedProductId = null; newProductFormOpen = false; editingProductId = null; renderSupplyInventory(); });
-  el.querySelectorAll("[data-edit-supply]").forEach(card => card.addEventListener("click", () => { editingSupplyId = card.dataset.editSupply; supplyFormOpen = false; renderSupplyInventory(); window.scrollTo({ top: 0, behavior: "smooth" }); }));
+  el.querySelectorAll("[data-edit-supply]").forEach(card => card.addEventListener("click", () => openSupplyModal(STATE.supplies.find(s => s.id === card.dataset.editSupply))));
   el.querySelectorAll("[data-open-one-supply]").forEach(b => b.addEventListener("click", async (e) => {
     e.stopPropagation();
     b.classList.add("tearing");
@@ -6005,6 +5963,104 @@ function renderSupplyInventory() {
     refreshAndRender();
   }));
 
+}
+
+/** Just the form's own markup -- no outer .form-block wrapper, since the
+ * modal panel itself already provides that card-like container. Kept as a
+ * pure function of editingSupply so it's easy to reason about independent
+ * of wherever it ends up being rendered. */
+function supplyFormHtml(editingSupply) {
+  return `
+    <div class="form-head">${editingSupply ? "Edit supply item" : "Add a supply item"}</div>
+    <div class="grid-form">
+      <label class="field"><span>Category</span><select id="sp_category">${[...QUANTITY_CATEGORIES].map(c => `<option ${editingSupply && editingSupply.category === c ? "selected" : ""}>${c}</option>`).join("")}</select></label>
+      <label class="field"><span>Brand</span><input id="sp_brand" placeholder="e.g. Purina Layena" value="${editingSupply ? esc(editingSupply.brand || "") : ""}"></label>
+      <label class="field"><span>Description</span><input id="sp_desc" placeholder="e.g. large bag, opened" value="${editingSupply ? esc(editingSupply.description || "") : ""}"></label>
+      <label class="field"><span>Quantity (per item)</span><input type="number" step="0.01" id="sp_qty" value="${editingSupply && editingSupply.quantity != null ? editingSupply.quantity : ""}"></label>
+      <label class="field"><span>Unit</span><select id="sp_unit">${EXPENSE_UNITS.map(u => `<option ${editingSupply && editingSupply.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>
+      <label class="field"><span>Status</span><select id="sp_status">${SUPPLY_STATUSES.map(s => `<option ${(editingSupply ? editingSupply.status === s : s === "Full") ? "selected" : ""}>${s}</option>`).join("")}</select></label>
+      <label class="field"><span>Date added</span><input type="date" id="sp_date" value="${editingSupply ? (editingSupply.date_added || todayStr()) : todayStr()}"></label>
+      ${editingSupply ? `<label class="field"><span>Date emptied${editingSupply.status !== "Empty" ? " (if applicable)" : ""}</span><input type="date" id="sp_date_emptied" value="${editingSupply.date_emptied || ""}"></label>` : ""}
+      ${!editingSupply ? `<label class="field"><span>Number of items</span><input type="number" min="1" max="500" step="1" id="sp_count" value="1" placeholder="e.g. 3 for three separate bags"></label>` : ""}
+    </div>
+    ${!editingSupply ? `<div id="productPickerHost">${renderProductPickerRow([...QUANTITY_CATEGORIES][0])}</div>` : ""}
+    ${editingSupply ? `<label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="sp_opened" ${editingSupply.opened_at ? "checked" : ""} style="width:auto"><span>Opened -- won't group with sealed spares even at Full</span></label>` : ""}
+    ${!editingSupply ? `<div class="dim" style="font-size:11px;margin-top:8px">Buying multiple bags at once? Set the count above -- each one is added as its own separate, independently trackable item rather than a single item marked "3 bags." Identical full bags collapse into one compact card automatically -- "Open one" peels a single bag off to track it on its own.</div>` : ""}
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button class="btn btn-confirm" id="saveSupply">${editingSupply ? "✓ Save changes" : "+ Add item"}</button>
+      <button class="btn btn-close" id="cancelSupplyForm">Cancel</button>
+    </div>
+  `;
+}
+
+/** Wires up everything inside the form -- unchanged from before the modal
+ * conversion, just operating on whatever container the form's HTML
+ * actually ended up in (the modal content area), found the same way it
+ * always was: by element id, which doesn't care where in the DOM it lives. */
+function wireSupplyForm(editingSupply) {
+  applyFeedUnitLock("sp_category", "sp_unit");
+  const productPickerHost = document.getElementById("productPickerHost");
+  const rerenderPicker = () => { productPickerHost.innerHTML = renderProductPickerRow(document.getElementById("sp_category").value); wireProductPicker(productPickerHost, pickerCfg); };
+  const pickerCfg = { categoryFieldId: "sp_category", brandFieldId: "sp_brand", descFieldId: "sp_desc", qtyFieldId: "sp_qty", unitFieldId: "sp_unit", rerenderFn: rerenderPicker };
+  if (productPickerHost) {
+    wireProductPicker(productPickerHost, pickerCfg);
+    document.getElementById("sp_category").addEventListener("change", rerenderPicker);
+  }
+  document.getElementById("saveSupply").addEventListener("click", async () => {
+    const status = document.getElementById("sp_status").value;
+    const dateEmptiedEl = document.getElementById("sp_date_emptied");
+    const openedEl = document.getElementById("sp_opened");
+    const payload = {
+      coop_id: currentCoopId,
+      category: document.getElementById("sp_category").value,
+      brand: document.getElementById("sp_brand").value,
+      description: document.getElementById("sp_desc").value,
+      quantity: document.getElementById("sp_qty").value ? Number(document.getElementById("sp_qty").value) : null,
+      unit: document.getElementById("sp_unit").value,
+      status,
+      date_added: document.getElementById("sp_date").value,
+      // Respects an explicitly back-dated value, but only when the final
+      // status is actually Empty -- still forced to null otherwise, same
+      // reasoning as the earlier fix: a status corrected away from Empty
+      // must not leave a stale emptied date behind.
+      date_emptied: status === "Empty" ? ((dateEmptiedEl && dateEmptiedEl.value) || editingSupply?.date_emptied || todayStr()) : null,
+      opened_at: openedEl ? (openedEl.checked ? (editingSupply?.opened_at || todayStr()) : null) : (editingSupply?.opened_at || null),
+    };
+    if (editingSupply) {
+      await localSupplyUpdate(editingSupply.id, payload);
+      showToast("Supply item updated", "update");
+    } else {
+      if (selectedProductId) {
+        payload.product_id = selectedProductId;
+        await localSupplyProductUpdate(selectedProductId, { last_used_at: todayStr() });
+      }
+      const countEl = document.getElementById("sp_count");
+      const count = countEl ? Math.max(1, Number(countEl.value) || 1) : 1;
+      if (count > 500) { alert("That's a lot of separate items to add at once -- try 500 or fewer at a time"); return; }
+      await localBulkCreate("supplies", Array.from({ length: count }, () => payload));
+      showToast(count > 1 ? `${count} items added` : "Supply item added", "create");
+    }
+    closeModal();
+    refreshAndRender();
+  });
+  document.getElementById("cancelSupplyForm").addEventListener("click", () => closeModal());
+}
+
+/** Single entry point for both "+ Add supply item" (pass null) and editing
+ * an existing card (pass that supply). Replaces the old pattern of setting
+ * module-level open/editing state and re-rendering the whole inline panel
+ * just to reveal a form -- the modal is a separate layer now, so opening
+ * it doesn't touch the list underneath at all. */
+function openSupplyModal(supply) {
+  selectedProductId = null;
+  editingProductId = null;
+  newProductFormOpen = false;
+  openModal(supplyFormHtml(supply), () => {
+    selectedProductId = null;
+    editingProductId = null;
+    newProductFormOpen = false;
+  });
+  wireSupplyForm(supply);
 }
 
 function renderBeddingFreshness() {
