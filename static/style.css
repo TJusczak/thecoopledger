@@ -370,6 +370,27 @@ tr:hover td { background: var(--surface-raised); }
   background: var(--bg); border: 2px solid var(--border); border-radius: 8px;
   overflow: hidden; cursor: pointer;
 }
+/* Photo bags: full color where product remains, greyscale + red diagonal
+   dashes where it's been used up -- the reverse of dashing the whole
+   thing regardless of how full it is. Three stacked layers rather than
+   one, because a CSS filter on an element also grayscales its children
+   with no way to opt a child back out of it -- so the greyscale photo,
+   the dash pattern, and the full-color reveal all need to be independent
+   siblings, not nested. */
+.supply-bag-grey-base {
+  position: absolute; inset: 0;
+  background-size: cover; background-position: center;
+  filter: grayscale(100%);
+}
+.supply-bag-dash-overlay {
+  position: absolute; inset: 0; opacity: 0.6;
+  background-image: repeating-linear-gradient(135deg, var(--rust) 0px, var(--rust) 2px, transparent 2px, transparent 9px);
+}
+.supply-bag-color-reveal {
+  position: absolute; inset: 0;
+  background-size: cover; background-position: center;
+  transition: clip-path 0.35s ease;
+}
 .supply-mini-bag-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 10px 0; padding: 0 6px; cursor: pointer; }
 .supply-mini-bag {
   width: 100%; aspect-ratio: 3 / 4; position: relative;
@@ -377,16 +398,6 @@ tr:hover td { background: var(--surface-raised); }
 }
 .supply-mini-bag-more { grid-column: 1 / -1; text-align: center; font-size: 12px; font-weight: 700; color: var(--text-dim); margin-top: 2px; }
 .supply-bag-fill { position: absolute; bottom: 0; left: 0; right: 0; transition: height 0.35s ease, background-color 0.35s ease, border-color 0.35s ease; }
-/* When a product photo is showing through, a solid wash just paints over
-   the artwork -- a sparse dot texture plus a dashed line marking the
-   exact fill height keeps the status readable at a glance without
-   hiding what the bag actually looks like. */
-.supply-bag-fill.textured {
-  background-color: transparent;
-  background-image: radial-gradient(circle, var(--dot-color) 1.4px, transparent 1.5px);
-  background-size: 9px 9px;
-  border-top: 2px dashed var(--dot-color);
-}
 .supply-card-meta { font-size: 11px; }
 .supply-status-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 2px; }
 .supply-slider-wrap { padding: 0 4px; }

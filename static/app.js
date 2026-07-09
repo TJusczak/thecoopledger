@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-98";
+const APP_VERSION = "2026.07.06-99";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -5534,19 +5534,17 @@ function supplyCardHtml(s) {
   const amountLabel = s.quantity ? `${s.quantity} ${esc(s.unit || "")}` : "";
   const product = s.product_id ? STATE.supplyProducts.find(p => p.id === s.product_id) : null;
   const photo = product ? productPhotoUrl(product) : null;
-  const bagStyle = photo
-    ? `background-image:url('${photo}');background-size:cover;background-position:center;border-color:color-mix(in srgb, var(--${catTone}) 45%, var(--border))`
-    : `background:color-mix(in srgb, var(--${catTone}) 10%, var(--bg));border-color:color-mix(in srgb, var(--${catTone}) 45%, var(--border))`;
-  // A photo needs the status fill to stay out of its way visually -- a
-  // solid or heavily-tinted wash just paints over the bag's own artwork.
-  // The dotted texture (see .textured in style.css) reads clearly as a
-  // status overlay without hiding the photo underneath it. No photo, no
-  // reason for the extra texture -- solid fill reads more clearly on its
-  // own with nothing underneath it to protect.
-  const fillStyle = photo
-    ? `height:${fillPct}%;--dot-color:var(--${tone})`
-    : `height:${fillPct}%;background:var(--${tone})`;
-  const fillClass = photo ? "supply-bag-fill textured" : "supply-bag-fill";
+  // Flipped from a colored overlay showing how full a bag is, to full
+  // color where product remains and greyscale + red dashes where it's
+  // been used -- clip-path on the color layer is what reveals only the
+  // remaining fraction, from the bottom up.
+  const bagBorderStyle = `border-color:color-mix(in srgb, var(--${catTone}) 45%, var(--border))`;
+  const bagStyle = photo ? bagBorderStyle : `background:color-mix(in srgb, var(--${catTone}) 10%, var(--bg));${bagBorderStyle}`;
+  const bagInner = photo
+    ? `<div class="supply-bag-grey-base" style="background-image:url('${photo}')"></div>
+       <div class="supply-bag-dash-overlay"></div>
+       <div class="supply-bag-color-reveal" style="background-image:url('${photo}');clip-path:inset(${100 - fillPct}% 0 0 0)"></div>`
+    : `<div class="supply-bag-fill" style="height:${fillPct}%;background:var(--${tone})"></div>`;
   const line1 = s.brand || s.description || s.category;
   const line2 = (s.description && s.description !== line1) ? s.description : "";
   return `<div class="supply-card" data-edit-supply="${s.id}" style="border-color:var(--${catTone})">
@@ -5556,7 +5554,7 @@ function supplyCardHtml(s) {
       ${line2 ? `<div class="supply-card-header-sub">${esc(line2)}</div>` : ""}
     </div>
     <div class="supply-card-meta dim" style="text-align:center">${esc(s.category)}${amountLabel ? ` -- ${amountLabel}` : ""}</div>
-    <div class="supply-bag-visual" title="${esc(s.status)}" style="${bagStyle}"><div class="${fillClass}" style="${fillStyle}"></div></div>
+    <div class="supply-bag-visual" title="${esc(s.status)}" style="${bagStyle}">${bagInner}</div>
     <div class="supply-slider-wrap">
       <input type="range" class="supply-slider" min="0" max="4" step="1" value="${sliderVal}" data-id="${s.id}" style="accent-color:var(--${tone});color:var(--${tone})" onclick="event.stopPropagation()">
     </div>
