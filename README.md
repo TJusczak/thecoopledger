@@ -8,6 +8,14 @@ incubation/hatching, and bedding freshness tracking. FastAPI + SQLite on
 the backend, a local-first vanilla-JS PWA on the front — installable as a
 standalone app on desktop and Android, and works fully offline once loaded.
 
+> 🚧 **Actively in development.** This is a one-person project under active,
+> ongoing development — features and behavior are still changing, and
+> while care is taken to avoid it, bugs happen. **Back up your data
+> regularly**: `Settings → Coops → Export (.zip)` in the app, or a direct
+> copy of `data/coop.db` if you're self-hosting (see **Backup** below).
+> Nothing here is deliberately experimental, but this hasn't had years of
+> production hardening either — treat it accordingly.
+
 ## Quick start (recommended: published image, no source needed)
 
 ```yaml
