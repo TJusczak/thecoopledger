@@ -1,0 +1,76 @@
+name: Build and publish Docker image
+
+# Builds a multi-arch image (amd64 + arm64 -- covers a typical home server
+# and a Raspberry Pi / ARM NAS alike) and pushes it to GHCR, GitHub's own
+# container registry. Using GHCR instead of Docker Hub means this needs no
+# separate account or secret to set up -- it authenticates with the
+# GITHUB_TOKEN that Actions already provides for free on every run.
+#
+# - Push to main/master -> published as `latest`
+# - Push a tag like v1.2.3 -> published as `1.2.3` (and `latest` is also
+#   updated to match) -- use this when you want something pinnable
+#
+# The published image ends up at:
+#   ghcr.io/<your-github-username-or-org>/<this-repo-name>
+#
+# First-time setup: after this workflow runs once, go to the package's
+# page on GitHub (your profile or org -> Packages) and set its visibility
+# to Public, otherwise `docker pull` from elsewhere will get a 401 even
+# though the build succeeded -- packages default to private.
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*.*.*"]
+  workflow_dispatch: {} # lets you trigger a rebuild manually from the Actions tab, e.g. after just editing this file
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }} # resolves to owner/repo automatically, no need to hardcode a name
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # required to push to GHCR
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        # Lets the amd64 runner below also emulate arm64 well enough to
+        # build for it -- this is what makes the single job produce both
+        # architectures instead of needing two separate runners.
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

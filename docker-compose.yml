@@ -1,0 +1,13 @@
+services:
+  coop-ledger:
+    image: ghcr.io/TJusczak/thecoopledger:latest
+    # To build from local source instead (e.g. you've modified the code,
+    # or you're developing it), comment the image: line above and
+    # uncomment this one:
+    # build: .
+    container_name: coop-ledger
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

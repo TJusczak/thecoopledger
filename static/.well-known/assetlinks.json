@@ -1,0 +1,10 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "win.pika.coopledger.twa",
+      "sha256_cert_fingerprints": ["CE:3E:89:B4:89:1E:F8:B3:B0:3A:F4:0E:F5:8D:1C:3E:EE:E9:5A:1B:1C:2F:7C:73:60:47:11:55:29:BE:B6:6F"]
+    }
+  }
+]

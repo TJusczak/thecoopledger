@@ -1,0 +1,20 @@
+{
+  "name": "The Coop Ledger",
+  "short_name": "Coop Ledger",
+  "description": "Flock tracker for eggs, meat birds, expenses, and bedding.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#241E1A",
+  "theme_color": "#241E1A",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Log Eggs", "url": "/?action=eggs", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Finances", "url": "/?action=expenses", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Flock", "url": "/?action=flock", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

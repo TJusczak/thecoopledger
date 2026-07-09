@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>The Coop Ledger</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#241E1A">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Coop Ledger">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="icon" href="/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Slab:wght@500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <h1>The Coop Ledger</h1>
+      <div style="text-align:right">
+        <div id="todayDate" class="today"></div>
+        <div id="connIndicator" class="conn-indicator"><span class="conn-dot"></span><span id="connLabel">Checking...</span></div>
+      </div>
+    </header>
+    <div class="coop-banner">
+      <span id="coopHeaderName" class="coop-banner-name">🐔 No coop selected</span>
+      <span class="eyebrow" id="eyebrowText"></span>
+    </div>
+
+    <nav class="tabs" id="tabs">
+      <button data-tab="dashboard" class="tab active"><span class="tab-icon">🐔</span><span class="tab-label">Coop</span></button>
+      <button data-tab="flock" class="tab"><span class="tab-icon">🪶</span><span class="tab-label">Flock</span></button>
+      <button data-tab="eggs" class="tab"><span class="tab-icon">🥚</span><span class="tab-label">Eggs</span></button>
+      <button data-tab="bedding" class="tab"><span class="tab-icon">📦</span><span class="tab-label">Supply</span></button>
+      <button data-tab="expenses" class="tab"><span class="tab-icon">💰</span><span class="tab-label">Finances</span></button>
+      <button data-tab="settings" class="tab"><span class="tab-icon">⚙️</span><span class="tab-label">Settings</span></button>
+    </nav>
+
+    <nav class="settings-subnav" id="settingsSubNav"></nav>
+
+    <main id="panel-dashboard" class="panel"></main>
+    <main id="panel-flock" class="panel" style="display:none"></main>
+    <main id="panel-eggs" class="panel" style="display:none"></main>
+    <main id="panel-expenses" class="panel" style="display:none"></main>
+    <main id="panel-bedding" class="panel" style="display:none"></main>
+    <main id="panel-settings" class="panel" style="display:none"></main>
+  </div>
+
+  <script src="/vendor/chart.umd.js"></script>
+  <script src="/vendor/jszip.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
