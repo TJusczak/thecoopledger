@@ -378,11 +378,17 @@
     gradientEl.style.background = "linear-gradient(to bottom, " + stops[0] + " 0%, " + stops[1] + " 40%, " + stops[2] + " 70%, " + stops[3] + " 100%)";
 
     var baseTop = window.innerWidth <= 900 ? 30 : 14; // start well below the headline once the hero stacks (matches the CSS breakpoint), where the headline sits higher up
-    var sunTop = baseTop + progress * (80 - (baseTop - 14)); // rises just above the hero at load, sinks toward the bottom as you scroll
+    var sunTopLinear = baseTop + progress * (94 - baseTop); // straight-line descent, before the arc bulge below
+    var archHeight = 16; // vh -- how much the path bows upward at its midpoint
+    var archBulge = archHeight * 4 * progress * (1 - progress); // 0 at both ends, peaks at progress=0.5
+    var sunTop = sunTopLinear - archBulge;
+    var sunLeft = 22 + progress * (78 - 22); // sweeps from the upper-left corner toward the lower-right as it descends
     var sunOpacity = progress < 0.72 ? 1 : Math.max(0, 1 - (progress - 0.72) / 0.22);
     sunEl.style.top = sunTop + "vh";
+    sunEl.style.left = sunLeft + "%";
     sunEl.style.opacity = sunOpacity;
     raysEl.style.top = sunTop + "vh";
+    raysEl.style.left = sunLeft + "%";
     raysEl.style.opacity = sunOpacity * 0.6;
 
     var starsOpacity = progress < 0.48 ? 0 : Math.min(1, (progress - 0.48) / 0.4);

@@ -232,7 +232,7 @@ h1, h2, h3 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 .sky-gradient { position: absolute; inset: 0; background: linear-gradient(to bottom, #241E1A 0%, #4a2f22 40%, #8a4326 70%, #c1502e 100%); }
 
 .sun-rays {
-  position: absolute; left: 50%; top: 14vh; width: 380px; height: 380px;
+  position: absolute; left: 22%; top: 14vh; width: 380px; height: 380px;
   transform: translate(-50%, -50%);
   border-radius: 50%;
   background: repeating-conic-gradient(rgba(245, 200, 120, 0.22) 0deg 4deg, transparent 4deg 20deg);
@@ -241,7 +241,7 @@ h1, h2, h3 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 @keyframes sun-rotate { from { transform: translate(-50%, -50%) rotate(0deg); } to { transform: translate(-50%, -50%) rotate(360deg); } }
 
 .sun {
-  position: absolute; left: 50%; top: 14vh; width: 130px; height: 130px;
+  position: absolute; left: 22%; top: 14vh; width: 130px; height: 130px;
   transform: translate(-50%, -50%);
   border-radius: 50%;
   background: radial-gradient(circle at 38% 35%, #FCE7B8 0%, #F5C878 30%, var(--gold) 58%, var(--rust) 85%, transparent 100%);
