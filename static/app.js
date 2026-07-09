@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-97";
+const APP_VERSION = "2026.07.06-98";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -5016,12 +5016,12 @@ function renderExpenses() {
       periodLabel = fromY === toY ? String(fromY) : `${fromY}–${toY}`;
       navHtml = `
         <div style="display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-          <button class="icon-btn" id="prevPeriod" ${fromY <= minYear ? "disabled" : ""} style="font-size:18px">‹</button>
+          <button class="icon-btn icon-btn-period" id="prevPeriod" ${fromY <= minYear ? "disabled" : ""} style="font-size:18px">‹</button>
           <span class="dim" style="font-size:12px">From</span>
-          <select id="rangeFromYear">${years.map(y => `<option value="${y}" ${Number(y) === fromY ? "selected" : ""}>${y}</option>`).join("")}</select>
+          <select class="period-select" id="rangeFromYear">${years.map(y => `<option value="${y}" ${Number(y) === fromY ? "selected" : ""}>${y}</option>`).join("")}</select>
           <span class="dim" style="font-size:12px">to</span>
-          <select id="rangeToYear">${years.map(y => `<option value="${y}" ${Number(y) === toY ? "selected" : ""}>${y}</option>`).join("")}</select>
-          <button class="icon-btn" id="nextPeriod" ${toY >= maxYear ? "disabled" : ""} style="font-size:18px">›</button>
+          <select class="period-select" id="rangeToYear">${years.map(y => `<option value="${y}" ${Number(y) === toY ? "selected" : ""}>${y}</option>`).join("")}</select>
+          <button class="icon-btn icon-btn-period" id="nextPeriod" ${toY >= maxYear ? "disabled" : ""} style="font-size:18px">›</button>
         </div>`;
     } else {
       const y = Number(expenseYearKey);
@@ -5029,9 +5029,9 @@ function renderExpenses() {
       periodLabel = expenseYearKey;
       navHtml = `
         <div style="display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
-          <button class="icon-btn" id="prevPeriod" ${y <= minYear ? "disabled" : ""} style="font-size:20px">‹</button>
-          <select id="jumpPeriod" style="max-width:120px">${years.map(y2 => `<option value="${y2}" ${y2 === expenseYearKey ? "selected" : ""}>${y2}</option>`).join("")}</select>
-          <button class="icon-btn" id="nextPeriod" ${y >= maxYear ? "disabled" : ""} style="font-size:20px">›</button>
+          <button class="icon-btn icon-btn-period" id="prevPeriod" ${y <= minYear ? "disabled" : ""} style="font-size:20px">‹</button>
+          <select class="period-select" id="jumpPeriod">${years.map(y2 => `<option value="${y2}" ${y2 === expenseYearKey ? "selected" : ""}>${y2}</option>`).join("")}</select>
+          <button class="icon-btn icon-btn-period" id="nextPeriod" ${y >= maxYear ? "disabled" : ""} style="font-size:20px">›</button>
         </div>`;
     }
   } else {
@@ -5050,14 +5050,14 @@ function renderExpenses() {
       const monthOptions = (selectedM) => MONTH_NAMES_SHORT.map((name, i) => `<option value="${String(i + 1).padStart(2, "0")}" ${String(i + 1).padStart(2, "0") === selectedM ? "selected" : ""}>${name}</option>`).join("");
       navHtml = `
         <div style="display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;margin-bottom:8px">
-          <button class="icon-btn" id="prevPeriod" ${fromKey <= minKey ? "disabled" : ""} style="font-size:18px">‹</button>
+          <button class="icon-btn icon-btn-period" id="prevPeriod" ${fromKey <= minKey ? "disabled" : ""} style="font-size:18px">‹</button>
           <span class="dim" style="font-size:12px">From</span>
-          <select id="rangeFromMonth">${monthOptions(fromM)}</select>
-          <select id="rangeFromYear">${yearsForMonth.map(y => `<option value="${y}" ${y === fromY ? "selected" : ""}>${y}</option>`).join("")}</select>
+          <select class="period-select" id="rangeFromMonth">${monthOptions(fromM)}</select>
+          <select class="period-select" id="rangeFromYear">${yearsForMonth.map(y => `<option value="${y}" ${y === fromY ? "selected" : ""}>${y}</option>`).join("")}</select>
           <span class="dim" style="font-size:12px">to</span>
-          <select id="rangeToMonth">${monthOptions(toM)}</select>
-          <select id="rangeToYear">${yearsForMonth.map(y => `<option value="${y}" ${y === toY ? "selected" : ""}>${y}</option>`).join("")}</select>
-          <button class="icon-btn" id="nextPeriod" ${toKey >= maxKey ? "disabled" : ""} style="font-size:18px">›</button>
+          <select class="period-select" id="rangeToMonth">${monthOptions(toM)}</select>
+          <select class="period-select" id="rangeToYear">${yearsForMonth.map(y => `<option value="${y}" ${y === toY ? "selected" : ""}>${y}</option>`).join("")}</select>
+          <button class="icon-btn icon-btn-period" id="nextPeriod" ${toKey >= maxKey ? "disabled" : ""} style="font-size:18px">›</button>
         </div>`;
     } else {
       const [curY, curM] = expenseMonthKey.split("-");
@@ -5065,10 +5065,10 @@ function renderExpenses() {
       periodLabel = monthLabelOf(expenseMonthKey);
       navHtml = `
         <div style="display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-          <button class="icon-btn" id="prevPeriod" ${expenseMonthKey <= minKey ? "disabled" : ""} style="font-size:20px">‹</button>
-          <select id="jumpMonth">${MONTH_NAMES_SHORT.map((name, i) => `<option value="${String(i + 1).padStart(2, "0")}" ${String(i + 1).padStart(2, "0") === curM ? "selected" : ""}>${name}</option>`).join("")}</select>
-          <select id="jumpYear">${yearsForMonth.map(y => `<option value="${y}" ${y === curY ? "selected" : ""}>${y}</option>`).join("")}</select>
-          <button class="icon-btn" id="nextPeriod" ${expenseMonthKey >= maxKey ? "disabled" : ""} style="font-size:20px">›</button>
+          <button class="icon-btn icon-btn-period" id="prevPeriod" ${expenseMonthKey <= minKey ? "disabled" : ""} style="font-size:20px">‹</button>
+          <select class="period-select" id="jumpMonth">${MONTH_NAMES_SHORT.map((name, i) => `<option value="${String(i + 1).padStart(2, "0")}" ${String(i + 1).padStart(2, "0") === curM ? "selected" : ""}>${name}</option>`).join("")}</select>
+          <select class="period-select" id="jumpYear">${yearsForMonth.map(y => `<option value="${y}" ${y === curY ? "selected" : ""}>${y}</option>`).join("")}</select>
+          <button class="icon-btn icon-btn-period" id="nextPeriod" ${expenseMonthKey >= maxKey ? "disabled" : ""} style="font-size:20px">›</button>
         </div>`;
     }
   }
@@ -5537,13 +5537,16 @@ function supplyCardHtml(s) {
   const bagStyle = photo
     ? `background-image:url('${photo}');background-size:cover;background-position:center;border-color:color-mix(in srgb, var(--${catTone}) 45%, var(--border))`
     : `background:color-mix(in srgb, var(--${catTone}) 10%, var(--bg));border-color:color-mix(in srgb, var(--${catTone}) 45%, var(--border))`;
-  // A photo needs a translucent fill wash so the bag's own artwork stays
-  // visible underneath -- a solid fill would just paint over the photo and
-  // defeat the whole point of having it. No photo, no reason to make it
-  // translucent -- solid fill reads more clearly on its own.
+  // A photo needs the status fill to stay out of its way visually -- a
+  // solid or heavily-tinted wash just paints over the bag's own artwork.
+  // The dotted texture (see .textured in style.css) reads clearly as a
+  // status overlay without hiding the photo underneath it. No photo, no
+  // reason for the extra texture -- solid fill reads more clearly on its
+  // own with nothing underneath it to protect.
   const fillStyle = photo
-    ? `height:${fillPct}%;background:color-mix(in srgb, var(--${tone}) 55%, transparent)`
+    ? `height:${fillPct}%;--dot-color:var(--${tone})`
     : `height:${fillPct}%;background:var(--${tone})`;
+  const fillClass = photo ? "supply-bag-fill textured" : "supply-bag-fill";
   const line1 = s.brand || s.description || s.category;
   const line2 = (s.description && s.description !== line1) ? s.description : "";
   return `<div class="supply-card" data-edit-supply="${s.id}" style="border-color:var(--${catTone})">
@@ -5553,7 +5556,7 @@ function supplyCardHtml(s) {
       ${line2 ? `<div class="supply-card-header-sub">${esc(line2)}</div>` : ""}
     </div>
     <div class="supply-card-meta dim" style="text-align:center">${esc(s.category)}${amountLabel ? ` -- ${amountLabel}` : ""}</div>
-    <div class="supply-bag-visual" title="${esc(s.status)}" style="${bagStyle}"><div class="supply-bag-fill" style="${fillStyle}"></div></div>
+    <div class="supply-bag-visual" title="${esc(s.status)}" style="${bagStyle}"><div class="${fillClass}" style="${fillStyle}"></div></div>
     <div class="supply-slider-wrap">
       <input type="range" class="supply-slider" min="0" max="4" step="1" value="${sliderVal}" data-id="${s.id}" style="accent-color:var(--${tone});color:var(--${tone})" onclick="event.stopPropagation()">
     </div>

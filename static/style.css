@@ -240,6 +240,16 @@ textarea { min-height: 60px; resize: vertical; }
 .icon-btn-close:hover { border-color: var(--gold); }
 .icon-btn-close:active { background: var(--gold); color: #1E1712; }
 
+/* Finance period nav: compact selects instead of the global
+   input/select/textarea width:100% default, and a visibly-bordered
+   variant of .icon-btn so prev/next don't look like empty space until
+   hovered -- scoped here rather than changed on .icon-btn itself, since
+   that class is also used elsewhere as a deliberately subtle inline
+   action (delete/edit icons, etc). */
+.period-select { width: auto; min-width: 62px; max-width: 92px; padding: 8px 8px; font-size: 14px; }
+.icon-btn-period { border-color: var(--border); background: var(--surface-raised); }
+.icon-btn-period:hover { border-color: var(--gold); }
+
 .confirm-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 1000;
   display: flex; align-items: center; justify-content: center; padding: 20px;
@@ -366,7 +376,17 @@ tr:hover td { background: var(--surface-raised); }
   border-radius: 6px; border: 1px solid rgba(0,0,0,0.25);
 }
 .supply-mini-bag-more { grid-column: 1 / -1; text-align: center; font-size: 12px; font-weight: 700; color: var(--text-dim); margin-top: 2px; }
-.supply-bag-fill { position: absolute; bottom: 0; left: 0; right: 0; transition: height 0.35s ease, background-color 0.35s ease; }
+.supply-bag-fill { position: absolute; bottom: 0; left: 0; right: 0; transition: height 0.35s ease, background-color 0.35s ease, border-color 0.35s ease; }
+/* When a product photo is showing through, a solid wash just paints over
+   the artwork -- a sparse dot texture plus a dashed line marking the
+   exact fill height keeps the status readable at a glance without
+   hiding what the bag actually looks like. */
+.supply-bag-fill.textured {
+  background-color: transparent;
+  background-image: radial-gradient(circle, var(--dot-color) 1.4px, transparent 1.5px);
+  background-size: 9px 9px;
+  border-top: 2px dashed var(--dot-color);
+}
 .supply-card-meta { font-size: 11px; }
 .supply-status-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 2px; }
 .supply-slider-wrap { padding: 0 4px; }
