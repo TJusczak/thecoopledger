@@ -39,10 +39,10 @@ SCHEMA = {
         "name": "TEXT", "notes": "TEXT", "created_date": "TEXT", "settings": "TEXT",
     },
     "birds": {
-        "coop_id": "TEXT", "name": "TEXT", "breed": "TEXT", "type": "TEXT", "hatch_date": "TEXT",
+        "coop_id": "TEXT", "name": "TEXT", "breed": "TEXT", "type": "TEXT", "gender": "TEXT", "hatch_date": "TEXT",
         "acquired_date": "TEXT", "status": "TEXT", "target_harvest_date": "TEXT",
         "harvest_date": "TEXT", "harvest_weight": "REAL", "notes": "TEXT",
-        "photo": "TEXT", "batch_name": "TEXT", "price_per_lb": "REAL",
+        "photo": "TEXT", "photo_pos_x": "REAL", "photo_pos_y": "REAL", "photo_zoom": "REAL", "batch_name": "TEXT", "price_per_lb": "REAL",
         "death_date": "TEXT", "death_cause": "TEXT", "card_color": "TEXT", "border_style": "TEXT", "hatch_id": "TEXT", "card_pattern": "TEXT", "location": "TEXT",
     },
     "eggs": {
@@ -67,7 +67,7 @@ SCHEMA = {
         "product_id": "TEXT",
     },
     "supply_products": {
-        "coop_id": "TEXT", "category": "TEXT", "brand": "TEXT", "photo": "TEXT",
+        "coop_id": "TEXT", "category": "TEXT", "brand": "TEXT", "photo": "TEXT", "photo_pos_x": "REAL", "photo_pos_y": "REAL", "photo_zoom": "REAL",
         "default_unit": "TEXT", "default_quantity": "REAL", "default_description": "TEXT", "last_used_at": "TEXT",
     },
     "hatches": {

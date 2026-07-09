@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-113";
+const APP_VERSION = "2026.07.06-114";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -5781,6 +5781,7 @@ function renderExpenses() {
               ${!isIncome ? `<span class="stamp tone-${x.for_type === "Meat Birds Only" ? "rust" : x.for_type === "Layers Only" ? "gold" : "sage"}">${esc(x.for_type || "All Birds")}</span>` : ""}
             </div>
             <div class="list-card-desc dim">${fmtDate(x.date)}${x.quantity ? ` · ${x.quantity} ${esc(x.unit || "")}` : ""}${x.description ? " · " + esc(x.description) : ""}</div>
+            ${isIncome && QUANTITY_RELEVANT_INCOME.has(x.category) ? (() => { const rate = saleRateLabel(x.amount, x.quantity, x.category); return rate ? `<div class="list-card-desc dim">${rate}</div>` : ""; })() : ""}
           </div>
           <div class="list-card-side">
             <span class="stamp stamp-lg tone-${isIncome ? "sage" : "rust"}">${isIncome ? "+" : "−"}${fmtMoney(x.amount)}</span>
@@ -5877,8 +5878,19 @@ function renderExpenses() {
 
 const QUANTITY_RELEVANT_INCOME = new Set(["Egg Sale", "Meat Sale"]); // the only income categories where "how many/how much" feeds back into the Coop tab's value-produced estimate
 
+/** "= $0.70/egg" style label for an Egg Sale or Meat Sale income entry --
+ * shared by the live form display (as you type amount/quantity) and the
+ * saved card (from the stored values), so the math lives in one place. */
+function saleRateLabel(amount, qty, category) {
+  const a = Number(amount) || 0;
+  const q = Number(qty) || 0;
+  if (a <= 0 || q <= 0) return "";
+  const unit = category === "Meat Sale" ? "/lb" : "/egg";
+  return `= ${fmtMoney(a / q)}${unit}`;
+}
+
 function expenseFormHtml(editing) {
-  const catValue = editing ? editing.category : (document.getElementById("x_cat") ? document.getElementById("x_cat").value : (pendingExpenseCategory || (expenseFormEntryType === "income" ? INCOME_CATEGORIES[0] : EXPENSE_CATEGORIES[0])));
+  const catValue = editing ? editing.category : (pendingExpenseCategory || (expenseFormEntryType === "income" ? INCOME_CATEGORIES[0] : EXPENSE_CATEGORIES[0]));
   const showQuantityFields = expenseFormEntryType === "income" ? QUANTITY_RELEVANT_INCOME.has(catValue) : QUANTITY_CATEGORIES.has(catValue);
   return `
     <div class="form-head">${editing ? "Edit entry" : "Log an entry"}</div>
@@ -5896,6 +5908,7 @@ function expenseFormHtml(editing) {
       ${expenseFormEntryType === "expense" ? `<label class="field"><span>Applies to</span><select id="x_for">${EXPENSE_FOR_TYPES.map(t => `<option ${editing ? (editing.for_type === t ? "selected" : "") : (t === "All Birds" ? "selected" : "")}>${t}</option>`).join("")}</select></label>` : ""}
       <label class="field"><span>Description</span><input id="x_desc" placeholder="${expenseFormEntryType === "income" ? "e.g. Sold to neighbor" : "e.g. 50lb layer feed, or Heat lamp"}" value="${editing ? esc(editing.description || "") : ""}"></label>
     </div>
+    ${showQuantityFields && expenseFormEntryType === "income" ? `<div class="dim" id="x_rate_display" style="font-size:12px;margin-top:4px">${saleRateLabel(editing ? editing.amount : null, editing ? editing.quantity : null, catValue)}</div>` : ""}
     <div class="note-box" style="margin-top:10px">${expenseFormEntryType === "income"
       ? `For Egg Sale or Meat Sale specifically, fill in the quantity (eggs or lbs) -- this lets the app subtract that amount from the estimated "value produced" on the Coop tab, so a sale doesn't get counted twice: once as an estimate when collected, and again as real income here.`
       : showQuantityFields
@@ -5921,6 +5934,14 @@ function wireExpenseFormModal(editing) {
   document.getElementById("entryTypeExpense").addEventListener("click", () => { expenseFormEntryType = "expense"; pendingExpenseCategory = null; refreshForm(); });
   document.getElementById("entryTypeIncome").addEventListener("click", () => { expenseFormEntryType = "income"; pendingExpenseCategory = null; refreshForm(); });
   document.getElementById("x_cat").addEventListener("change", (e) => { pendingExpenseCategory = e.target.value; refreshForm(); });
+  const rateDisplay = document.getElementById("x_rate_display");
+  if (rateDisplay) {
+    const updateRate = () => {
+      rateDisplay.textContent = saleRateLabel(document.getElementById("x_amount").value, document.getElementById("x_qty").value, document.getElementById("x_cat").value);
+    };
+    document.getElementById("x_amount").addEventListener("input", updateRate);
+    document.getElementById("x_qty").addEventListener("input", updateRate);
+  }
   const productPickerHost = document.getElementById("productPickerHost");
   if (productPickerHost) wireProductPicker(productPickerHost, { categoryFieldId: "x_cat", brandFieldId: "x_desc", qtyFieldId: "x_qty", unitFieldId: "x_unit", rerenderFn: refreshForm });
 
@@ -6310,7 +6331,7 @@ function emptySupplyModalHtml() {
         const product = s.product_id ? STATE.supplyProducts.find(p => p.id === s.product_id) : null;
         const photo = product ? productPhotoUrl(product) : null;
         return `
-        <div class="list-card tone-slate">
+        <div class="list-card tone-slate" data-edit-supply="${s.id}" style="cursor:pointer">
           ${photo ? `<div style="width:44px;height:44px;border-radius:6px;overflow:hidden;flex:0 0 auto;margin-right:2px"><img src="${photo}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(product)};${photoTransformStyle(product)}opacity:0.75"></div>` : ""}
           <div class="list-card-main">
             <div style="font-weight:600">${esc(s.brand || s.description || s.category)}</div>
@@ -6318,8 +6339,8 @@ function emptySupplyModalHtml() {
             <div class="list-card-desc dim">${s.date_added ? `added ${fmtDate(s.date_added)}` : ""}${s.date_emptied ? ` · emptied ${fmtDate(s.date_emptied)}` : ""}${s.date_added && s.date_emptied ? ` · lasted ${daysSince(s.date_added) - daysSince(s.date_emptied)}d` : ""}</div>
           </div>
           <div class="list-card-side">
-            <button class="icon-btn" data-restore-supply="${s.id}" title="Not actually empty -- restore to Full">↺</button>
-            <button class="icon-btn" data-del-supply-modal="${s.id}" title="Delete permanently">🗑</button>
+            <button class="icon-btn" data-restore-supply="${s.id}" title="Not actually empty -- restore to Full" onclick="event.stopPropagation()">↺</button>
+            <button class="icon-btn" data-del-supply-modal="${s.id}" title="Delete permanently" onclick="event.stopPropagation()">🗑</button>
           </div>
         </div>`;
       }).join("")}
@@ -6330,6 +6351,10 @@ function emptySupplyModalHtml() {
 }
 
 function wireEmptySupplyModal() {
+  document.querySelectorAll("[data-edit-supply]").forEach(card => card.addEventListener("click", () => {
+    const supply = STATE.supplies.find(s => s.id === card.dataset.editSupply);
+    if (supply) openSupplyModal(supply);
+  }));
   document.querySelectorAll("[data-restore-supply]").forEach(b => b.addEventListener("click", async () => {
     await localSupplyUpdate(b.dataset.restoreSupply, { status: "Full", date_emptied: null });
     showToast("Restored to Full", "update");
