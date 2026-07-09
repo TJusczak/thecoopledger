@@ -60,9 +60,15 @@ h1, h2, h3 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 }
 @media (max-width: 900px) { .hero-inner { grid-template-columns: 1fr; gap: 40px; } }
 
-.hero-copy h1 { font-size: 44px; line-height: 1.08; margin: 4px 0 18px; }
+.hero-copy { position: relative; }
+.hero-copy::before {
+  content: ""; position: absolute; inset: -24px -20px -12px -16px; z-index: -1;
+  background: radial-gradient(ellipse 100% 95% at 42% 40%, rgba(12,10,8,0.8) 0%, rgba(12,10,8,0.55) 60%, transparent 88%);
+  pointer-events: none;
+}
+.hero-copy h1 { font-size: 44px; line-height: 1.08; margin: 4px 0 18px; text-shadow: 0 0 14px rgba(0,0,0,0.75), 0 0 30px rgba(0,0,0,0.55), 0 2px 6px rgba(0,0,0,0.8); }
 @media (max-width: 500px) { .hero-copy h1 { font-size: 34px; } }
-.hero-sub { font-size: 16px; color: var(--text-dim); max-width: 46ch; margin: 0 0 26px; }
+.hero-sub { font-size: 16px; color: var(--text-dim); max-width: 46ch; margin: 0 0 26px; text-shadow: 0 0 10px rgba(0,0,0,0.7), 0 0 20px rgba(0,0,0,0.45); }
 .hero-ctas { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
 .hero-fineprint { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--text-dim); }
 .dev-notice {
@@ -220,6 +226,46 @@ h1, h2, h3 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 .reveal { opacity: 0; transform: translateY(16px); transition: opacity 0.5s ease, transform 0.5s ease; }
 .reveal-in { opacity: 1; transform: none; }
 
+/* ---------- scroll-driven sky ---------- */
+
+.sky { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+.sky-gradient { position: absolute; inset: 0; background: linear-gradient(to bottom, #241E1A 0%, #4a2f22 40%, #8a4326 70%, #c1502e 100%); }
+
+.sun-rays {
+  position: absolute; left: 50%; top: 14vh; width: 380px; height: 380px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: repeating-conic-gradient(rgba(245, 200, 120, 0.22) 0deg 4deg, transparent 4deg 20deg);
+  animation: sun-rotate 120s linear infinite;
+}
+@keyframes sun-rotate { from { transform: translate(-50%, -50%) rotate(0deg); } to { transform: translate(-50%, -50%) rotate(360deg); } }
+
+.sun {
+  position: absolute; left: 50%; top: 14vh; width: 130px; height: 130px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 35%, #FCE7B8 0%, #F5C878 30%, var(--gold) 58%, var(--rust) 85%, transparent 100%);
+  box-shadow: 0 0 70px 24px rgba(193, 80, 46, 0.32), 0 0 140px 70px rgba(212, 160, 23, 0.14);
+}
+
+.fog {
+  position: absolute; width: 55vw; height: 220px; border-radius: 50%;
+  filter: blur(48px); background: var(--text-dim); opacity: 0.1;
+}
+.fog-a { top: 58vh; left: -22vw; animation: fog-drift-a 55s ease-in-out infinite; }
+.fog-b { top: 78vh; right: -26vw; animation: fog-drift-b 70s ease-in-out infinite; }
+@keyframes fog-drift-a { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(32vw); } }
+@keyframes fog-drift-b { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(-28vw); } }
+
+.stars { position: absolute; inset: 0; opacity: 0; }
+.star { position: absolute; border-radius: 50%; background: #F2E9DC; animation: star-twinkle 3.4s ease-in-out infinite; }
+@keyframes star-twinkle { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+
+@media (max-width: 640px) {
+  .sun-rays { width: 260px; height: 260px; }
+  .sun { width: 92px; height: 92px; }
+}
+
 /* ---------- accessibility ---------- */
 
 a:focus-visible, .btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
@@ -227,4 +273,5 @@ a:focus-visible, .btn:focus-visible { outline: 2px solid var(--gold); outline-of
   html { scroll-behavior: auto; }
   .btn-primary:hover { transform: none; }
   .reveal { opacity: 1; transform: none; transition: none; }
+  .sun-rays, .fog, .star { animation: none; }
 }

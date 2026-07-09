@@ -23,6 +23,15 @@
 </head>
 <body>
 
+<div class="sky" id="sky" aria-hidden="true">
+  <div class="sky-gradient" id="skyGradient"></div>
+  <div class="sun-rays" id="sunRays"></div>
+  <div class="sun" id="sun"></div>
+  <div class="fog fog-a" id="fogA"></div>
+  <div class="fog fog-b" id="fogB"></div>
+  <div class="stars" id="stars"></div>
+</div>
+
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand">🐔 <span>The Coop Ledger</span></div>
@@ -307,6 +316,84 @@
     }, { threshold: 0.12 });
     revealTargets.forEach(function (el) { io.observe(el); });
   }
+})();
+
+(function () {
+  // Scroll-driven sky: dawn at the top of the page, sunset through the
+  // middle, night with stars by the bottom -- driven by how far down the
+  // page you've scrolled, not a fixed timer, so it stays in sync whether
+  // you scroll fast, slow, or jump straight to the bottom.
+  var gradientEl = document.getElementById("skyGradient");
+  var sunEl = document.getElementById("sun");
+  var raysEl = document.getElementById("sunRays");
+  var starsEl = document.getElementById("stars");
+  if (!gradientEl || !sunEl || !starsEl) return;
+
+  // Three keyframe palettes (top / upper-mid / lower-mid / horizon stop),
+  // interpolated dawn->sunset for the first half of the page, sunset->night
+  // for the second half.
+  var DAWN =   ["#241E1A", "#4a2f22", "#8a4326", "#c1502e"];
+  var SUNSET = ["#1c1220", "#3c1f22", "#7a2f1e", "#a8481f"];
+  var NIGHT =  ["#0d0a08", "#14100d", "#1a1512", "#201a15"];
+
+  function hexToRgb(hex) {
+    var n = parseInt(hex.slice(1), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  function rgbLerp(a, b, t) {
+    return [0, 1, 2].map(function (i) { return Math.round(a[i] + (b[i] - a[i]) * t); });
+  }
+  function rgbStr(c) { return "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")"; }
+
+  function paletteAt(progress) {
+    var a, b, t;
+    if (progress <= 0.5) { a = DAWN; b = SUNSET; t = progress / 0.5; }
+    else { a = SUNSET; b = NIGHT; t = (progress - 0.5) / 0.5; }
+    return a.map(function (hexA, i) { return rgbStr(rgbLerp(hexToRgb(hexA), hexToRgb(b[i]), t)); });
+  }
+
+  // A handful of randomly-placed, randomly-sized, randomly-delayed stars --
+  // generated once on load, then just faded in/out as a group via opacity.
+  var STAR_COUNT = 50;
+  for (var i = 0; i < STAR_COUNT; i++) {
+    var star = document.createElement("div");
+    star.className = "star";
+    var size = 1 + Math.random() * 2;
+    star.style.width = size + "px";
+    star.style.height = size + "px";
+    star.style.left = Math.random() * 100 + "%";
+    star.style.top = Math.random() * 70 + "%"; // upper 70% of the viewport -- keeps the horizon glow area clearer
+    star.style.animationDelay = (Math.random() * 3.4).toFixed(2) + "s";
+    starsEl.appendChild(star);
+  }
+
+  var ticking = false;
+  function update() {
+    ticking = false;
+    var doc = document.documentElement;
+    var maxScroll = doc.scrollHeight - window.innerHeight;
+    var progress = maxScroll > 0 ? Math.min(1, Math.max(0, window.scrollY / maxScroll)) : 0;
+
+    var stops = paletteAt(progress);
+    gradientEl.style.background = "linear-gradient(to bottom, " + stops[0] + " 0%, " + stops[1] + " 40%, " + stops[2] + " 70%, " + stops[3] + " 100%)";
+
+    var baseTop = window.innerWidth <= 900 ? 30 : 14; // start well below the headline once the hero stacks (matches the CSS breakpoint), where the headline sits higher up
+    var sunTop = baseTop + progress * (80 - (baseTop - 14)); // rises just above the hero at load, sinks toward the bottom as you scroll
+    var sunOpacity = progress < 0.72 ? 1 : Math.max(0, 1 - (progress - 0.72) / 0.22);
+    sunEl.style.top = sunTop + "vh";
+    sunEl.style.opacity = sunOpacity;
+    raysEl.style.top = sunTop + "vh";
+    raysEl.style.opacity = sunOpacity * 0.6;
+
+    var starsOpacity = progress < 0.48 ? 0 : Math.min(1, (progress - 0.48) / 0.4);
+    starsEl.style.opacity = starsOpacity;
+  }
+  function onScroll() {
+    if (!ticking) { requestAnimationFrame(update); ticking = true; }
+  }
+  window.addEventListener("scroll", onScroll, { passive: true });
+  window.addEventListener("resize", onScroll);
+  update();
 })();
 </script>
 
