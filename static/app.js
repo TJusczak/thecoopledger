@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-122";
+const APP_VERSION = "2026.07.06-123";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], activityLog: [], supplyProducts: [] };
@@ -801,13 +801,23 @@ let _suppressActivityLogging = false;
  * need to go digging in Settings to notice "oh, it's still pushing changes
  * out." Hidden entirely in local-only mode, since there's no server to
  * sync to. */
+/** How many pending outbox items are worth showing the user, in both the
+ * header indicator and the settings page's sync status. Deliberately
+ * excludes activity_log: logActivity queues its own outbox entry for
+ * nearly every real change, so counting it too would make one bird edit
+ * read as "2 changes" -- a confusing implementation detail, not something
+ * the person actually did. */
+async function countPendingChanges() {
+  const outbox = await getOutbox();
+  const pendingPhotos = await getAllPendingPhotos();
+  return outbox.filter(o => LOCAL_FIRST_RESOURCES.includes(o.resource) && o.resource !== "activity_log").length + pendingPhotos.length;
+}
+
 async function updateSyncIndicator() {
   const el = document.getElementById("syncIndicator");
   if (!el) return;
   if (localOnlyMode || !currentCoopId) { el.style.display = "none"; return; }
-  const outbox = await getOutbox();
-  const pendingPhotos = await getAllPendingPhotos();
-  const pending = outbox.filter(o => LOCAL_FIRST_RESOURCES.includes(o.resource)).length + pendingPhotos.length;
+  const pending = await countPendingChanges();
   if (pending > 0) {
     el.style.display = "flex";
     el.innerHTML = `<span class="sync-indicator-spin">↻</span> Syncing ${pending} change${pending !== 1 ? "s" : ""}...`;
@@ -947,6 +957,7 @@ async function pushOutboxOnce() {
     }
     if (res.ok) {
       await clearOutboxEntry(entry.outboxId);
+      updateSyncIndicator();
       continue;
     }
     if (res.status === 401) {
@@ -965,6 +976,7 @@ async function pushOutboxOnce() {
       // entry queued after it forever.
       console.error(`Discarding outbox entry permanently rejected by the server (${res.status}):`, entry);
       await clearOutboxEntry(entry.outboxId);
+      updateSyncIndicator();
       continue;
     }
     break; // 403/5xx -- possibly transient -- stop and retry later
@@ -2591,9 +2603,7 @@ function relativeTime(iso) {
 async function refreshSyncStatus() {
   const statusEl = document.getElementById("syncStatus");
   if (!statusEl) return;
-  const outbox = await getOutbox();
-  const pendingPhotos = await getAllPendingPhotos();
-  const pending = outbox.filter(o => LOCAL_FIRST_RESOURCES.includes(o.resource)).length + pendingPhotos.length;
+  const pending = await countPendingChanges();
   const perResource = currentCoopId
     ? await Promise.all(LOCAL_FIRST_RESOURCES.map(async r => ({ resource: r, lastSync: await getLastSync(r, r === "coops" ? null : currentCoopId) })))
     : [];
