@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-105";
+const APP_VERSION = "2026.07.06-106";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -2296,11 +2296,18 @@ function openProductModal(editingProduct, category) {
   editingProductId = editingProduct ? editingProduct.id : null;
   newProductFormOpen = !editingProduct;
   newProductCategory = category;
-  openModal(renderProductEditFormHtml(editingProduct, category), () => {
+  openModal(renderProductEditFormHtml(editingProduct, category, true), () => {
     editingProductId = null;
     newProductFormOpen = false;
     newProductCategory = null;
   });
+  const deleteBtn = document.getElementById("deleteProduct");
+  if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
+    "Remove this saved product? Any bags already using its photo will lose it too, not just future ones -- this can't be undone.",
+    () => localSupplyProductDelete(editingProduct.id, currentCoopId),
+    "Product removed",
+    async () => { STATE.supplyProducts = await localGetAll("supply_products", currentCoopId); renderProductsSection(); }
+  ));
   const saveBtn = document.getElementById("saveNewProduct");
   saveBtn.addEventListener("click", async () => {
     const brand = document.getElementById("np_brand").value.trim();
@@ -2367,9 +2374,8 @@ function beddingThresholdsFormHtml() {
       </div>`;
     }).join("")}
     <button class="btn small" id="addAreaBtn">+ Add tracking area</button>
-    <div style="margin-top:14px;display:flex;gap:8px">
+    <div class="modal-actions">
       <button class="btn btn-confirm" id="saveSettings">✓ Save areas &amp; thresholds</button>
-      <button class="btn btn-close" id="cancelThresholdsForm">Cancel</button>
     </div>
   `;
 }
@@ -2434,7 +2440,6 @@ function wireBeddingThresholdsModal() {
     if (renamedBirdUpdates.length > 0) await Promise.all(renamedBirdUpdates);
     await saveAreaSettings(newAreas, newThresholds);
   });
-  document.getElementById("cancelThresholdsForm").addEventListener("click", () => closeModal());
 }
 
 function openBeddingThresholdsModal() {
@@ -2555,9 +2560,9 @@ function noteFormHtml(editing, presetCategory) {
     </div>
     <datalist id="noteCategories">${categoryNames.map(c => `<option value="${esc(c)}">`).join("")}</datalist>
     <label class="field" style="margin-top:10px"><span>Note</span><textarea id="n_body" rows="4" placeholder="e.g. Cornish Cross are typically processed around 8 weeks — go by weight and behavior, not just the calendar.">${editing ? esc(editing.body || "") : ""}</textarea></label>
-    <div style="margin-top:12px;display:flex;gap:8px">
+    <div class="modal-actions">
       <button class="btn btn-confirm" id="saveNote">${editing ? "✓ Save changes" : "+ Add note"}</button>
-      <button class="btn btn-close" id="cancelNoteForm">Cancel</button>
+      ${editing ? `<button class="btn btn-close" id="deleteNote">🗑 Delete</button>` : ""}
     </div>
   `;
 }
@@ -2578,7 +2583,13 @@ function openNoteModal(editing, presetCategory) {
     await loadCoopData();
     renderNotesSection();
   });
-  document.getElementById("cancelNoteForm").addEventListener("click", () => closeModal());
+  const deleteBtn = document.getElementById("deleteNote");
+  if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
+    "Delete this note?",
+    () => localNoteDelete(editing.id, currentCoopId),
+    "Note deleted",
+    async () => { await loadCoopData(); renderNotesSection(); }
+  ));
 }
 
 // ================= COOPS =================
@@ -3704,6 +3715,17 @@ function refreshModalContent(html) {
   if (content) content.innerHTML = html;
 }
 
+/** The common shape behind every edit modal's Delete button: confirm,
+ * delete, toast, close the modal, then refresh whatever needs to reflect
+ * it. refreshFn can be sync or async (both are awaited safely). */
+async function confirmAndDelete(message, deleteFn, toastMessage, refreshFn) {
+  if (!(await showConfirmDialog(message))) return;
+  await deleteFn();
+  showToast(toastMessage, "delete");
+  closeModal();
+  await refreshFn();
+}
+
 function showConfirmDialog(message, confirmLabel = "Delete") {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
@@ -4213,8 +4235,8 @@ function batchEditModalHtml(batchName) {
       </div>
     </div>
 
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn btn-close small" id="deleteBatchBtn">Delete entire batch</button>
+    <div class="modal-actions">
+      <button class="btn btn-close small" id="deleteBatchBtn">🗑 Delete entire batch</button>
       <button class="btn ghost small" id="closeBatchEditModal" style="margin-left:auto">Done</button>
     </div>
   `;
@@ -4338,10 +4360,9 @@ function showBulkEditForm() {
     </div>
     <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="be_set_color" style="width:auto"><span>Set card color</span></label>
     <label class="field" style="margin-top:6px"><span>Card color</span><input type="color" id="be_color" value="#5A4B3C" style="width:60px;height:38px;padding:2px;cursor:pointer"></label>
-    <div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-confirm" id="saveBulkEdit">✓ Apply to ${count} bird${count !== 1 ? "s" : ""}</button><button class="btn btn-close" id="cancelBulkEdit2">Cancel</button></div>
+    <div class="modal-actions"><button class="btn btn-confirm" id="saveBulkEdit">✓ Apply to ${count} bird${count !== 1 ? "s" : ""}</button></div>
   `;
   openModal(html);
-  document.getElementById("cancelBulkEdit2").addEventListener("click", () => closeModal());
   document.getElementById("saveBulkEdit").addEventListener("click", async () => {
     const updates = {};
     const status = document.getElementById("be_status").value;
@@ -4499,7 +4520,7 @@ function showBirdForm(bird) {
 
       <div style="margin-top:12px"><label class="field"><span>Notes</span><textarea id="f_notes">${esc(f.notes)}</textarea></label></div>
       <div id="birdLogSection" style="margin-top:16px"></div>
-      <div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-confirm" id="saveBird">✓ Save</button><button class="btn btn-close" id="cancelBird2">Cancel</button></div>
+      <div class="modal-actions"><button class="btn btn-confirm" id="saveBird">✓ Save</button>${isEdit ? `<button class="btn btn-close" id="deleteBird">🗑 Delete</button>` : ""}</div>
     `;
 
     if (firstOpen) openModal(html);
@@ -4512,7 +4533,13 @@ function showBirdForm(bird) {
       const url = e.target.dataset ? e.target.dataset.viewPhoto : null;
       if (url) showPhotoLightbox(url);
     });
-    document.getElementById("cancelBird2").addEventListener("click", () => closeModal());
+    const deleteBtn = document.getElementById("deleteBird");
+    if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
+      "Delete this bird? This can't be undone.",
+      () => localBirdDelete(bird.id, currentCoopId),
+      "Bird deleted",
+      refreshAndRender
+    ));
 
     document.getElementById("f_type").addEventListener("change", (e) => { formState = readCurrentValues(); formState.type = e.target.value; render(false); });
     document.getElementById("f_status").addEventListener("change", (e) => { formState = readCurrentValues(); formState.status = e.target.value; render(false); });
@@ -4615,7 +4642,7 @@ function showBulkForm() {
     <div class="note-box" style="margin-top:10px">Each bird gets its own record — named "Batch name #1", "#2", and so on — so you can still log an individual dressed weight for each one at processing time. This just saves you from typing the shared details over and over. Hatch date defaults to a week before pickup (typical for chick delivery) — adjust it if the hatchery told you the actual date. Target harvest defaults to 6 weeks from hatch; adjust it if your breed runs longer.</div>
     <div style="margin-top:12px"><label class="field"><span>Notes</span><textarea id="k_notes" placeholder="optional"></textarea></label></div>
     <div style="margin-top:12px"><label class="field"><span>Group photo (optional, applied to every bird in the batch)</span><input type="file" id="k_photo" accept="image/*"></label></div>
-    <div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-confirm" id="saveBulk">✓ Create batch</button><button class="btn btn-close" id="cancelBulk2">Cancel</button></div>
+    <div class="modal-actions"><button class="btn btn-confirm" id="saveBulk">✓ Create batch</button></div>
   `;
   openModal(html);
   let targetTouched = false;
@@ -4623,7 +4650,6 @@ function showBulkForm() {
     if (!targetTouched) document.getElementById("k_target").value = addDays(e.target.value, 42);
   });
   document.getElementById("k_target").addEventListener("input", () => { targetTouched = true; });
-  document.getElementById("cancelBulk2").addEventListener("click", () => closeModal());
   document.getElementById("saveBulk").addEventListener("click", async () => {
     const count = Number(document.getElementById("k_count").value);
     if (!count || count < 1) return;
@@ -4895,9 +4921,9 @@ function hatchFormHtml(editing) {
     </div>
     <label class="field" style="margin-top:12px"><span>Notes</span><input id="h_notes" placeholder="optional" value="${editing ? esc(editing.notes || "") : ""}"></label>
     <div class="note-box" style="margin-top:10px">Expected hatch date is day 21 from when the eggs went in -- the timeline below each clutch tracks it automatically, including candling and lockdown reminders.</div>
-    <div style="margin-top:12px;display:flex;gap:8px">
+    <div class="modal-actions">
       <button class="btn btn-confirm" id="saveHatch">${editing ? "✓ Save changes" : "+ Start clutch"}</button>
-      <button class="btn btn-close" id="cancelHatchForm">Cancel</button>
+      ${editing ? `<button class="btn btn-close" id="deleteHatch">🗑 Delete</button>` : ""}
     </div>
   `;
 }
@@ -4923,7 +4949,13 @@ function openHatchModal(editing) {
     STATE.hatches = await localGetAll("hatches", currentCoopId);
     renderHatching();
   });
-  document.getElementById("cancelHatchForm").addEventListener("click", () => closeModal());
+  const deleteBtn = document.getElementById("deleteHatch");
+  if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
+    "Delete this clutch and its tracked outcomes? This can't be undone.",
+    () => localHatchDelete(editing.id, currentCoopId),
+    "Clutch deleted",
+    async () => { STATE.hatches = await localGetAll("hatches", currentCoopId); renderHatching(); }
+  ));
 }
 
 function renderEggsMain() {
@@ -5007,9 +5039,9 @@ function eggFormHtml(editing) {
       <label class="field"><span>Value Per Egg</span><input type="number" step="0.01" id="e_price" placeholder="e.g. 0.50" value="${editing ? (editing.price_per_egg != null ? editing.price_per_egg : "") : getCoopDefaults().eggPrice}"></label>
       <label class="field"><span>Notes</span><input id="e_notes" placeholder="optional" value="${editing ? esc(editing.notes || "") : ""}"></label>
     </div>
-    <div style="margin-top:12px;display:flex;gap:8px">
+    <div class="modal-actions">
       <button class="btn btn-confirm" id="saveEgg">${editing ? "✓ Save changes" : "+ Add entry"}</button>
-      <button class="btn btn-close" id="cancelEggForm">Cancel</button>
+      ${editing ? `<button class="btn btn-close" id="deleteEgg">🗑 Delete</button>` : ""}
     </div>
   `;
 }
@@ -5029,7 +5061,13 @@ function openEggModal(editing) {
     STATE.eggs = await localGetAll("eggs", currentCoopId);
     renderEggsMain();
   });
-  document.getElementById("cancelEggForm").addEventListener("click", () => closeModal());
+  const deleteBtn = document.getElementById("deleteEgg");
+  if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
+    "Delete this egg log entry? This can't be undone.",
+    () => localEggDelete(editing.id, currentCoopId),
+    "Egg log deleted",
+    async () => { STATE.eggs = await localGetAll("eggs", currentCoopId); renderEggsMain(); }
+  ));
 }
 
 // ================= EXPENSES =================
@@ -5361,9 +5399,9 @@ function expenseFormHtml(editing) {
       ? `For Egg Sale or Meat Sale specifically, fill in the quantity (eggs or lbs) -- this lets the app subtract that amount from the estimated "value produced" on the Coop tab, so a sale doesn't get counted twice: once as an estimate when collected, and again as real income here.`
       : `Layer Feed and Meat Feed are separate categories now, so the cost-per-dozen and cost-per-lb estimates on the Coop tab stay accurate without needing a flock tag. "Applies to" still matters for shared costs like Bedding or Equipment.${!editing ? " Buying more than one bag at once? Set the count, and the total amount here covers all of them -- each still becomes its own separate, independently trackable item in the Supply tab's inventory." : ""}`}</div>
     ${!editing && expenseFormEntryType === "expense" && QUANTITY_CATEGORIES.has(document.getElementById("x_cat") ? document.getElementById("x_cat").value : EXPENSE_CATEGORIES[0]) ? `<div id="productPickerHost">${renderProductPickerRow(document.getElementById("x_cat") ? document.getElementById("x_cat").value : EXPENSE_CATEGORIES[0])}</div>` : ""}
-    <div style="margin-top:12px;display:flex;gap:8px">
+    <div class="modal-actions">
       <button class="btn btn-confirm" id="saveExpense">${editing ? "✓ Save changes" : "+ Add entry"}</button>
-      <button class="btn btn-close" id="cancelExpenseForm">Cancel</button>
+      ${editing ? `<button class="btn btn-close" id="deleteExpense">🗑 Delete</button>` : ""}
     </div>
   `;
 }
@@ -5428,7 +5466,13 @@ function wireExpenseFormModal(editing) {
     closeModal();
     refreshAndRender();
   });
-  document.getElementById("cancelExpenseForm").addEventListener("click", () => closeModal());
+  const deleteBtn = document.getElementById("deleteExpense");
+  if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
+    editing.entry_type === "income" ? "Delete this income entry? This can't be undone." : "Delete this expense entry? This can't be undone.",
+    () => localExpenseDelete(editing.id, currentCoopId),
+    editing.entry_type === "income" ? "Income deleted" : "Expense deleted",
+    refreshAndRender
+  ));
 }
 
 function openExpenseModal(editing) {
@@ -5455,10 +5499,9 @@ function openExpenseModal(editing) {
  * flow -- both just embed this HTML and call wireProductPicker after. */
 /** Shared by both the picker's inline mini-form and the Supply tab's
  * "Products" page's edit form -- one definition, so the two never drift apart. */
-function renderProductEditFormHtml(editingProduct, category) {
+function renderProductEditFormHtml(editingProduct, category, standalone = false) {
   const lockedUnit = UNIT_LOCKS[category];
-  return `
-    <div class="form-block" style="margin:4px 0 8px;padding:10px">
+  const inner = `
       <div class="dim" style="font-size:11px;margin-bottom:6px">${editingProduct ? `Editing "${esc(editingProduct.brand)}"` : "New saved product"}</div>
       <div class="grid-form">
         <label class="field"><span>Brand</span><input id="np_brand" placeholder="e.g. Purina Layena" value="${editingProduct ? esc(editingProduct.brand || "") : ""}"></label>
@@ -5471,12 +5514,19 @@ function renderProductEditFormHtml(editingProduct, category) {
         }</select></label>
       </div>
       <div class="dim" style="font-size:11px;margin-top:6px">Selecting this product will fill in the brand (and description/quantity/unit, if set here) automatically -- keeps bags of the same product consistent instead of drifting apart by typo.</div>
+      ${standalone ? `
+      <div class="modal-actions">
+        <button class="btn btn-confirm" id="saveNewProduct">✓ Save product</button>
+        ${editingProduct ? `<button class="btn btn-close" id="deleteProduct">🗑 Delete</button>` : ""}
+      </div>
+      ` : `
       <div style="display:flex;gap:8px;margin-top:8px">
         <button class="btn btn-confirm small" id="saveNewProduct">✓ Save product</button>
         <button class="btn btn-close small" id="cancelNewProduct">Cancel</button>
       </div>
-    </div>
+      `}
   `;
+  return standalone ? inner : `<div class="form-block" style="margin:4px 0 8px;padding:10px">${inner}</div>`;
 }
 
 function renderProductPickerRow(category) {
@@ -5669,9 +5719,9 @@ function supplyGroupFormHtml(members) {
       <label class="field"><span>Date added</span><input type="date" id="grp_date" value="${first.date_added || todayStr()}"></label>
       <label class="field"><span>Count</span><input type="number" min="0" max="500" step="1" id="grp_count" value="${members.length}"></label>
     </div>
-    <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+    <div class="modal-actions">
       <button class="btn btn-confirm" id="saveGroupBtn">✓ Save changes</button>
-      <button class="btn btn-close" id="deleteGroupBtn">Delete all ${members.length}</button>
+      <button class="btn btn-close" id="deleteGroupBtn">🗑 Delete all ${members.length}</button>
     </div>
   `;
 }
@@ -6012,9 +6062,9 @@ function supplyFormHtml(editingSupply) {
     ${!editingSupply ? `<div id="productPickerHost">${renderProductPickerRow([...QUANTITY_CATEGORIES][0])}</div>` : ""}
     ${editingSupply ? `<label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="sp_opened" ${editingSupply.opened_at ? "checked" : ""} style="width:auto"><span>Opened -- won't group with sealed spares even at Full</span></label>` : ""}
     ${!editingSupply ? `<div class="dim" style="font-size:11px;margin-top:8px">Buying multiple bags at once? Set the count above -- each one is added as its own separate, independently trackable item rather than a single item marked "3 bags." Identical full bags collapse into one compact card automatically -- "Open one" peels a single bag off to track it on its own.</div>` : ""}
-    <div style="margin-top:12px;display:flex;gap:8px">
+    <div class="modal-actions">
       <button class="btn btn-confirm" id="saveSupply">${editingSupply ? "✓ Save changes" : "+ Add item"}</button>
-      <button class="btn btn-close" id="cancelSupplyForm">Cancel</button>
+      ${editingSupply ? `<button class="btn btn-close" id="deleteSupply">🗑 Delete</button>` : ""}
     </div>
   `;
 }
@@ -6069,7 +6119,13 @@ function wireSupplyForm(editingSupply) {
     closeModal();
     refreshAndRender();
   });
-  document.getElementById("cancelSupplyForm").addEventListener("click", () => closeModal());
+  const deleteBtn = document.getElementById("deleteSupply");
+  if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
+    "Delete this supply item permanently? This can't be undone.",
+    () => localSupplyDelete(editingSupply.id, currentCoopId),
+    "Supply item deleted",
+    refreshAndRender
+  ));
 }
 
 /** Single entry point for both "+ Add supply item" (pass null) and editing
@@ -6206,9 +6262,9 @@ function beddingFormHtml(editing) {
       <label class="field"><span>Notes</span><input id="d_notes" placeholder="optional" value="${editing ? esc(editing.notes || "") : ""}"></label>
     </div>
     <div class="note-box" style="margin-top:10px"><strong style="color:var(--text)">Top-off</strong> is adding fresh material without stirring. <strong style="color:var(--text)">Churn</strong> is stirring what's already there without adding anything. <strong style="color:var(--text)">Top-off + Churn</strong> is both in the same visit. Only Churn and Top-off + Churn count toward the churn-due countdown above -- topping off alone doesn't reset it. Use <strong style="color:var(--text)">Full Clean-out</strong> when the coop or run is emptied down to bare floor.</div>
-    <div style="margin-top:12px;display:flex;gap:8px">
+    <div class="modal-actions">
       <button class="btn btn-confirm" id="saveBedding">${editing ? "✓ Save changes" : "+ Add entry"}</button>
-      <button class="btn btn-close" id="cancelBeddingForm">Cancel</button>
+      ${editing ? `<button class="btn btn-close" id="deleteBedding">🗑 Delete</button>` : ""}
     </div>
   `;
 }
@@ -6231,7 +6287,13 @@ function openBeddingModal(editing) {
     closeModal();
     refreshAndRender();
   });
-  document.getElementById("cancelBeddingForm").addEventListener("click", () => closeModal());
+  const deleteBtn = document.getElementById("deleteBedding");
+  if (deleteBtn) deleteBtn.addEventListener("click", () => confirmAndDelete(
+    "Delete this bedding entry? This can't be undone.",
+    () => localBeddingDelete(editing.id, currentCoopId),
+    "Bedding entry deleted",
+    refreshAndRender
+  ));
 }
 
 // ---------- Init ----------
