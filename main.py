@@ -23,6 +23,12 @@ from starlette.datastructures import MutableHeaders
 DATA_DIR = Path(os.environ.get("DATA_DIR", "./data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "coop.db"
+
+# Bumped alongside the frontend's APP_VERSION (static/app.js) whenever either
+# changes -- lets the client detect a sync server that's running older code
+# than what it's talking to it with (e.g. the static frontend auto-updated
+# from a CDN, but this self-hosted server hasn't been restarted since).
+SERVER_VERSION = "2026.07.06-116"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -412,13 +418,11 @@ def on_startup():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "db": str(DB_PATH)}
-
-
-@app.get("/api/health")
-def health_check():
-    """Cheap reachability ping for the app's online/offline indicator -- no DB query, just confirms the server is up and answering."""
-    return {"ok": True}
+    """Cheap reachability ping for the app's online/offline indicator, and
+    reports this server's version so the client can detect a mismatch --
+    e.g. a self-hosted sync server that hasn't been restarted since the
+    static frontend it's serving (or being talked to by) auto-updated."""
+    return {"status": "ok", "db": str(DB_PATH), "version": SERVER_VERSION}
 
 
 # ---------- Coop-specific routes (registered before the generic ones below, since

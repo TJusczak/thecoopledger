@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-115";
+const APP_VERSION = "2026.07.06-116";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -1886,6 +1886,36 @@ function renderLocalOnlyBadge() {
     : "This coop's data lives only in this browser. Clearing this browser's site data, or uninstalling/removing the browser, will permanently delete it -- tap to export a backup or switch to a synced server.";
 }
 
+/** Set by checkConnection() when the sync server's reported version doesn't
+ * match this app's own -- null means "unknown or matching," otherwise
+ * {server, client}. Mutually exclusive with local-only mode in practice
+ * (a local-only setup never talks to a server to be out of date with). */
+let serverVersionMismatch = null;
+
+function renderServerVersionBadge() {
+  let badge = document.getElementById("serverVersionBadge");
+  if (!serverVersionMismatch) {
+    if (badge) badge.remove();
+    return;
+  }
+  if (!badge) {
+    badge = document.createElement("div");
+    badge.id = "serverVersionBadge";
+    badge.className = "server-version-badge";
+    badge.addEventListener("click", () => {
+      alert(
+        `This sync server is running an older version than the app you're using.\n\n` +
+        `App version: ${serverVersionMismatch.client}\nServer version: ${serverVersionMismatch.server}\n\n` +
+        `The web app itself updates automatically, but the sync server is a separate process that only picks up changes when it's restarted. ` +
+        `Until it's restarted, some newer features or fixes may not work correctly, and in some cases data saved through it can be silently dropped.\n\n` +
+        `Restart the sync server to resolve this.`
+      );
+    });
+    document.body.appendChild(badge);
+  }
+  badge.innerHTML = `⚠️ Sync server outdated <span class="server-version-badge-sub">tap for details</span>`;
+}
+
 function updateTabVisibility() {
   const hasCoop = !!currentCoopId;
   document.querySelectorAll(".tab").forEach(t => {
@@ -2530,6 +2560,11 @@ function openProductModal(editingProduct, category) {
       default_unit: document.getElementById("np_unit")?.value,
     };
   }
+  function syncProductEverywhere() {
+    const idx = STATE.supplyProducts.findIndex(p => p.id === editingProduct.id);
+    if (idx !== -1) STATE.supplyProducts[idx] = editingProduct; else STATE.supplyProducts.push(editingProduct);
+    if (document.getElementById("supplySubContent")) renderProductsSection(); // refreshes the card behind this modal; if Supply Inventory isn't the active sub-tab right now it'll just read the updated STATE.supplyProducts whenever it's next shown, no reload needed
+  }
   function wireProductModalPhoto() {
     const preview = document.getElementById("productPhotoPreview");
     if (preview) preview.addEventListener("click", (e) => {
@@ -2540,6 +2575,7 @@ function openProductModal(editingProduct, category) {
         x: editingProduct.photo_pos_x ?? 50, y: editingProduct.photo_pos_y ?? 50, zoom: photoZoom(editingProduct), aspectRatio: "1/1",
         onSave: async (x, y, zoom) => {
           editingProduct = { ...(await localSupplyProductUpdate(editingProduct.id, { photo_pos_x: x, photo_pos_y: y, photo_zoom: zoom })), ...unsaved };
+          syncProductEverywhere();
           refreshProductModal();
         },
       });
@@ -2549,6 +2585,7 @@ function openProductModal(editingProduct, category) {
       const unsaved = captureUnsavedProductFields();
       openPhotoRepositionModal(productPhotoUrl(editingProduct), editingProduct.photo_pos_x ?? 50, editingProduct.photo_pos_y ?? 50, photoZoom(editingProduct), "1/1", async (x, y, zoom) => {
         editingProduct = { ...(await localSupplyProductUpdate(editingProduct.id, { photo_pos_x: x, photo_pos_y: y, photo_zoom: zoom })), ...unsaved };
+        syncProductEverywhere();
         refreshProductModal();
       });
     });
@@ -6884,6 +6921,8 @@ async function checkConnection() {
   if (localOnlyMode) {
     dot.className = "conn-dot local";
     label.textContent = "Local only";
+    serverVersionMismatch = null;
+    renderServerVersionBadge();
     return;
   }
   try {
@@ -6891,9 +6930,14 @@ async function checkConnection() {
     if (!res.ok) throw new Error("bad status");
     dot.className = "conn-dot online";
     label.textContent = "Online";
+    const data = await res.json();
+    serverVersionMismatch = (data.version && data.version !== APP_VERSION) ? { server: data.version, client: APP_VERSION } : null;
+    renderServerVersionBadge();
   } catch (err) {
     dot.className = "conn-dot offline";
     label.textContent = "Offline";
+    serverVersionMismatch = null; // can't tell while unreachable -- don't claim outdated when it might just be offline
+    renderServerVersionBadge();
   }
 }
 window.addEventListener("online", () => {
