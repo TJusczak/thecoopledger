@@ -104,6 +104,19 @@ quietly dropping `.well-known/assetlinks.json` (needed for the Android
 app's domain verification) from every deploy without any error. `/.`
 copies everything, hidden or not.
 
+Separately, Cloudflare's own asset upload step has a known, longstanding
+issue where hidden folders like `.well-known/` sometimes don't survive
+being uploaded at all, independent of the build command above. Rather
+than depend on that being fixed, `landing/assetlinks.json` (no leading
+dot) is the real source of truth for the Android app tied to this
+domain, and `landing/_redirects` rewrites `/.well-known/assetlinks.json`
+to it at request time -- a 200 rewrite, not an HTTP redirect, since
+Android's verifier won't follow a redirect for this check. If you ever
+need to update the Android app's fingerprint, edit
+`landing/assetlinks.json`. This is unrelated to `static/.well-known/`,
+which is a separate file for anyone self-hosting `static/` directly at
+their own domain and wanting their own Android build to verify there.
+
 ## Local-only mode: no server required at all
 
 The app doesn't require self-hosting to be useful. On first visit, "Start

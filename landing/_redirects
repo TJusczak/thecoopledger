@@ -1,0 +1,8 @@
+# Cloudflare has a known, long-standing issue with hidden (dot-prefixed)
+# files and folders sometimes not surviving its own static asset upload
+# step, regardless of what's actually in the build output. Since Android's
+# Digital Asset Links verification requires a real 200 response at exactly
+# /.well-known/assetlinks.json -- and won't follow an HTTP redirect for it --
+# this rewrites that URL to the plain, non-hidden copy of the same file
+# instead of depending on the hidden folder itself being uploaded correctly.
+/.well-known/assetlinks.json /assetlinks.json 200
