@@ -1,13 +1,13 @@
 const CACHE_NAME = "coop-ledger-shell-v4";
 const SHELL_ASSETS = [
-  "/",
-  "/style.css",
-  "/app.js",
-  "/vendor/chart.umd.js",
-  "/vendor/jszip.min.js",
-  "/manifest.json",
-  "/icon-192.png",
-  "/icon-512.png",
+  "./",
+  "style.css",
+  "app.js",
+  "vendor/chart.umd.js",
+  "vendor/jszip.min.js",
+  "manifest.json",
+  "icon-192.png",
+  "icon-512.png",
 ];
 
 self.addEventListener("install", (event) => {

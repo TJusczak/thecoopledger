@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-95";
+const APP_VERSION = "2026.07.06-96";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -6406,7 +6406,7 @@ init();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").then((reg) => {
+    navigator.serviceWorker.register("sw.js").then((reg) => {
       reg.addEventListener("updatefound", () => {
         const newWorker = reg.installing;
         if (!newWorker) return;
@@ -6446,7 +6446,7 @@ function showUpdateAvailableToast() {
       // exactly why the button could appear to do nothing -- force each one
       // fresh from the network first, which also updates that cache, so the
       // reload right after is guaranteed to actually use the new version.
-      await Promise.all(["/", "/app.js", "/style.css"].map(u => fetch(u, { cache: "reload" }).catch(() => {})));
+      await Promise.all(["./", "app.js", "style.css"].map(u => fetch(u, { cache: "reload" }).catch(() => {})));
     } finally {
       window.location.reload();
     }
@@ -6470,7 +6470,7 @@ async function checkForAppUpdate({ manual = false } = {}) {
     return;
   }
   try {
-    const res = await fetch("/app.js", { cache: "no-store" });
+    const res = await fetch("app.js", { cache: "no-store" });
     if (!res.ok) { if (manual) showToast("Couldn't reach the server to check.", "delete"); return; }
     const text = await res.text();
     const match = text.match(/const APP_VERSION = "([^"]+)"/);
