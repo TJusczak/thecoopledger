@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-101";
+const APP_VERSION = "2026.07.06-105";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], activityLog: [], supplyProducts: [] };
@@ -39,13 +39,11 @@ let selectedSupplyIds = new Set();
 let expandedBatches = new Set();
 let eggFilters = { year: "" };
 let editingEggId = null;
-let eggFormOpen = false;
 let eggFiltersOpen = false;
 let eggsVisibleCount = PAGE_SIZE;
 let expenseFilters = { category: "", year: "" };
 let expenseMonthKey = null; // "yyyy-MM" of the currently viewed month; null = current month
 let editingExpenseId = null;
-let expenseFormOpen = false;
 let expenseFormEntryType = "expense";
 let pendingExpenseCategory = null; // persists a new entry's category choice across re-renders (product selection, income/expense toggle) that would otherwise rebuild the dropdown back to its default
 let expenseScope = "month"; // "month" | "year" | "all"
@@ -56,7 +54,6 @@ let expenseRangeMode = false;
 let expensesVisibleCount = PAGE_SIZE;
 let beddingFilters = { area: "", entryType: "", year: "" };
 let editingBeddingId = null;
-let beddingFormOpen = false;
 let beddingFiltersOpen = false;
 let selectedProductId = null; // shared by both the direct supply form and the expense form's auto-create flow
 let newProductFormOpen = false;
@@ -65,7 +62,6 @@ let newProductCategory = null; // which category "+ Add Product" was clicked for
 let pendingProductPhotoBlob = null;
 let feedSupplyVisibleCount = PAGE_SIZE;
 let beddingSupplyVisibleCount = PAGE_SIZE;
-let showEmptySupplyModal = false;
 let emptySupplyVisibleCount = PAGE_SIZE;
 const SUPPLY_STATUSES = ["Full", "3/4", "1/2", "1/4", "Empty"];
 const FEED_SUPPLY_CATEGORIES = new Set(["Layer Feed", "Meat Feed", "Treats"]); // Feed section, and also the categories locked to "lb" below
@@ -1719,7 +1715,7 @@ function renderSettingsHub() {
   const subNav = document.getElementById("settingsSubNav");
   if (!currentCoopId) settingsSubTab = (settingsSubTab === "connection") ? "connection" : "coops"; // the other sections need an active coop to mean anything
   const subs = currentCoopId
-    ? [{ id: "coops", label: "Coops" }, { id: "connection", label: "Connection" }, { id: "activity", label: "Activity" }, { id: "defaults", label: "Defaults" }, { id: "thresholds", label: "Bedding" }]
+    ? [{ id: "coops", label: "Coops" }, { id: "connection", label: "Connection" }, { id: "activity", label: "Activity" }, { id: "defaults", label: "Defaults" }]
     : [{ id: "coops", label: "Coops" }, { id: "connection", label: "Connection" }];
   subNav.innerHTML = subs.map(s => `<button class="range-btn ${settingsSubTab === s.id ? "active" : ""}" data-sub="${s.id}">${s.label}</button>`).join("");
   el.innerHTML = `<div id="settingsContent"></div>`;
@@ -1728,7 +1724,7 @@ function renderSettingsHub() {
   else if (settingsSubTab === "connection") renderConnectionSection();
   else if (settingsSubTab === "activity") renderActivityLogSection();
   else if (settingsSubTab === "defaults") renderDefaultsSection();
-  else if (settingsSubTab === "thresholds") renderThresholdsSection();
+  else renderCoopsSection(); // thresholds used to live here; if a stale settingsSubTab still says so, land somewhere real instead of an empty panel
 }
 
 function buildDiagnosticsText() {
@@ -2225,7 +2221,6 @@ function renderProductsSection() {
   const el = document.getElementById("supplySubContent");
   if (!currentCoopId) { el.innerHTML = noCoopMessage(); return; }
   const categoryOrder = ["Layer Feed", "Meat Feed", "Treats", "Bedding"];
-  const editingProduct = editingProductId ? STATE.supplyProducts.find(p => p.id === editingProductId) : null;
   el.innerHTML = `
     <div class="card-title" style="margin-bottom:4px">Saved Products</div>
     <div class="dim" style="font-size:12px;margin-bottom:14px">Every product you've photographed or named, grouped the same way the Inventory tab is. Add new ones here, or from the picker when you're actually logging a bag -- either way this is the page for renaming, updating the usual quantity/description, or cleaning up ones you don't need anymore.</div>
@@ -2235,14 +2230,12 @@ function renderProductsSection() {
       const groups = {};
       products.forEach(p => { const key = p.brand || cat; (groups[key] = groups[key] || []).push(p); });
       const brandGroups = Object.entries(groups).map(([brand, items]) => ({ brand, items }));
-      const addingHere = newProductFormOpen && newProductCategory === cat;
       return `
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:18px;border-bottom:2px solid var(--${catTone});padding-bottom:4px">
           <div class="flock-section-header" style="color:var(--${catTone});margin:0;border:none;padding:0">${esc(cat)}${products.length ? ` (${products.length})` : ""}</div>
           <button class="btn ghost small" data-add-product-cat="${esc(cat)}" style="flex:0 0 auto">+ Add Product</button>
         </div>
-        ${addingHere ? renderProductEditFormHtml(null, cat) : ""}
-        ${products.length === 0 ? (addingHere ? "" : `<div class="dim" style="font-size:12px;margin:8px 0">No saved products in this category yet.</div>`) : `
+        ${products.length === 0 ? `<div class="dim" style="font-size:12px;margin:8px 0">No saved products in this category yet.</div>` : `
         <div style="margin-top:8px;display:flex;flex-direction:column;gap:10px">
           ${brandGroups.map(({ brand, items }) => `
             <div class="product-brand-group" style="width:100%;box-sizing:border-box">
@@ -2264,7 +2257,6 @@ function renderProductsSection() {
                       <button class="icon-btn" data-settings-remove-product="${p.id}" title="Remove">🗑</button>
                     </div>
                   </div>
-                  ${editingProduct && editingProduct.id === p.id ? renderProductEditFormHtml(editingProduct, editingProduct.category) : ""}
                 `;}).join("")}
               </div>
             </div>
@@ -2278,102 +2270,114 @@ function renderProductsSection() {
     e.stopPropagation();
     showPhotoLightbox(el2.dataset.viewPhoto);
   }));
-  el.querySelectorAll("[data-add-product-cat]").forEach(btn => btn.addEventListener("click", () => {
-    const cat = btn.dataset.addProductCat;
-    if (newProductFormOpen && newProductCategory === cat) { newProductFormOpen = false; newProductCategory = null; }
-    else { newProductFormOpen = true; newProductCategory = cat; editingProductId = null; }
-    renderProductsSection();
-  }));
+  el.querySelectorAll("[data-add-product-cat]").forEach(btn => btn.addEventListener("click", () => openProductModal(null, btn.dataset.addProductCat)));
   el.querySelectorAll("[data-settings-edit-product]").forEach(btn => btn.addEventListener("click", () => {
-    editingProductId = editingProductId === btn.dataset.settingsEditProduct ? null : btn.dataset.settingsEditProduct;
-    newProductFormOpen = false;
-    newProductCategory = null;
-    renderProductsSection();
+    const product = STATE.supplyProducts.find(p => p.id === btn.dataset.settingsEditProduct);
+    openProductModal(product, product.category);
   }));
   el.querySelectorAll("[data-settings-remove-product]").forEach(btn => btn.addEventListener("click", async () => {
     const id = btn.dataset.settingsRemoveProduct;
     if (!(await showConfirmDialog("Remove this saved product? Any bags already using its photo will lose it too, not just future ones -- this can't be undone."))) return;
     await localSupplyProductDelete(id, currentCoopId);
     STATE.supplyProducts = await localGetAll("supply_products", currentCoopId);
-    if (editingProductId === id) editingProductId = null;
     showToast("Product removed", "delete");
     renderProductsSection();
   }));
-  const cancelBtn = document.getElementById("cancelNewProduct");
-  if (cancelBtn) cancelBtn.addEventListener("click", () => { editingProductId = null; newProductFormOpen = false; newProductCategory = null; renderProductsSection(); });
+}
+
+/** Single entry point for the standalone Products page's add/edit, mirroring
+ * openSupplyModal's shape. This is deliberately separate from the embedded
+ * picker's own inline "+New" flow inside the supply form -- that one stays
+ * as an inline expansion within the supply modal rather than stacking a
+ * second modal on top of it, since layering modals is generally confusing
+ * to navigate on mobile. They share the same underlying form markup
+ * (renderProductEditFormHtml) and save logic, just triggered differently. */
+function openProductModal(editingProduct, category) {
+  editingProductId = editingProduct ? editingProduct.id : null;
+  newProductFormOpen = !editingProduct;
+  newProductCategory = category;
+  openModal(renderProductEditFormHtml(editingProduct, category), () => {
+    editingProductId = null;
+    newProductFormOpen = false;
+    newProductCategory = null;
+  });
   const saveBtn = document.getElementById("saveNewProduct");
-  if (saveBtn) saveBtn.addEventListener("click", async () => {
+  saveBtn.addEventListener("click", async () => {
     const brand = document.getElementById("np_brand").value.trim();
     if (!brand) { alert("Give the product a name first"); return; }
     const qtyVal = document.getElementById("np_qty").value;
     const unitVal = document.getElementById("np_unit").value;
     const descVal = document.getElementById("np_desc").value;
-    if (editingProductId) {
-      await localSupplyProductUpdate(editingProductId, {
+    let productId;
+    if (editingProduct) {
+      await localSupplyProductUpdate(editingProduct.id, {
         brand, default_quantity: qtyVal ? Number(qtyVal) : null, default_unit: unitVal || null, default_description: descVal || null,
       });
+      productId = editingProduct.id;
     } else {
-      if (!newProductCategory) return; // shouldn't happen -- the form only opens with a category already chosen
       const created = await localSupplyProductCreate({
-        coop_id: currentCoopId, category: newProductCategory, brand, last_used_at: todayStr(),
+        coop_id: currentCoopId, category, brand, last_used_at: todayStr(),
         default_quantity: qtyVal ? Number(qtyVal) : null, default_unit: unitVal || null, default_description: descVal || null,
       });
-      editingProductId = created.id; // so the photo upload below targets the right record
+      productId = created.id;
     }
     const photoFile = document.getElementById("np_photo").files[0];
     if (photoFile) {
       const blob = await resizeImageFileToBlob(photoFile);
-      await queuePendingProductPhoto(editingProductId, blob);
+      await queuePendingProductPhoto(productId, blob);
       trySyncSoon("supply_products", currentCoopId);
       await refreshPendingProductPhotoUrls();
     }
     STATE.supplyProducts = await localGetAll("supply_products", currentCoopId);
-    const wasCreate = !editingProduct;
-    editingProductId = null;
-    newProductFormOpen = false;
-    newProductCategory = null;
-    showToast(wasCreate ? "Product added" : "Product updated", wasCreate ? "create" : "update");
+    showToast(editingProduct ? "Product updated" : "Product added", editingProduct ? "update" : "create");
+    closeModal();
     renderProductsSection();
   });
+  document.getElementById("cancelNewProduct").addEventListener("click", () => closeModal());
 }
 
-function renderThresholdsSection() {
-  const el = document.getElementById("settingsContent");
-  if (!currentCoopId) { el.innerHTML = noCoopMessage(); return; }
+function beddingThresholdsFormHtml() {
   const coop = STATE.coops.find(c => c.id === currentCoopId);
   const settings = getCoopSettings();
   const areas = getBeddingAreas();
   const thresholds = settings.bedding_thresholds || {};
-  el.innerHTML = `
-    <div class="card">
-      <div class="card-title">Bedding tracking areas — ${esc(coop ? coop.name : "")}</div>
-      <div class="dim" style="font-size:12px;margin-bottom:14px">
-        Track as many physical areas as your setup actually has — e.g. split "Coop Floor" into separate Layer-side and Meat-side entries if you clean them on different schedules. Each area gets its own freshness badge on the Coop tab and Bedding tab, and its own warn/overdue thresholds below. Renaming an area here only affects new tracking; past log entries keep whatever area name they were logged under.
-        These same areas are also what's available as a bird's Location on the Flock tab — add one here (e.g. a small second coop elsewhere in the yard) and it's immediately assignable to birds, without needing a whole separate coop just to track where they are.
-      </div>
-      ${areas.map((area, i) => {
-        const t = thresholds[area] || { warn: 120, danger: 180, churn: 7 };
-        return `
-        <div class="form-block" style="padding:12px 14px;margin-bottom:10px">
-          <div style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:end">
-            <div style="display:flex;flex-direction:column;gap:2px;padding-bottom:8px">
-              <button class="icon-btn" data-move-up="${i}" ${i === 0 ? "disabled" : ""} style="padding:0 6px;font-size:12px" title="Move up">▲</button>
-              <button class="icon-btn" data-move-down="${i}" ${i === areas.length - 1 ? "disabled" : ""} style="padding:0 6px;font-size:12px" title="Move down">▼</button>
-            </div>
-            <label class="field"><span>Area name</span><input class="area-name" data-idx="${i}" value="${esc(area)}"></label>
-            <button class="icon-btn" data-remove-area="${i}" title="Remove this area">🗑</button>
+  return `
+    <div class="form-head">Bedding tracking areas — ${esc(coop ? coop.name : "")}</div>
+    <div class="dim" style="font-size:12px;margin-bottom:14px">
+      Track as many physical areas as your setup actually has — e.g. split "Coop Floor" into separate Layer-side and Meat-side entries if you clean them on different schedules. Each area gets its own freshness badge on the Coop tab and Bedding tab, and its own warn/overdue thresholds below. Renaming an area here only affects new tracking; past log entries keep whatever area name they were logged under.
+      These same areas are also what's available as a bird's Location on the Flock tab — add one here (e.g. a small second coop elsewhere in the yard) and it's immediately assignable to birds, without needing a whole separate coop just to track where they are.
+    </div>
+    ${areas.map((area, i) => {
+      const t = thresholds[area] || { warn: 120, danger: 180, churn: 7 };
+      return `
+      <div class="form-block" style="padding:12px 14px;margin-bottom:10px">
+        <div style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:end">
+          <div style="display:flex;flex-direction:column;gap:2px;padding-bottom:8px">
+            <button class="icon-btn" data-move-up="${i}" ${i === 0 ? "disabled" : ""} style="padding:0 6px;font-size:12px" title="Move up">▲</button>
+            <button class="icon-btn" data-move-down="${i}" ${i === areas.length - 1 ? "disabled" : ""} style="padding:0 6px;font-size:12px" title="Move down">▼</button>
           </div>
-          <div class="grid-form" style="grid-template-columns:1fr 1fr 1fr;margin-top:10px">
-            <label class="field"><span>Top-off / churn every (days)</span><input type="number" min="1" class="threshold-churn" data-area="${esc(area)}" value="${t.churn || 7}"></label>
-            <label class="field"><span>Warn after (days)</span><input type="number" min="1" class="threshold-warn" data-area="${esc(area)}" value="${t.warn}"></label>
-            <label class="field"><span>Overdue after (days)</span><input type="number" min="1" class="threshold-danger" data-area="${esc(area)}" value="${t.danger}"></label>
-          </div>
-        </div>`;
-      }).join("")}
-      <button class="btn small" id="addAreaBtn">+ Add tracking area</button>
-      <div style="margin-top:14px"><button class="btn btn-confirm" id="saveSettings">✓ Save areas &amp; thresholds</button></div>
+          <label class="field"><span>Area name</span><input class="area-name" data-idx="${i}" value="${esc(area)}"></label>
+          <button class="icon-btn" data-remove-area="${i}" title="Remove this area">🗑</button>
+        </div>
+        <div class="grid-form" style="grid-template-columns:1fr 1fr 1fr;margin-top:10px">
+          <label class="field"><span>Top-off / churn every (days)</span><input type="number" min="1" class="threshold-churn" data-area="${esc(area)}" value="${t.churn || 7}"></label>
+          <label class="field"><span>Warn after (days)</span><input type="number" min="1" class="threshold-warn" data-area="${esc(area)}" value="${t.warn}"></label>
+          <label class="field"><span>Overdue after (days)</span><input type="number" min="1" class="threshold-danger" data-area="${esc(area)}" value="${t.danger}"></label>
+        </div>
+      </div>`;
+    }).join("")}
+    <button class="btn small" id="addAreaBtn">+ Add tracking area</button>
+    <div style="margin-top:14px;display:flex;gap:8px">
+      <button class="btn btn-confirm" id="saveSettings">✓ Save areas &amp; thresholds</button>
+      <button class="btn btn-close" id="cancelThresholdsForm">Cancel</button>
     </div>
   `;
+}
+
+function wireBeddingThresholdsModal() {
+  const areas = getBeddingAreas();
+  const thresholds = getCoopSettings().bedding_thresholds || {};
+  const refresh = () => { refreshModalContent(beddingThresholdsFormHtml()); wireBeddingThresholdsModal(); };
   document.getElementById("addAreaBtn").addEventListener("click", () => {
     const name = prompt("Name this new area (e.g. \"Coop Floor — Meat Side\"):");
     if (!name || !name.trim()) return;
@@ -2381,21 +2385,21 @@ function renderThresholdsSection() {
     const newAreas = [...areas, name.trim()];
     saveAreaSettings(newAreas, { ...thresholds, [name.trim()]: { warn: 120, danger: 180, churn: 7 } });
   });
-  el.querySelectorAll("[data-move-up]").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("[data-move-up]").forEach(b => b.addEventListener("click", () => {
     const i = Number(b.dataset.moveUp);
     if (i <= 0) return;
     const newAreas = [...areas];
     [newAreas[i - 1], newAreas[i]] = [newAreas[i], newAreas[i - 1]];
     saveAreaSettings(newAreas, thresholds);
   }));
-  el.querySelectorAll("[data-move-down]").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("[data-move-down]").forEach(b => b.addEventListener("click", () => {
     const i = Number(b.dataset.moveDown);
     if (i >= areas.length - 1) return;
     const newAreas = [...areas];
     [newAreas[i], newAreas[i + 1]] = [newAreas[i + 1], newAreas[i]];
     saveAreaSettings(newAreas, thresholds);
   }));
-  el.querySelectorAll("[data-remove-area]").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("[data-remove-area]").forEach(b => b.addEventListener("click", () => {
     const idx = Number(b.dataset.removeArea);
     const removed = areas[idx];
     if (!confirm(`Stop tracking "${removed}"? Past log entries for it are kept, but it won't show a freshness badge anymore.`)) return;
@@ -2403,13 +2407,14 @@ function renderThresholdsSection() {
     saveAreaSettings(newAreas, thresholds);
   }));
   document.getElementById("saveSettings").addEventListener("click", async () => {
-    const newAreas = [...el.querySelectorAll(".area-name")].map(inp => inp.value.trim()).filter(Boolean);
+    const modalEl = document.getElementById("modalContent");
+    const newAreas = [...modalEl.querySelectorAll(".area-name")].map(inp => inp.value.trim()).filter(Boolean);
     const newThresholds = {};
     newAreas.forEach((area, i) => {
       const originalArea = areas[i];
-      const churnInput = el.querySelector(`.threshold-churn[data-area="${originalArea}"]`);
-      const warnInput = el.querySelector(`.threshold-warn[data-area="${originalArea}"]`);
-      const dangerInput = el.querySelector(`.threshold-danger[data-area="${originalArea}"]`);
+      const churnInput = modalEl.querySelector(`.threshold-churn[data-area="${originalArea}"]`);
+      const warnInput = modalEl.querySelector(`.threshold-warn[data-area="${originalArea}"]`);
+      const dangerInput = modalEl.querySelector(`.threshold-danger[data-area="${originalArea}"]`);
       newThresholds[area] = {
         churn: Number(churnInput ? churnInput.value : 7) || 7,
         warn: Number(warnInput ? warnInput.value : 120) || 120,
@@ -2427,8 +2432,14 @@ function renderThresholdsSection() {
       }
     });
     if (renamedBirdUpdates.length > 0) await Promise.all(renamedBirdUpdates);
-    saveAreaSettings(newAreas, newThresholds);
+    await saveAreaSettings(newAreas, newThresholds);
   });
+  document.getElementById("cancelThresholdsForm").addEventListener("click", () => closeModal());
+}
+
+function openBeddingThresholdsModal() {
+  openModal(beddingThresholdsFormHtml());
+  wireBeddingThresholdsModal();
 }
 
 async function saveAreaSettings(newAreas, newThresholds) {
@@ -2437,21 +2448,18 @@ async function saveAreaSettings(newAreas, newThresholds) {
   await localCoopUpdate(currentCoopId, { settings: JSON.stringify(newSettings) });
   showToast("Bedding areas updated", "update");
   await loadCoops();
-  renderThresholdsSection();
+  closeModal();
+  renderBeddingFreshness();
 }
 
 // ================= NOTES =================
 let editingNoteId = null;
-let notesFormOpen = false;
-let noteFormCategory = null; // pre-filled when opened via a category pill
 let notesFiltersOpen = false;
 let noteFilters = { category: "", search: "" };
 
 function renderNotesSection() {
   const el = document.getElementById("flockSubContent");
   if (!currentCoopId) { el.innerHTML = noCoopMessage(); return; }
-  const editing = editingNoteId ? STATE.notes.find(n => n.id === editingNoteId) : null;
-  const showForm = notesFormOpen || !!editing;
 
   const allGroups = {};
   STATE.notes.forEach(n => { const cat = n.category || "General"; (allGroups[cat] = allGroups[cat] || []).push(n); });
@@ -2482,7 +2490,7 @@ function renderNotesSection() {
       <div class="dim">${filteredNotes.length} of ${STATE.notes.length} shown</div>
       <div style="display:flex;gap:8px">
         <button class="btn ghost small" id="toggleNoteFilters">Filters${anyFilter ? " (on)" : ""} ${notesFiltersOpen ? "▾" : "▸"}</button>
-        <button class="btn ${showForm ? 'btn-close' : ''}" id="toggleNoteForm">${showForm ? "✕ Close" : "+ Add note"}</button>
+        <button class="btn" id="toggleNoteForm">+ Add note</button>
       </div>
     </div>
 
@@ -2493,22 +2501,6 @@ function renderNotesSection() {
         <label class="field"><span>Search</span><input id="filterNoteSearch" placeholder="Search titles and notes" value="${esc(noteFilters.search)}"></label>
       </div>
       ${anyFilter ? `<div style="margin-top:10px"><button class="btn ghost small" id="clearNoteFilters">Clear filters</button></div>` : ""}
-    </div>
-    ` : ""}
-
-    ${showForm ? `
-    <div class="form-block" style="${editing ? "border-color:var(--rust)" : ""}">
-      <div class="form-head">${editing ? "Edit note" : "Add a note"}</div>
-      <div class="grid-form">
-        <label class="field"><span>Category</span><input id="n_category" list="noteCategories" placeholder="e.g. Meat Birds, Feed, General" value="${editing ? esc(editing.category || "") : esc(noteFormCategory || "")}"></label>
-        <label class="field"><span>Title</span><input id="n_title" placeholder="e.g. Processing age" value="${editing ? esc(editing.title || "") : ""}"></label>
-      </div>
-      <datalist id="noteCategories">${categoryNames.map(c => `<option value="${esc(c)}">`).join("")}</datalist>
-      <label class="field" style="margin-top:10px"><span>Note</span><textarea id="n_body" rows="4" placeholder="e.g. Cornish Cross are typically processed around 8 weeks — go by weight and behavior, not just the calendar.">${editing ? esc(editing.body || "") : ""}</textarea></label>
-      <div style="margin-top:12px;display:flex;gap:8px">
-        <button class="btn btn-confirm" id="saveNote">${editing ? "✓ Save changes" : "+ Add note"}</button>
-        <button class="btn btn-close" id="cancelNoteForm">Cancel</button>
-      </div>
     </div>
     ` : ""}
 
@@ -2527,39 +2519,11 @@ function renderNotesSection() {
     `).join("")}
   `;
 
-  el.querySelectorAll("[data-pill-cat]").forEach(p => p.addEventListener("click", () => {
-    editingNoteId = null;
-    notesFormOpen = true;
-    noteFormCategory = p.dataset.pillCat === "__new__" ? "" : p.dataset.pillCat;
-    renderNotesSection();
-    const titleInput = document.getElementById("n_title");
-    if (titleInput) titleInput.focus();
-  }));
-
-  document.getElementById("toggleNoteForm").addEventListener("click", () => {
-    if (showForm) { notesFormOpen = false; editingNoteId = null; } else { notesFormOpen = true; noteFormCategory = null; }
-    renderNotesSection();
-  });
+  el.querySelectorAll("[data-pill-cat]").forEach(p => p.addEventListener("click", () => openNoteModal(null, p.dataset.pillCat === "__new__" ? "" : p.dataset.pillCat)));
+  document.getElementById("toggleNoteForm").addEventListener("click", () => openNoteModal(null, null));
   document.getElementById("toggleNoteFilters").addEventListener("click", () => { notesFiltersOpen = !notesFiltersOpen; renderNotesSection(); });
 
-  const saveBtn = document.getElementById("saveNote");
-  if (saveBtn) saveBtn.addEventListener("click", async () => {
-    const title = document.getElementById("n_title").value.trim();
-    const body = document.getElementById("n_body").value.trim();
-    if (!title && !body) return;
-    const payload = { coop_id: currentCoopId, category: document.getElementById("n_category").value.trim() || "General", title, body, created_date: todayStr() };
-    if (editing) await localNoteUpdate(editing.id, payload);
-    else await localNoteCreate(payload);
-    showToast(editing ? "Note updated" : "Note added", editing ? "update" : "create");
-    editingNoteId = null;
-    notesFormOpen = false;
-    noteFormCategory = null;
-    await loadCoopData();
-    renderNotesSection();
-  });
-  const cancelBtn = document.getElementById("cancelNoteForm");
-  if (cancelBtn) cancelBtn.addEventListener("click", () => { editingNoteId = null; notesFormOpen = false; noteFormCategory = null; renderNotesSection(); });
-  el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => { editingNoteId = card.dataset.edit; notesFormOpen = false; renderNotesSection(); window.scrollTo({ top: 0, behavior: "smooth" }); }));
+  el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => openNoteModal(STATE.notes.find(n => n.id === card.dataset.edit), null)));
   el.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     if (!(await showConfirmDialog("Delete this note?"))) return;
     await localNoteDelete(b.dataset.del, currentCoopId);
@@ -2577,6 +2541,44 @@ function renderNotesSection() {
   if (filterSearchEl) filterSearchEl.addEventListener("change", (e) => { noteFilters.search = e.target.value; renderNotesSection(); });
   const clearFiltersBtn = document.getElementById("clearNoteFilters");
   if (clearFiltersBtn) clearFiltersBtn.addEventListener("click", () => { noteFilters = { category: "", search: "" }; renderNotesSection(); });
+}
+
+function noteFormHtml(editing, presetCategory) {
+  const allGroups = {};
+  STATE.notes.forEach(n => { const cat = n.category || "General"; (allGroups[cat] = allGroups[cat] || []).push(n); });
+  const categoryNames = Object.keys(allGroups).sort();
+  return `
+    <div class="form-head">${editing ? "Edit note" : "Add a note"}</div>
+    <div class="grid-form">
+      <label class="field"><span>Category</span><input id="n_category" list="noteCategories" placeholder="e.g. Meat Birds, Feed, General" value="${editing ? esc(editing.category || "") : esc(presetCategory || "")}"></label>
+      <label class="field"><span>Title</span><input id="n_title" placeholder="e.g. Processing age" value="${editing ? esc(editing.title || "") : ""}"></label>
+    </div>
+    <datalist id="noteCategories">${categoryNames.map(c => `<option value="${esc(c)}">`).join("")}</datalist>
+    <label class="field" style="margin-top:10px"><span>Note</span><textarea id="n_body" rows="4" placeholder="e.g. Cornish Cross are typically processed around 8 weeks — go by weight and behavior, not just the calendar.">${editing ? esc(editing.body || "") : ""}</textarea></label>
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button class="btn btn-confirm" id="saveNote">${editing ? "✓ Save changes" : "+ Add note"}</button>
+      <button class="btn btn-close" id="cancelNoteForm">Cancel</button>
+    </div>
+  `;
+}
+
+function openNoteModal(editing, presetCategory) {
+  editingNoteId = editing ? editing.id : null;
+  openModal(noteFormHtml(editing, presetCategory), () => { editingNoteId = null; });
+  if (!editing) { const titleInput = document.getElementById("n_title"); if (titleInput) titleInput.focus(); }
+  document.getElementById("saveNote").addEventListener("click", async () => {
+    const title = document.getElementById("n_title").value.trim();
+    const body = document.getElementById("n_body").value.trim();
+    if (!title && !body) return;
+    const payload = { coop_id: currentCoopId, category: document.getElementById("n_category").value.trim() || "General", title, body, created_date: todayStr() };
+    if (editing) await localNoteUpdate(editing.id, payload);
+    else await localNoteCreate(payload);
+    showToast(editing ? "Note updated" : "Note added", editing ? "update" : "create");
+    closeModal();
+    await loadCoopData();
+    renderNotesSection();
+  });
+  document.getElementById("cancelNoteForm").addEventListener("click", () => closeModal());
 }
 
 // ================= COOPS =================
@@ -3693,6 +3695,15 @@ function closeModal() {
   setTimeout(() => { const c = document.getElementById("modalContent"); if (c) c.innerHTML = ""; }, 320);
 }
 
+/** Updates an already-open modal's content in place -- for a list-style
+ * modal (Emptied bags) where an action taken inside it (restore, delete)
+ * needs the list to refresh without the whole sheet closing and reopening,
+ * which would replay the entrance animation and reset scroll position. */
+function refreshModalContent(html) {
+  const content = document.getElementById("modalContent");
+  if (content) content.innerHTML = html;
+}
+
 function showConfirmDialog(message, confirmLabel = "Delete") {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
@@ -4090,52 +4101,17 @@ function wireFlockCardHandlers(el) {
 function showBatchPanel(batchName) {
   const host = document.getElementById("birdFormHost");
   const birds = STATE.birds.filter(b => b.batch_name === batchName);
-  const cover = birds.find(b => b.photo || pendingPhotoUrls[b.id]);
   const batchIds = birds.map(b => b.id);
   const selectedInBatch = batchIds.filter(id => selectedBirdIds.has(id));
   const allSelected = selectedInBatch.length === batchIds.length;
-  // If every bird in the batch already shares the same value, reflect that
-  // in the form instead of a hardcoded default -- so reopening this panel
-  // shows what's actually applied, not a reset-looking blank state.
-  const sharedValue = (field, fallback) => {
-    const vals = new Set(birds.map(b => b[field] || null));
-    return vals.size === 1 && [...vals][0] ? [...vals][0] : fallback;
-  };
-  const sharedColor = sharedValue("card_color", "#5A4B3C");
-  const sharedBorderStyle = sharedValue("border_style", "solid");
-  const sharedPattern = sharedValue("card_pattern", "solid");
-  const sharedLocation = sharedValue("location", "");
+  const s = summarizeGroup(birds);
 
   host.innerHTML = `
     <div class="form-block">
       <div class="form-head"><span>${esc(batchName)} -- ${birds.length} birds</span><button class="icon-btn icon-btn-close" id="closeBatchPanel">✕</button></div>
-      <div style="display:flex;gap:14px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
-        <div style="width:64px;height:64px;border-radius:8px;overflow:hidden;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:26px;flex:0 0 auto">
-          ${cover ? `<img src="${birdPhotoUrl(cover)}" style="width:100%;height:100%;object-fit:cover">` : "🐣"}
-        </div>
-        <div style="flex:1;min-width:180px">
-          <label class="field"><span>Set group photo (applies to every bird in this batch)</span><input type="file" id="batchPhotoInput" accept="image/*"></label>
-        </div>
-        <button class="btn btn-close small" id="deleteBatchBtn" style="align-self:flex-end">Delete entire batch</button>
-      </div>
-
-      <div class="form-block" style="margin-bottom:14px">
-        <div class="dim" style="font-size:12px;margin-bottom:8px">Group location -- applies to every bird in this batch</div>
-        <label class="field"><span>Location</span><select id="batch_location"><option value="">(unspecified)</option>${getBeddingAreas().map(a => `<option value="${esc(a)}" ${sharedLocation === a ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></label>
-        <button class="btn ghost small" id="applyBatchLocation" style="margin-top:10px">Apply to whole batch</button>
-      </div>
-
-      <div class="form-block" style="margin-bottom:14px">
-        <div class="dim" style="font-size:12px;margin-bottom:8px">Group card styling -- applies to every bird in this batch</div>
-        <div class="grid-form">
-          <label class="field"><span>Card color</span><input type="color" id="batch_color" value="${sharedColor}" style="width:60px;height:38px;padding:2px;cursor:pointer"></label>
-          <label class="field"><span>Border style</span><select id="batch_border_style">${["solid", "dashed", "dotted"].map(s => `<option value="${s}" ${sharedBorderStyle === s ? "selected" : ""}>${s[0].toUpperCase() + s.slice(1)}</option>`).join("")}</select></label>
-          <label class="field"><span>Background</span><select id="batch_pattern">${[["solid", "Solid tint"], ["gradient", "Gradient"], ["dots", "Dots"], ["stripes", "Stripes"]].map(([v, l]) => `<option value="${v}" ${sharedPattern === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-        </div>
-        <div style="display:flex;gap:8px;margin-top:10px">
-          <button class="btn ghost small" id="applyBatchStyle">Apply to whole batch</button>
-          <button class="btn ghost small" id="clearBatchStyle">Clear styling from whole batch</button>
-        </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+        <div class="dim" style="font-size:12px">${esc(s.statusSummary)}${s.breed ? ` · ${esc(s.breed)}` : ""}${s.processedCount > 0 && s.totalValue > 0 ? ` · ${fmtMoney(s.totalValue)} value` : ""}</div>
+        <button class="btn ghost small" id="openBatchEdit" style="margin-left:auto">✎ Edit group</button>
       </div>
 
       <div class="toolbar" style="margin-bottom:10px">
@@ -4157,6 +4133,7 @@ function showBatchPanel(batchName) {
   `;
   const close = () => { host.innerHTML = ""; };
   document.getElementById("closeBatchPanel").addEventListener("click", close);
+  document.getElementById("openBatchEdit").addEventListener("click", () => openBatchEditModal(batchName));
   document.getElementById("selectAllInBatch").addEventListener("click", () => {
     if (allSelected) batchIds.forEach(id => selectedBirdIds.delete(id));
     else batchIds.forEach(id => selectedBirdIds.add(id));
@@ -4185,12 +4162,74 @@ function showBatchPanel(batchName) {
     showToast("Bird deleted", "delete");
     refreshAndRender();
   }));
+}
+
+/** The batch-wide editor (photo, location, styling, delete-the-whole-batch)
+ * -- split out from showBatchPanel above into its own explicit modal, so
+ * opening a group to browse its birds and deliberately editing the whole
+ * group's shared properties are two distinct actions instead of the same
+ * tap always surfacing both at once. */
+function batchEditModalHtml(batchName) {
+  const birds = STATE.birds.filter(b => b.batch_name === batchName);
+  const cover = birds.find(b => b.photo || pendingPhotoUrls[b.id]);
+  // If every bird in the batch already shares the same value, reflect that
+  // in the form instead of a hardcoded default -- so reopening this shows
+  // what's actually applied, not a reset-looking blank state.
+  const sharedValue = (field, fallback) => {
+    const vals = new Set(birds.map(b => b[field] || null));
+    return vals.size === 1 && [...vals][0] ? [...vals][0] : fallback;
+  };
+  const sharedColor = sharedValue("card_color", "#5A4B3C");
+  const sharedBorderStyle = sharedValue("border_style", "solid");
+  const sharedPattern = sharedValue("card_pattern", "solid");
+  const sharedLocation = sharedValue("location", "");
+  return `
+    <div class="form-head">Edit group -- ${esc(batchName)}</div>
+    <div style="display:flex;gap:14px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+      <div style="width:64px;height:64px;border-radius:8px;overflow:hidden;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:26px;flex:0 0 auto">
+        ${cover ? `<img src="${birdPhotoUrl(cover)}" style="width:100%;height:100%;object-fit:cover">` : "🐣"}
+      </div>
+      <div style="flex:1;min-width:180px">
+        <label class="field"><span>Set group photo (applies to every bird in this batch)</span><input type="file" id="batchPhotoInput" accept="image/*"></label>
+      </div>
+    </div>
+
+    <div class="form-block" style="margin-bottom:14px">
+      <div class="dim" style="font-size:12px;margin-bottom:8px">Group location -- applies to every bird in this batch</div>
+      <label class="field"><span>Location</span><select id="batch_location"><option value="">(unspecified)</option>${getBeddingAreas().map(a => `<option value="${esc(a)}" ${sharedLocation === a ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></label>
+      <button class="btn ghost small" id="applyBatchLocation" style="margin-top:10px">Apply to whole batch</button>
+    </div>
+
+    <div class="form-block" style="margin-bottom:14px">
+      <div class="dim" style="font-size:12px;margin-bottom:8px">Group card styling -- applies to every bird in this batch</div>
+      <div class="grid-form">
+        <label class="field"><span>Card color</span><input type="color" id="batch_color" value="${sharedColor}" style="width:60px;height:38px;padding:2px;cursor:pointer"></label>
+        <label class="field"><span>Border style</span><select id="batch_border_style">${["solid", "dashed", "dotted"].map(s => `<option value="${s}" ${sharedBorderStyle === s ? "selected" : ""}>${s[0].toUpperCase() + s.slice(1)}</option>`).join("")}</select></label>
+        <label class="field"><span>Background</span><select id="batch_pattern">${[["solid", "Solid tint"], ["gradient", "Gradient"], ["dots", "Dots"], ["stripes", "Stripes"]].map(([v, l]) => `<option value="${v}" ${sharedPattern === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn ghost small" id="applyBatchStyle">Apply to whole batch</button>
+        <button class="btn ghost small" id="clearBatchStyle">Clear styling from whole batch</button>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-close small" id="deleteBatchBtn">Delete entire batch</button>
+      <button class="btn ghost small" id="closeBatchEditModal" style="margin-left:auto">Done</button>
+    </div>
+  `;
+}
+
+function wireBatchEditModal(batchName) {
+  const birds = STATE.birds.filter(b => b.batch_name === batchName);
+  const refresh = () => { refreshModalContent(batchEditModalHtml(batchName)); wireBatchEditModal(batchName); };
+  document.getElementById("closeBatchEditModal").addEventListener("click", () => closeModal());
   document.getElementById("applyBatchLocation").addEventListener("click", async () => {
     const location = document.getElementById("batch_location").value;
     await localBulkUpdate("birds", birds.map(b => ({ id: b.id, fields: { location: location || null } })), currentCoopId);
     showToast("Batch location applied", "update");
     await loadCoopData();
-    showBatchPanel(batchName);
+    refresh();
   });
   document.getElementById("applyBatchStyle").addEventListener("click", async () => {
     const updates = {
@@ -4201,19 +4240,20 @@ function showBatchPanel(batchName) {
     await localBulkUpdate("birds", birds.map(b => ({ id: b.id, fields: updates })), currentCoopId);
     showToast("Batch styling applied", "update");
     await loadCoopData();
-    showBatchPanel(batchName);
+    refresh();
   });
   document.getElementById("clearBatchStyle").addEventListener("click", async () => {
     await localBulkUpdate("birds", birds.map(b => ({ id: b.id, fields: { card_color: null, border_style: null, card_pattern: null } })), currentCoopId);
     showToast("Batch styling cleared", "update");
     await loadCoopData();
-    showBatchPanel(batchName);
+    refresh();
   });
   document.getElementById("deleteBatchBtn").addEventListener("click", async () => {
     if (!(await showConfirmDialog(`Delete the entire "${batchName}" batch -- all ${birds.length} birds? This can't be undone.`))) return;
     await localBulkDeleteBirds(birds.map(x => x.id), currentCoopId);
     showToast(`"${batchName}" batch deleted`, "delete");
-    close();
+    closeModal();
+    document.getElementById("birdFormHost").innerHTML = ""; // the batch panel behind this modal no longer has anything to show
     refreshAndRender();
   });
   document.getElementById("batchPhotoInput").addEventListener("change", async (e) => {
@@ -4224,8 +4264,18 @@ function showBatchPanel(batchName) {
     trySyncSoon("birds", currentCoopId);
     showToast("Group photo updated", "update");
     await loadCoopData();
-    showBatchPanel(batchName); // re-render this same panel with the new cover photo
+    refresh();
   });
+}
+
+function openBatchEditModal(batchName) {
+  openModal(batchEditModalHtml(batchName), () => {
+    // Whatever changed in here (photo, location, styling) should be
+    // reflected in the batch panel underneath once this closes, regardless
+    // of which button was used to close it.
+    if (document.getElementById("birdFormHost")) showBatchPanel(batchName);
+  });
+  wireBatchEditModal(batchName);
 }
 
 function renderFlockHealthSection() {
@@ -4259,43 +4309,39 @@ function renderFlockHealthSection() {
 }
 
 function showBulkEditForm() {
-  const host = document.getElementById("birdFormHost");
   const count = selectedBirdIds.size;
-  host.innerHTML = `
-    <div class="form-block">
-      <div class="form-head"><span>Bulk edit ${count} bird${count !== 1 ? "s" : ""}</span><button class="icon-btn icon-btn-close" id="cancelBulkEdit">✕</button></div>
-      <div class="note-box" style="margin-bottom:12px">Leave a field blank to leave it unchanged on all selected birds. Only fields you fill in get applied.</div>
-      <div class="grid-form">
-        <label class="field"><span>Status</span><select id="be_status"><option value="">(no change)</option>${BIRD_STATUSES.map(s => `<option value="${s}">${s}</option>`).join("")}</select></label>
-        <label class="field"><span>Location</span><select id="be_location"><option value="">(no change)</option>${getBeddingAreas().map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join("")}</select></label>
-        <label class="field"><span>Target harvest date</span><input type="date" id="be_target"></label>
-      </div>
-      <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="be_set_batch" style="width:auto"><span>Set batch (leave name blank to remove from any batch)</span></label>
-      <label class="field" style="margin-top:6px"><span>Batch name</span><input id="be_batch" placeholder="e.g. Spring Cornish Cross"></label>
-      <div class="dim" style="font-size:11px;margin:12px 0 4px">If setting Status to Processed, these fill in the harvest record:</div>
-      <div class="grid-form">
-        <label class="field"><span>Harvest date</span><input type="date" id="be_harvest_date"></label>
-        <label class="field"><span>Harvest weight (lb, each)</span><input type="number" step="0.01" id="be_harvest_weight" placeholder="(no change)"></label>
-        <label class="field"><span>Store-equivalent value per lb ($)</span><input type="number" step="0.01" id="be_price" placeholder="(no change)"></label>
-      </div>
-      <div class="dim" style="font-size:11px;margin:12px 0 4px">If setting Status to Deceased, these fill in the loss record:</div>
-      <div class="grid-form">
-        <label class="field"><span>Death date</span><input type="date" id="be_death_date"></label>
-        <label class="field"><span>Cause</span><input id="be_death_cause" placeholder="(no change)"></label>
-      </div>
-      <div class="dim" style="font-size:11px;margin:12px 0 4px">Card styling:</div>
-      <div class="grid-form">
-        <label class="field"><span>Border style</span><select id="be_border_style"><option value="">(no change)</option>${["solid", "dashed", "dotted"].map(s => `<option value="${s}">${s[0].toUpperCase() + s.slice(1)}</option>`).join("")}</select></label>
-        <label class="field"><span>Background</span><select id="be_pattern"><option value="">(no change)</option>${[["solid", "Solid tint"], ["gradient", "Gradient"], ["dots", "Dots"], ["stripes", "Stripes"]].map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></label>
-      </div>
-      <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="be_set_color" style="width:auto"><span>Set card color</span></label>
-      <label class="field" style="margin-top:6px"><span>Card color</span><input type="color" id="be_color" value="#5A4B3C" style="width:60px;height:38px;padding:2px;cursor:pointer"></label>
-      <div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-confirm" id="saveBulkEdit">✓ Apply to ${count} bird${count !== 1 ? "s" : ""}</button><button class="btn btn-close" id="cancelBulkEdit2">Cancel</button></div>
+  const html = `
+    <div class="form-head">Bulk edit ${count} bird${count !== 1 ? "s" : ""}</div>
+    <div class="note-box" style="margin-bottom:12px">Leave a field blank to leave it unchanged on all selected birds. Only fields you fill in get applied.</div>
+    <div class="grid-form">
+      <label class="field"><span>Status</span><select id="be_status"><option value="">(no change)</option>${BIRD_STATUSES.map(s => `<option value="${s}">${s}</option>`).join("")}</select></label>
+      <label class="field"><span>Location</span><select id="be_location"><option value="">(no change)</option>${getBeddingAreas().map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join("")}</select></label>
+      <label class="field"><span>Target harvest date</span><input type="date" id="be_target"></label>
     </div>
+    <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="be_set_batch" style="width:auto"><span>Set batch (leave name blank to remove from any batch)</span></label>
+    <label class="field" style="margin-top:6px"><span>Batch name</span><input id="be_batch" placeholder="e.g. Spring Cornish Cross"></label>
+    <div class="dim" style="font-size:11px;margin:12px 0 4px">If setting Status to Processed, these fill in the harvest record:</div>
+    <div class="grid-form">
+      <label class="field"><span>Harvest date</span><input type="date" id="be_harvest_date"></label>
+      <label class="field"><span>Harvest weight (lb, each)</span><input type="number" step="0.01" id="be_harvest_weight" placeholder="(no change)"></label>
+      <label class="field"><span>Store-equivalent value per lb ($)</span><input type="number" step="0.01" id="be_price" placeholder="(no change)"></label>
+    </div>
+    <div class="dim" style="font-size:11px;margin:12px 0 4px">If setting Status to Deceased, these fill in the loss record:</div>
+    <div class="grid-form">
+      <label class="field"><span>Death date</span><input type="date" id="be_death_date"></label>
+      <label class="field"><span>Cause</span><input id="be_death_cause" placeholder="(no change)"></label>
+    </div>
+    <div class="dim" style="font-size:11px;margin:12px 0 4px">Card styling:</div>
+    <div class="grid-form">
+      <label class="field"><span>Border style</span><select id="be_border_style"><option value="">(no change)</option>${["solid", "dashed", "dotted"].map(s => `<option value="${s}">${s[0].toUpperCase() + s.slice(1)}</option>`).join("")}</select></label>
+      <label class="field"><span>Background</span><select id="be_pattern"><option value="">(no change)</option>${[["solid", "Solid tint"], ["gradient", "Gradient"], ["dots", "Dots"], ["stripes", "Stripes"]].map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></label>
+    </div>
+    <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="be_set_color" style="width:auto"><span>Set card color</span></label>
+    <label class="field" style="margin-top:6px"><span>Card color</span><input type="color" id="be_color" value="#5A4B3C" style="width:60px;height:38px;padding:2px;cursor:pointer"></label>
+    <div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-confirm" id="saveBulkEdit">✓ Apply to ${count} bird${count !== 1 ? "s" : ""}</button><button class="btn btn-close" id="cancelBulkEdit2">Cancel</button></div>
   `;
-  const close = () => { host.innerHTML = ""; };
-  document.getElementById("cancelBulkEdit").addEventListener("click", close);
-  document.getElementById("cancelBulkEdit2").addEventListener("click", close);
+  openModal(html);
+  document.getElementById("cancelBulkEdit2").addEventListener("click", () => closeModal());
   document.getElementById("saveBulkEdit").addEventListener("click", async () => {
     const updates = {};
     const status = document.getElementById("be_status").value;
@@ -4323,12 +4369,12 @@ function showBulkEditForm() {
     if (borderStyle) updates.border_style = borderStyle;
     if (pattern) updates.card_pattern = pattern;
     if (setColor) updates.card_color = document.getElementById("be_color").value;
-    if (Object.keys(updates).length === 0) { close(); return; }
+    if (Object.keys(updates).length === 0) { closeModal(); return; }
     const n = selectedBirdIds.size;
     await localBulkUpdate("birds", [...selectedBirdIds].map(id => ({ id, fields: updates })), currentCoopId);
     showToast(`${n} bird${n !== 1 ? "s" : ""} updated`, "update");
     selectedBirdIds.clear();
-    close();
+    closeModal();
     refreshAndRender();
   });
 }
@@ -4373,7 +4419,6 @@ function showBirdForm(bird) {
   let pendingPhotoBlob = null;   // a newly-picked file, resized, waiting to be uploaded on save
   let photoRemoved = false;      // user asked to remove the existing photo
   let previewUrl = bird ? birdPhotoUrl(bird) : null;
-  const host = document.getElementById("birdFormHost");
 
   let formState = bird ? { ...bird } : {
     name: "", breed: "", type: "Layer", hatch_date: "", acquired_date: "", status: "Active",
@@ -4410,68 +4455,67 @@ function showBirdForm(bird) {
     };
   }
 
-  function render() {
+  function render(firstOpen) {
     const f = formState;
     const showTarget = f.status === "Active" && (f.type === "Meat" || f.type === "Dual Purpose");
     const showProcessed = f.status === "Processed";
     const showLoss = f.status === "Deceased";
 
-    host.innerHTML = `
-      <div class="form-block">
-        <div class="form-head"><span>${isEdit ? "Edit bird" : "New bird"}</span><button class="icon-btn icon-btn-close" id="cancelBird">✕</button></div>
-        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;align-items:flex-start">
-          <div id="photoPreview">${previewUrl ? `<img src="${previewUrl}" data-view-photo="${esc(previewUrl)}" class="thumb-clickable" style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--border);cursor:zoom-in">` : `<div style="width:84px;height:84px;border-radius:8px;background:var(--bg);border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:28px">🐔</div>`}</div>
-          <div>
-            <label class="field"><span>Photo</span><input type="file" id="f_photo" accept="image/*"></label>
-            ${previewUrl ? `<button class="btn btn-close small" id="removePhoto" style="margin-top:6px">Remove photo</button>` : ""}
-          </div>
-          <div>
-            <label class="field"><span>Card color</span><input type="color" id="f_color" value="${esc(f.card_color || "#5A4B3C")}" style="width:60px;height:38px;padding:2px;cursor:pointer"></label>
-            ${f.card_color ? `<button class="btn ghost small" id="clearColor" style="margin-top:6px">Clear color</button>` : ""}
-          </div>
-          <label class="field"><span>Border style</span><select id="f_border_style">${["solid", "dashed", "dotted"].map(s => `<option value="${s}" ${(f.border_style || "solid") === s ? "selected" : ""}>${s[0].toUpperCase() + s.slice(1)}</option>`).join("")}</select></label>
-          <label class="field"><span>Background</span><select id="f_pattern">${[["solid", "Solid tint"], ["gradient", "Gradient"], ["dots", "Dots"], ["stripes", "Stripes"]].map(([v, l]) => `<option value="${v}" ${(f.card_pattern || "solid") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+    const html = `
+      <div class="form-head">${isEdit ? "Edit bird" : "New bird"}</div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;align-items:flex-start">
+        <div id="photoPreview">${previewUrl ? `<img src="${previewUrl}" data-view-photo="${esc(previewUrl)}" class="thumb-clickable" style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--border);cursor:zoom-in">` : `<div style="width:84px;height:84px;border-radius:8px;background:var(--bg);border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:28px">🐔</div>`}</div>
+        <div>
+          <label class="field"><span>Photo</span><input type="file" id="f_photo" accept="image/*"></label>
+          ${previewUrl ? `<button class="btn btn-close small" id="removePhoto" style="margin-top:6px">Remove photo</button>` : ""}
         </div>
-
-        <div class="grid-form">
-          <label class="field"><span>Name</span><input id="f_name" value="${esc(f.name)}" placeholder="e.g. Nugget"></label>
-          <label class="field"><span>Breed</span><input id="f_breed" value="${esc(f.breed)}" placeholder="e.g. Rhode Island Red"></label>
-          <label class="field"><span>Type</span><select id="f_type">${BIRD_TYPES.map(t => `<option ${f.type === t ? "selected" : ""}>${t}</option>`).join("")}</select></label>
-          <label class="field"><span>Location</span><select id="f_location"><option value="">(unspecified)</option>${getBeddingAreas().map(a => `<option value="${esc(a)}" ${f.location === a ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></label>
-          <label class="field"><span>Status</span><select id="f_status">${BIRD_STATUSES.map(s => `<option ${f.status === s ? "selected" : ""}>${s}</option>`).join("")}</select></label>
-          <label class="field"><span>Batch</span><input id="f_batch" value="${esc(f.batch_name || "")}" placeholder="(not in a batch)"></label>
-          ${showProcessed ? `<label class="field"><span>Value per LB</span><input type="number" step="0.01" id="f_price" value="${f.price_per_lb ?? ""}" placeholder="e.g. 5.00"></label>` : ""}
-          ${showProcessed ? `<label class="field"><span>Dressed Weight (lb)</span><input type="number" step="0.1" id="f_weight" value="${f.harvest_weight ?? ""}"></label>` : ""}
+        <div>
+          <label class="field"><span>Card color</span><input type="color" id="f_color" value="${esc(f.card_color || "#5A4B3C")}" style="width:60px;height:38px;padding:2px;cursor:pointer"></label>
+          ${f.card_color ? `<button class="btn ghost small" id="clearColor" style="margin-top:6px">Clear color</button>` : ""}
         </div>
-
-        <div class="grid-form" style="margin-top:10px">
-          <label class="field"><span>Hatch date</span><input type="date" id="f_hatch" value="${f.hatch_date || ""}"></label>
-          <label class="field"><span>Acquired date</span><input type="date" id="f_acquired" value="${f.acquired_date || ""}"></label>
-          ${showTarget ? `<label class="field"><span>Target harvest date</span><input type="date" id="f_target" value="${f.target_harvest_date || ""}"></label>` : ""}
-          ${showProcessed ? `<label class="field"><span>Harvest date</span><input type="date" id="f_hdate" value="${f.harvest_date || ""}"></label>` : ""}
-          ${showLoss ? `<label class="field"><span>Date of loss</span><input type="date" id="f_death_date" value="${f.death_date || ""}"></label>` : ""}
-          ${showLoss ? `<label class="field"><span>Cause of loss</span><input id="f_death_cause" value="${esc(f.death_cause)}" placeholder="e.g. predator, illness"></label>` : ""}
-        </div>
-
-        <div style="margin-top:12px"><label class="field"><span>Notes</span><textarea id="f_notes">${esc(f.notes)}</textarea></label></div>
-        <div id="birdLogSection" style="margin-top:16px"></div>
-        <div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-confirm" id="saveBird">✓ Save</button><button class="btn btn-close" id="cancelBird2">Cancel</button></div>
+        <label class="field"><span>Border style</span><select id="f_border_style">${["solid", "dashed", "dotted"].map(s => `<option value="${s}" ${(f.border_style || "solid") === s ? "selected" : ""}>${s[0].toUpperCase() + s.slice(1)}</option>`).join("")}</select></label>
+        <label class="field"><span>Background</span><select id="f_pattern">${[["solid", "Solid tint"], ["gradient", "Gradient"], ["dots", "Dots"], ["stripes", "Stripes"]].map(([v, l]) => `<option value="${v}" ${(f.card_pattern || "solid") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
       </div>
+
+      <div class="grid-form">
+        <label class="field"><span>Name</span><input id="f_name" value="${esc(f.name)}" placeholder="e.g. Nugget"></label>
+        <label class="field"><span>Breed</span><input id="f_breed" value="${esc(f.breed)}" placeholder="e.g. Rhode Island Red"></label>
+        <label class="field"><span>Type</span><select id="f_type">${BIRD_TYPES.map(t => `<option ${f.type === t ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+        <label class="field"><span>Location</span><select id="f_location"><option value="">(unspecified)</option>${getBeddingAreas().map(a => `<option value="${esc(a)}" ${f.location === a ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></label>
+        <label class="field"><span>Status</span><select id="f_status">${BIRD_STATUSES.map(s => `<option ${f.status === s ? "selected" : ""}>${s}</option>`).join("")}</select></label>
+        <label class="field"><span>Batch</span><input id="f_batch" value="${esc(f.batch_name || "")}" placeholder="(not in a batch)"></label>
+        ${showProcessed ? `<label class="field"><span>Value per LB</span><input type="number" step="0.01" id="f_price" value="${f.price_per_lb ?? ""}" placeholder="e.g. 5.00"></label>` : ""}
+        ${showProcessed ? `<label class="field"><span>Dressed Weight (lb)</span><input type="number" step="0.1" id="f_weight" value="${f.harvest_weight ?? ""}"></label>` : ""}
+      </div>
+
+      <div class="grid-form" style="margin-top:10px">
+        <label class="field"><span>Hatch date</span><input type="date" id="f_hatch" value="${f.hatch_date || ""}"></label>
+        <label class="field"><span>Acquired date</span><input type="date" id="f_acquired" value="${f.acquired_date || ""}"></label>
+        ${showTarget ? `<label class="field"><span>Target harvest date</span><input type="date" id="f_target" value="${f.target_harvest_date || ""}"></label>` : ""}
+        ${showProcessed ? `<label class="field"><span>Harvest date</span><input type="date" id="f_hdate" value="${f.harvest_date || ""}"></label>` : ""}
+        ${showLoss ? `<label class="field"><span>Date of loss</span><input type="date" id="f_death_date" value="${f.death_date || ""}"></label>` : ""}
+        ${showLoss ? `<label class="field"><span>Cause of loss</span><input id="f_death_cause" value="${esc(f.death_cause)}" placeholder="e.g. predator, illness"></label>` : ""}
+      </div>
+
+      <div style="margin-top:12px"><label class="field"><span>Notes</span><textarea id="f_notes">${esc(f.notes)}</textarea></label></div>
+      <div id="birdLogSection" style="margin-top:16px"></div>
+      <div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-confirm" id="saveBird">✓ Save</button><button class="btn btn-close" id="cancelBird2">Cancel</button></div>
     `;
+
+    if (firstOpen) openModal(html);
+    else refreshModalContent(html);
 
     if (isEdit) renderBirdLogSection(bird.id);
     else document.getElementById("birdLogSection").innerHTML = `<div class="dim" style="font-size:12px">Save this bird first to start a health/notes log for it.</div>`;
 
-    const close = () => { host.innerHTML = ""; };
-    document.getElementById("cancelBird").addEventListener("click", close);
     document.getElementById("photoPreview").addEventListener("click", (e) => {
       const url = e.target.dataset ? e.target.dataset.viewPhoto : null;
       if (url) showPhotoLightbox(url);
     });
-    document.getElementById("cancelBird2").addEventListener("click", close);
+    document.getElementById("cancelBird2").addEventListener("click", () => closeModal());
 
-    document.getElementById("f_type").addEventListener("change", (e) => { formState = readCurrentValues(); formState.type = e.target.value; render(); });
-    document.getElementById("f_status").addEventListener("change", (e) => { formState = readCurrentValues(); formState.status = e.target.value; render(); });
+    document.getElementById("f_type").addEventListener("change", (e) => { formState = readCurrentValues(); formState.type = e.target.value; render(false); });
+    document.getElementById("f_status").addEventListener("change", (e) => { formState = readCurrentValues(); formState.status = e.target.value; render(false); });
 
     document.getElementById("f_photo").addEventListener("change", async (e) => {
       const file = e.target.files[0];
@@ -4496,7 +4540,7 @@ function showBirdForm(bird) {
     if (clearColorBtn) clearColorBtn.addEventListener("click", () => {
       formState = readCurrentValues();
       formState.card_color = "";
-      render();
+      render(false);
     });
 
     document.getElementById("saveBird").addEventListener("click", async () => {
@@ -4546,44 +4590,40 @@ function showBirdForm(bird) {
       }
       await refreshPendingPhotoUrls();
       showToast(isEdit ? `${payload.name} updated` : `${payload.name} added`, isEdit ? "update" : "create");
-      close();
+      closeModal();
       refreshAndRender();
     });
   }
 
-  render();
+  render(true);
 }
 
 function showBulkForm() {
-  const host = document.getElementById("birdFormHost");
   const today = todayStr();
   const defaultHatch = addDays(today, -7); // chicks are typically ~1 week old at pickup; adjust if known exactly
   const defaultTarget = addDays(defaultHatch, 42);
-  host.innerHTML = `
-    <div class="form-block">
-      <div class="form-head"><span>Add a batch</span><button class="icon-btn icon-btn-close" id="cancelBulk">✕</button></div>
-      <div class="grid-form">
-        <label class="field"><span>How many birds</span><input type="number" id="k_count" min="1" max="200" value="25"></label>
-        <label class="field"><span>Batch name</span><input id="k_batch" placeholder="e.g. July Cornish Cross"></label>
-        <label class="field"><span>Breed</span><input id="k_breed" placeholder="e.g. Cornish Cross"></label>
-        <label class="field"><span>Hatch date</span><input type="date" id="k_hatch" value="${defaultHatch}"></label>
-        <label class="field"><span>Acquired date</span><input type="date" id="k_acquired" value="${today}"></label>
-        <label class="field"><span>Target harvest date</span><input type="date" id="k_target" value="${defaultTarget}"></label>
-      </div>
-      <div class="note-box" style="margin-top:10px">Each bird gets its own record — named "Batch name #1", "#2", and so on — so you can still log an individual dressed weight for each one at processing time. This just saves you from typing the shared details over and over. Hatch date defaults to a week before pickup (typical for chick delivery) — adjust it if the hatchery told you the actual date. Target harvest defaults to 6 weeks from hatch; adjust it if your breed runs longer.</div>
-      <div style="margin-top:12px"><label class="field"><span>Notes</span><textarea id="k_notes" placeholder="optional"></textarea></label></div>
-      <div style="margin-top:12px"><label class="field"><span>Group photo (optional, applied to every bird in the batch)</span><input type="file" id="k_photo" accept="image/*"></label></div>
-      <div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-confirm" id="saveBulk">✓ Create batch</button><button class="btn btn-close" id="cancelBulk2">Cancel</button></div>
+  const html = `
+    <div class="form-head">Add a batch</div>
+    <div class="grid-form">
+      <label class="field"><span>How many birds</span><input type="number" id="k_count" min="1" max="200" value="25"></label>
+      <label class="field"><span>Batch name</span><input id="k_batch" placeholder="e.g. July Cornish Cross"></label>
+      <label class="field"><span>Breed</span><input id="k_breed" placeholder="e.g. Cornish Cross"></label>
+      <label class="field"><span>Hatch date</span><input type="date" id="k_hatch" value="${defaultHatch}"></label>
+      <label class="field"><span>Acquired date</span><input type="date" id="k_acquired" value="${today}"></label>
+      <label class="field"><span>Target harvest date</span><input type="date" id="k_target" value="${defaultTarget}"></label>
     </div>
+    <div class="note-box" style="margin-top:10px">Each bird gets its own record — named "Batch name #1", "#2", and so on — so you can still log an individual dressed weight for each one at processing time. This just saves you from typing the shared details over and over. Hatch date defaults to a week before pickup (typical for chick delivery) — adjust it if the hatchery told you the actual date. Target harvest defaults to 6 weeks from hatch; adjust it if your breed runs longer.</div>
+    <div style="margin-top:12px"><label class="field"><span>Notes</span><textarea id="k_notes" placeholder="optional"></textarea></label></div>
+    <div style="margin-top:12px"><label class="field"><span>Group photo (optional, applied to every bird in the batch)</span><input type="file" id="k_photo" accept="image/*"></label></div>
+    <div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-confirm" id="saveBulk">✓ Create batch</button><button class="btn btn-close" id="cancelBulk2">Cancel</button></div>
   `;
+  openModal(html);
   let targetTouched = false;
   document.getElementById("k_hatch").addEventListener("change", (e) => {
     if (!targetTouched) document.getElementById("k_target").value = addDays(e.target.value, 42);
   });
   document.getElementById("k_target").addEventListener("input", () => { targetTouched = true; });
-  const close = () => { host.innerHTML = ""; };
-  document.getElementById("cancelBulk").addEventListener("click", close);
-  document.getElementById("cancelBulk2").addEventListener("click", close);
+  document.getElementById("cancelBulk2").addEventListener("click", () => closeModal());
   document.getElementById("saveBulk").addEventListener("click", async () => {
     const count = Number(document.getElementById("k_count").value);
     if (!count || count < 1) return;
@@ -4608,7 +4648,7 @@ function showBulkForm() {
       trySyncSoon("birds", currentCoopId);
     }
     showToast(`${count} bird batch added`, "create");
-    close();
+    closeModal();
     refreshAndRender();
   });
 }
@@ -4688,14 +4728,11 @@ function hatchTimelineBarHtml(dateStarted) {
     </div>`;
 }
 
-let hatchFormOpen = false;
 let editingHatchId = null;
 
 function renderHatching() {
   const el = document.getElementById("eggsSubContent");
   if (!currentCoopId) { el.innerHTML = noCoopMessage(); return; }
-  const editing = editingHatchId ? STATE.hatches.find(h => h.id === editingHatchId) : null;
-  const showForm = hatchFormOpen || !!editing;
   const active = STATE.hatches.filter(h => h.status !== "Complete").sort((a, b) => a.date_started.localeCompare(b.date_started));
   const complete = STATE.hatches.filter(h => h.status === "Complete").sort((a, b) => b.date_started.localeCompare(a.date_started));
 
@@ -4783,59 +4820,16 @@ function renderHatching() {
   el.innerHTML = `
     <div class="toolbar" style="margin-bottom:12px">
       <div class="dim">${active.length} active clutch${active.length !== 1 ? "es" : ""}</div>
-      <button class="btn ${showForm ? "btn-close" : ""}" id="toggleHatchForm">${showForm ? "✕ Close" : "+ Start a clutch"}</button>
+      <button class="btn" id="toggleHatchForm">+ Start a clutch</button>
     </div>
-
-    ${showForm ? `
-    <div class="form-block" style="${editing ? "border-color:var(--rust)" : ""}">
-      <div class="form-head">${editing ? "Edit clutch" : "Start a new clutch"}</div>
-      <div class="grid-form">
-        <label class="field"><span>Breed</span><input id="h_breed" placeholder="e.g. Rhode Island Red, or leave blank for mixed" value="${editing ? esc(editing.breed || "") : ""}"></label>
-        <label class="field"><span>Date started</span><input type="date" id="h_date" value="${editing ? editing.date_started : todayStr()}"></label>
-        <label class="field"><span>Number of eggs</span><input type="number" min="1" step="1" id="h_count" value="${editing ? editing.egg_count : ""}" placeholder="e.g. 12"></label>
-      </div>
-      <label class="field" style="margin-top:12px"><span>Notes</span><input id="h_notes" placeholder="optional" value="${editing ? esc(editing.notes || "") : ""}"></label>
-      <div class="note-box" style="margin-top:10px">Expected hatch date is day 21 from when the eggs went in -- the timeline below each clutch tracks it automatically, including candling and lockdown reminders.</div>
-      <div style="margin-top:12px;display:flex;gap:8px">
-        <button class="btn btn-confirm" id="saveHatch">${editing ? "✓ Save changes" : "+ Start clutch"}</button>
-        <button class="btn btn-close" id="cancelHatchForm">Cancel</button>
-      </div>
-    </div>
-    ` : ""}
 
     ${active.length === 0 && complete.length === 0 ? `<div class="card"><div class="empty">No clutches yet -- start one when you set eggs in the incubator.</div></div>` : ""}
     ${active.map(clutchCardHtml).join("")}
     ${complete.length > 0 ? `<div class="flock-section-header" style="margin-top:18px">Completed</div>${complete.map(clutchCardHtml).join("")}` : ""}
   `;
 
-  document.getElementById("toggleHatchForm").addEventListener("click", () => {
-    if (showForm) { hatchFormOpen = false; editingHatchId = null; } else { hatchFormOpen = true; }
-    renderHatching();
-  });
-  const cancelBtn = document.getElementById("cancelHatchForm");
-  if (cancelBtn) cancelBtn.addEventListener("click", () => { hatchFormOpen = false; editingHatchId = null; renderHatching(); });
-  const saveBtn = document.getElementById("saveHatch");
-  if (saveBtn) saveBtn.addEventListener("click", async () => {
-    const breed = document.getElementById("h_breed").value.trim();
-    const date_started = document.getElementById("h_date").value;
-    const egg_count = Number(document.getElementById("h_count").value) || 0;
-    const notes = document.getElementById("h_notes").value.trim();
-    if (!date_started || egg_count <= 0) return;
-    const payload = { coop_id: currentCoopId, breed, date_started, egg_count, notes };
-    if (editing) {
-      await localHatchUpdate(editing.id, payload);
-      showToast("Clutch updated", "update");
-    } else {
-      await localHatchCreate({ ...payload, hatched_count: 0, named_count: 0, clear_count: 0, quit_count: 0, failed_count: 0, status: "Incubating" });
-      showToast("Clutch started", "create");
-    }
-    hatchFormOpen = false;
-    editingHatchId = null;
-    STATE.hatches = await localGetAll("hatches", currentCoopId);
-    renderHatching();
-  });
-
-  el.querySelectorAll("[data-edit-hatch]").forEach(b => b.addEventListener("click", () => { editingHatchId = b.dataset.editHatch; hatchFormOpen = false; renderHatching(); window.scrollTo({ top: 0, behavior: "smooth" }); }));
+  document.getElementById("toggleHatchForm").addEventListener("click", () => openHatchModal(null));
+  el.querySelectorAll("[data-edit-hatch]").forEach(b => b.addEventListener("click", () => openHatchModal(STATE.hatches.find(h => h.id === b.dataset.editHatch))));
   el.querySelectorAll("[data-del-hatch]").forEach(b => b.addEventListener("click", async () => {
     if (!(await showConfirmDialog("Delete this clutch and its tracked outcomes? This can't be undone."))) return;
     await localHatchDelete(b.dataset.delHatch, currentCoopId);
@@ -4891,21 +4885,59 @@ function renderHatching() {
   }));
 }
 
+function hatchFormHtml(editing) {
+  return `
+    <div class="form-head">${editing ? "Edit clutch" : "Start a new clutch"}</div>
+    <div class="grid-form">
+      <label class="field"><span>Breed</span><input id="h_breed" placeholder="e.g. Rhode Island Red, or leave blank for mixed" value="${editing ? esc(editing.breed || "") : ""}"></label>
+      <label class="field"><span>Date started</span><input type="date" id="h_date" value="${editing ? editing.date_started : todayStr()}"></label>
+      <label class="field"><span>Number of eggs</span><input type="number" min="1" step="1" id="h_count" value="${editing ? editing.egg_count : ""}" placeholder="e.g. 12"></label>
+    </div>
+    <label class="field" style="margin-top:12px"><span>Notes</span><input id="h_notes" placeholder="optional" value="${editing ? esc(editing.notes || "") : ""}"></label>
+    <div class="note-box" style="margin-top:10px">Expected hatch date is day 21 from when the eggs went in -- the timeline below each clutch tracks it automatically, including candling and lockdown reminders.</div>
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button class="btn btn-confirm" id="saveHatch">${editing ? "✓ Save changes" : "+ Start clutch"}</button>
+      <button class="btn btn-close" id="cancelHatchForm">Cancel</button>
+    </div>
+  `;
+}
+
+function openHatchModal(editing) {
+  editingHatchId = editing ? editing.id : null;
+  openModal(hatchFormHtml(editing), () => { editingHatchId = null; });
+  document.getElementById("saveHatch").addEventListener("click", async () => {
+    const breed = document.getElementById("h_breed").value.trim();
+    const date_started = document.getElementById("h_date").value;
+    const egg_count = Number(document.getElementById("h_count").value) || 0;
+    const notes = document.getElementById("h_notes").value.trim();
+    if (!date_started || egg_count <= 0) return;
+    const payload = { coop_id: currentCoopId, breed, date_started, egg_count, notes };
+    if (editing) {
+      await localHatchUpdate(editing.id, payload);
+      showToast("Clutch updated", "update");
+    } else {
+      await localHatchCreate({ ...payload, hatched_count: 0, named_count: 0, clear_count: 0, quit_count: 0, failed_count: 0, status: "Incubating" });
+      showToast("Clutch started", "create");
+    }
+    closeModal();
+    STATE.hatches = await localGetAll("hatches", currentCoopId);
+    renderHatching();
+  });
+  document.getElementById("cancelHatchForm").addEventListener("click", () => closeModal());
+}
+
 function renderEggsMain() {
   const el = document.getElementById("eggsSubContent");
   if (!currentCoopId) { el.innerHTML = noCoopMessage(); return; }
   const years = yearsFromDates(STATE.eggs, "date");
   const filtered = STATE.eggs.filter(e => !eggFilters.year || e.date.slice(0, 4) === eggFilters.year);
   const sorted = [...filtered].sort((a, b) => b.date.localeCompare(a.date));
-  const editing = editingEggId ? STATE.eggs.find(e => e.id === editingEggId) : null;
-  const showForm = eggFormOpen || !!editing;
-
   el.innerHTML = `
     <div class="toolbar" style="margin-bottom:10px">
       <div class="dim">${sorted.length} of ${STATE.eggs.length} shown</div>
       <div style="display:flex;gap:8px">
         ${years.length > 0 ? `<button class="btn ghost small" id="toggleEggFilters">Filters${eggFilters.year ? " (1)" : ""} ${eggFiltersOpen ? "▾" : "▸"}</button>` : ""}
-        <button class="btn ${showForm ? 'btn-close' : ''}" id="toggleEggForm">${showForm ? "✕ Close" : "+ Add entry"}</button>
+        <button class="btn" id="toggleEggForm">+ Add entry</button>
       </div>
     </div>
 
@@ -4913,22 +4945,6 @@ function renderEggsMain() {
     <div class="form-block" style="padding:12px 16px">
       <div class="grid-form" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
         <label class="field"><span>Year</span><select id="filterEggYear"><option value="">All years</option>${years.map(y => `<option value="${y}" ${eggFilters.year === y ? "selected" : ""}>${y}</option>`).join("")}</select></label>
-      </div>
-    </div>
-    ` : ""}
-
-    ${showForm ? `
-    <div class="form-block" style="${editing ? "border-color:var(--rust)" : ""}">
-      <div class="form-head">${editing ? "Edit egg log" : "Log eggs collected"}</div>
-      <div class="grid-form">
-        <label class="field"><span>Date</span><input type="date" id="e_date" value="${editing ? editing.date : todayStr()}"></label>
-        <label class="field"><span>Count</span><input type="number" id="e_count" placeholder="e.g. 8" value="${editing ? editing.count : ""}"></label>
-        <label class="field"><span>Value Per Egg</span><input type="number" step="0.01" id="e_price" placeholder="e.g. 0.50" value="${editing ? (editing.price_per_egg != null ? editing.price_per_egg : "") : getCoopDefaults().eggPrice}"></label>
-        <label class="field"><span>Notes</span><input id="e_notes" placeholder="optional" value="${editing ? esc(editing.notes || "") : ""}"></label>
-      </div>
-      <div style="margin-top:12px;display:flex;gap:8px">
-        <button class="btn btn-confirm" id="saveEgg">${editing ? "✓ Save changes" : "+ Add entry"}</button>
-        <button class="btn btn-close" id="cancelEggForm">Cancel</button>
       </div>
     </div>
     ` : ""}
@@ -4965,33 +4981,14 @@ function renderEggsMain() {
     ${loadMoreButtonHtml(sorted.length, eggsVisibleCount)}`;
     })()}
   `;
-  document.getElementById("toggleEggForm").addEventListener("click", () => {
-    if (showForm) { eggFormOpen = false; editingEggId = null; } else { eggFormOpen = true; }
-    renderEggsMain();
-  });
+  document.getElementById("toggleEggForm").addEventListener("click", () => openEggModal(null));
   const toggleFiltersBtn = document.getElementById("toggleEggFilters");
   if (toggleFiltersBtn) toggleFiltersBtn.addEventListener("click", () => { eggFiltersOpen = !eggFiltersOpen; renderEggsMain(); });
-  const saveBtn = document.getElementById("saveEgg");
-  if (saveBtn) saveBtn.addEventListener("click", async () => {
-    const count = document.getElementById("e_count").value;
-    if (!count) return;
-    const price = document.getElementById("e_price").value;
-    const payload = { coop_id: currentCoopId, date: document.getElementById("e_date").value, count: Number(count), price_per_egg: price ? Number(price) : null, notes: document.getElementById("e_notes").value };
-    if (editing) await localEggUpdate(editing.id, payload);
-    else await localEggCreate(payload);
-    showToast(editing ? "Egg log updated" : "Egg log added", editing ? "update" : "create");
-    editingEggId = null;
-    eggFormOpen = false;
-    STATE.eggs = await localGetAll("eggs", currentCoopId);
-    renderEggsMain();
-  });
-  const cancelBtn = document.getElementById("cancelEggForm");
-  if (cancelBtn) cancelBtn.addEventListener("click", () => { editingEggId = null; eggFormOpen = false; renderEggsMain(); });
   const yearFilterEl = document.getElementById("filterEggYear");
   if (yearFilterEl) yearFilterEl.addEventListener("change", (e) => { eggFilters.year = e.target.value; eggsVisibleCount = PAGE_SIZE; renderEggsMain(); });
   const loadMoreEl = document.getElementById("loadMoreBtn");
   if (loadMoreEl) loadMoreEl.addEventListener("click", () => { eggsVisibleCount += PAGE_SIZE; renderEggsMain(); });
-  el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => { editingEggId = card.dataset.edit; eggFormOpen = false; renderEggsMain(); window.scrollTo({ top: 0, behavior: "smooth" }); }));
+  el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => openEggModal(STATE.eggs.find(e => e.id === card.dataset.edit))));
   el.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     await localEggDelete(b.dataset.del, currentCoopId);
     showToast("Egg log deleted", "delete");
@@ -4999,6 +4996,40 @@ function renderEggsMain() {
     STATE.eggs = await localGetAll("eggs", currentCoopId);
     renderEggsMain();
   }));
+}
+
+function eggFormHtml(editing) {
+  return `
+    <div class="form-head">${editing ? "Edit egg log" : "Log eggs collected"}</div>
+    <div class="grid-form">
+      <label class="field"><span>Date</span><input type="date" id="e_date" value="${editing ? editing.date : todayStr()}"></label>
+      <label class="field"><span>Count</span><input type="number" id="e_count" placeholder="e.g. 8" value="${editing ? editing.count : ""}"></label>
+      <label class="field"><span>Value Per Egg</span><input type="number" step="0.01" id="e_price" placeholder="e.g. 0.50" value="${editing ? (editing.price_per_egg != null ? editing.price_per_egg : "") : getCoopDefaults().eggPrice}"></label>
+      <label class="field"><span>Notes</span><input id="e_notes" placeholder="optional" value="${editing ? esc(editing.notes || "") : ""}"></label>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button class="btn btn-confirm" id="saveEgg">${editing ? "✓ Save changes" : "+ Add entry"}</button>
+      <button class="btn btn-close" id="cancelEggForm">Cancel</button>
+    </div>
+  `;
+}
+
+function openEggModal(editing) {
+  editingEggId = editing ? editing.id : null;
+  openModal(eggFormHtml(editing), () => { editingEggId = null; });
+  document.getElementById("saveEgg").addEventListener("click", async () => {
+    const count = document.getElementById("e_count").value;
+    if (!count) return;
+    const price = document.getElementById("e_price").value;
+    const payload = { coop_id: currentCoopId, date: document.getElementById("e_date").value, count: Number(count), price_per_egg: price ? Number(price) : null, notes: document.getElementById("e_notes").value };
+    if (editing) await localEggUpdate(editing.id, payload);
+    else await localEggCreate(payload);
+    showToast(editing ? "Egg log updated" : "Egg log added", editing ? "update" : "create");
+    closeModal();
+    STATE.eggs = await localGetAll("eggs", currentCoopId);
+    renderEggsMain();
+  });
+  document.getElementById("cancelEggForm").addEventListener("click", () => closeModal());
 }
 
 // ================= EXPENSES =================
@@ -5156,10 +5187,6 @@ function renderExpenses() {
   let running = 0;
   const rows = sorted.map(x => { running += (x.entry_type === "income" ? 1 : -1) * (Number(x.amount) || 0); return { x, running }; });
 
-  const editing = editingExpenseId ? STATE.expenses.find(x => x.id === editingExpenseId) : null;
-  const showForm = expenseFormOpen || !!editing;
-  if (editing) expenseFormEntryType = editing.entry_type === "income" ? "income" : "expense";
-
   el.innerHTML = `
     <div class="range-select" style="margin-bottom:10px;justify-content:center">
       <button class="range-btn ${expenseScope === "month" ? "active" : ""}" data-scope="month">Month</button>
@@ -5193,36 +5220,8 @@ function renderExpenses() {
 
     <div class="toolbar" style="margin-bottom:10px">
       <div class="dim">${sorted.length} entr${sorted.length !== 1 ? "ies" : "y"}${expenseFilters.category ? ` in ${esc(expenseFilters.category)}` : ""}</div>
-      <button class="btn ${showForm ? 'btn-close' : ''}" id="toggleExpenseForm">${showForm ? "✕ Close" : "+ Add entry"}</button>
+      <button class="btn" id="toggleExpenseForm">+ Add entry</button>
     </div>
-
-    ${showForm ? `
-    <div class="form-block" style="${editing ? "border-color:var(--rust)" : ""}">
-      <div class="form-head">${editing ? "Edit entry" : "Log an entry"}</div>
-      <div style="display:flex;gap:8px;margin-bottom:14px">
-        <button type="button" class="btn ${expenseFormEntryType === "expense" ? "btn-close" : "ghost"} small" id="entryTypeExpense">💸 Expense</button>
-        <button type="button" class="btn ${expenseFormEntryType === "income" ? "btn-confirm" : "ghost"} small" id="entryTypeIncome">💰 Income</button>
-      </div>
-      <div class="grid-form">
-        <label class="field"><span>Date</span><input type="date" id="x_date" value="${editing ? editing.date : todayStr()}"></label>
-        <label class="field"><span>Category</span><select id="x_cat">${(expenseFormEntryType === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map(c => `<option ${(editing ? editing.category === c : pendingExpenseCategory === c) ? "selected" : ""}>${c}</option>`).join("")}</select></label>
-        <label class="field"><span>Amount ($, total)</span><input type="number" step="0.01" id="x_amount" value="${editing ? editing.amount : ""}"></label>
-        <label class="field"><span>Quantity${expenseFormEntryType === "income" ? "" : " (per bag/item)"}</span><input type="number" step="0.01" id="x_qty" placeholder="e.g. 50" value="${editing && editing.quantity != null ? editing.quantity : ""}"></label>
-        <label class="field"><span>Unit</span><select id="x_unit"><option value="">—</option>${EXPENSE_UNITS.map(u => `<option ${editing && editing.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>
-        ${!editing && expenseFormEntryType === "expense" ? `<label class="field"><span>Number of bags/items</span><input type="number" min="1" max="200" step="1" id="x_count" value="1"></label>` : ""}
-        ${expenseFormEntryType === "expense" ? `<label class="field"><span>Applies to</span><select id="x_for">${EXPENSE_FOR_TYPES.map(t => `<option ${editing ? (editing.for_type === t ? "selected" : "") : (t === "All Birds" ? "selected" : "")}>${t}</option>`).join("")}</select></label>` : ""}
-        <label class="field"><span>Description</span><input id="x_desc" placeholder="${expenseFormEntryType === "income" ? "e.g. Sold to neighbor" : "e.g. 50lb layer feed"}" value="${editing ? esc(editing.description || "") : ""}"></label>
-      </div>
-      <div class="note-box" style="margin-top:10px">${expenseFormEntryType === "income"
-        ? `For Egg Sale or Meat Sale specifically, fill in the quantity (eggs or lbs) -- this lets the app subtract that amount from the estimated "value produced" on the Coop tab, so a sale doesn't get counted twice: once as an estimate when collected, and again as real income here.`
-        : `Layer Feed and Meat Feed are separate categories now, so the cost-per-dozen and cost-per-lb estimates on the Coop tab stay accurate without needing a flock tag. "Applies to" still matters for shared costs like Bedding or Equipment.${!editing ? " Buying more than one bag at once? Set the count, and the total amount here covers all of them -- each still becomes its own separate, independently trackable item in the Supply tab's inventory." : ""}`}</div>
-      ${!editing && expenseFormEntryType === "expense" && QUANTITY_CATEGORIES.has(document.getElementById("x_cat") ? document.getElementById("x_cat").value : EXPENSE_CATEGORIES[0]) ? `<div id="productPickerHost">${renderProductPickerRow(document.getElementById("x_cat") ? document.getElementById("x_cat").value : EXPENSE_CATEGORIES[0])}</div>` : ""}
-      <div style="margin-top:12px;display:flex;gap:8px">
-        <button class="btn btn-confirm" id="saveExpense">${editing ? "✓ Save changes" : "+ Add entry"}</button>
-        <button class="btn btn-close" id="cancelExpenseForm">Cancel</button>
-      </div>
-    </div>
-    ` : ""}
 
     ${sorted.length === 0 ? `<div class="card"><div class="empty">No entries logged${expenseFilters.category ? ` for ${esc(expenseFilters.category)}` : ""} in ${esc(periodLabel)}.</div></div>` : (() => {
       const visibleRows = [...rows].reverse().slice(0, expensesVisibleCount);
@@ -5270,76 +5269,7 @@ function renderExpenses() {
     expensesVisibleCount = PAGE_SIZE;
     renderExpenses();
   }));
-  document.getElementById("toggleExpenseForm").addEventListener("click", () => {
-    if (showForm) { expenseFormOpen = false; editingExpenseId = null; } else { expenseFormOpen = true; expenseFormEntryType = "expense"; }
-    selectedProductId = null;
-    editingProductId = null;
-    newProductFormOpen = false;
-    pendingExpenseCategory = null;
-    renderExpenses();
-  });
-  if (showForm) {
-    applyFeedUnitLock("x_cat", "x_unit", expenseFormEntryType === "income" ? INCOME_UNIT_LOCKS : UNIT_LOCKS);
-    document.getElementById("entryTypeExpense").addEventListener("click", () => { expenseFormEntryType = "expense"; pendingExpenseCategory = null; renderExpenses(); });
-    document.getElementById("entryTypeIncome").addEventListener("click", () => { expenseFormEntryType = "income"; pendingExpenseCategory = null; renderExpenses(); });
-    document.getElementById("x_cat").addEventListener("change", (e) => { pendingExpenseCategory = e.target.value; renderExpenses(); });
-    const productPickerHost = document.getElementById("productPickerHost");
-    if (productPickerHost) wireProductPicker(productPickerHost, { categoryFieldId: "x_cat", brandFieldId: "x_desc", qtyFieldId: "x_qty", unitFieldId: "x_unit", rerenderFn: renderExpenses });
-  }
-
-  const saveBtn = document.getElementById("saveExpense");
-  if (saveBtn) saveBtn.addEventListener("click", async () => {
-    const amount = document.getElementById("x_amount").value;
-    if (!amount) return;
-    const perItemQty = document.getElementById("x_qty").value;
-    const category = document.getElementById("x_cat").value;
-    const unit = document.getElementById("x_unit").value || null;
-    const description = document.getElementById("x_desc").value;
-    const date = document.getElementById("x_date").value;
-    const countEl = document.getElementById("x_count");
-    const count = countEl ? Math.max(1, Number(countEl.value) || 1) : 1;
-    if (count > 200) { alert("That's a lot of separate bags for one entry — try 200 or fewer at a time"); return; }
-    // The expense's own quantity is the TOTAL across all bags (for accurate
-    // category aggregation elsewhere); the inventory gets `count` separate
-    // per-bag items instead, so each is trackable on its own.
-    const totalQty = perItemQty ? Number(perItemQty) * count : null;
-    const forTypeEl = document.getElementById("x_for");
-    const washoutUnitPrice = (expenseFormEntryType === "income" && (category === "Egg Sale" || category === "Meat Sale"))
-      ? computeWashoutSnapshotPrice(category, date)
-      : null;
-    const payload = { coop_id: currentCoopId, date, category, for_type: forTypeEl ? forTypeEl.value : null, description, amount: Number(amount), quantity: totalQty, unit, entry_type: expenseFormEntryType, washout_unit_price: washoutUnitPrice };
-    if (editing) {
-      await localExpenseUpdate(editing.id, payload);
-      showToast(expenseFormEntryType === "income" ? "Income updated" : "Expense updated", "update");
-    } else {
-      const created = await localExpenseCreate(payload);
-      showToast(expenseFormEntryType === "income" ? "Income added" : "Expense added", "create");
-      // A new purchase with a quantity, in a trackable category, becomes
-      // fresh "Full" item(s) in the Supply tab's inventory automatically --
-      // Supplies are local-first too now, so this works offline the same as
-      // the expense itself.
-      if (perItemQty && QUANTITY_CATEGORIES.has(category)) {
-        const selectedProduct = selectedProductId ? STATE.supplyProducts.find(p => p.id === selectedProductId) : null;
-        if (selectedProductId) await localSupplyProductUpdate(selectedProductId, { last_used_at: todayStr() });
-        await localBulkCreate("supplies", Array.from({ length: count }, () => ({
-          coop_id: currentCoopId, category, description: (selectedProduct && selectedProduct.default_description) || description || category, brand: selectedProduct ? selectedProduct.brand : null,
-          quantity: Number(perItemQty), unit, status: "Full", date_added: date, source_expense_id: created.id,
-          product_id: selectedProductId || null,
-        })));
-        showToast(count > 1 ? `${count} items added to inventory` : `Added to inventory: ${description || category}`, "create");
-      }
-    }
-    selectedProductId = null;
-    editingProductId = null;
-    newProductFormOpen = false;
-    pendingExpenseCategory = null;
-    editingExpenseId = null;
-    expenseFormOpen = false;
-    refreshAndRender();
-  });
-  const cancelExpBtn = document.getElementById("cancelExpenseForm");
-  if (cancelExpBtn) cancelExpBtn.addEventListener("click", () => { editingExpenseId = null; expenseFormOpen = false; selectedProductId = null; newProductFormOpen = false; editingProductId = null; pendingExpenseCategory = null; renderExpenses(); });
-  el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => { editingExpenseId = card.dataset.edit; expenseFormOpen = false; renderExpenses(); window.scrollTo({ top: 0, behavior: "smooth" }); }));
+  document.getElementById("toggleExpenseForm").addEventListener("click", () => openExpenseModal(null));
   const shiftPeriod = (delta) => {
     if (expenseScope === "year") {
       if (expenseRangeMode) {
@@ -5400,6 +5330,7 @@ function renderExpenses() {
   }
   const loadMoreEl = document.getElementById("loadMoreBtn");
   if (loadMoreEl) loadMoreEl.addEventListener("click", () => { expensesVisibleCount += PAGE_SIZE; renderExpenses(); });
+  el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => openExpenseModal(STATE.expenses.find(x => x.id === card.dataset.edit))));
   el.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     const wasIncome = STATE.expenses.find(x => x.id === b.dataset.del)?.entry_type === "income";
     await localExpenseDelete(b.dataset.del, currentCoopId);
@@ -5407,6 +5338,114 @@ function renderExpenses() {
     if (editingExpenseId === b.dataset.del) editingExpenseId = null;
     refreshAndRender();
   }));
+}
+
+function expenseFormHtml(editing) {
+  return `
+    <div class="form-head">${editing ? "Edit entry" : "Log an entry"}</div>
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <button type="button" class="btn ${expenseFormEntryType === "expense" ? "btn-close" : "ghost"} small" id="entryTypeExpense">💸 Expense</button>
+      <button type="button" class="btn ${expenseFormEntryType === "income" ? "btn-confirm" : "ghost"} small" id="entryTypeIncome">💰 Income</button>
+    </div>
+    <div class="grid-form">
+      <label class="field"><span>Date</span><input type="date" id="x_date" value="${editing ? editing.date : todayStr()}"></label>
+      <label class="field"><span>Category</span><select id="x_cat">${(expenseFormEntryType === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map(c => `<option ${(editing ? editing.category === c : pendingExpenseCategory === c) ? "selected" : ""}>${c}</option>`).join("")}</select></label>
+      <label class="field"><span>Amount ($, total)</span><input type="number" step="0.01" id="x_amount" value="${editing ? editing.amount : ""}"></label>
+      <label class="field"><span>Quantity${expenseFormEntryType === "income" ? "" : " (per bag/item)"}</span><input type="number" step="0.01" id="x_qty" placeholder="e.g. 50" value="${editing && editing.quantity != null ? editing.quantity : ""}"></label>
+      <label class="field"><span>Unit</span><select id="x_unit"><option value="">—</option>${EXPENSE_UNITS.map(u => `<option ${editing && editing.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>
+      ${!editing && expenseFormEntryType === "expense" ? `<label class="field"><span>Number of bags/items</span><input type="number" min="1" max="200" step="1" id="x_count" value="1"></label>` : ""}
+      ${expenseFormEntryType === "expense" ? `<label class="field"><span>Applies to</span><select id="x_for">${EXPENSE_FOR_TYPES.map(t => `<option ${editing ? (editing.for_type === t ? "selected" : "") : (t === "All Birds" ? "selected" : "")}>${t}</option>`).join("")}</select></label>` : ""}
+      <label class="field"><span>Description</span><input id="x_desc" placeholder="${expenseFormEntryType === "income" ? "e.g. Sold to neighbor" : "e.g. 50lb layer feed"}" value="${editing ? esc(editing.description || "") : ""}"></label>
+    </div>
+    <div class="note-box" style="margin-top:10px">${expenseFormEntryType === "income"
+      ? `For Egg Sale or Meat Sale specifically, fill in the quantity (eggs or lbs) -- this lets the app subtract that amount from the estimated "value produced" on the Coop tab, so a sale doesn't get counted twice: once as an estimate when collected, and again as real income here.`
+      : `Layer Feed and Meat Feed are separate categories now, so the cost-per-dozen and cost-per-lb estimates on the Coop tab stay accurate without needing a flock tag. "Applies to" still matters for shared costs like Bedding or Equipment.${!editing ? " Buying more than one bag at once? Set the count, and the total amount here covers all of them -- each still becomes its own separate, independently trackable item in the Supply tab's inventory." : ""}`}</div>
+    ${!editing && expenseFormEntryType === "expense" && QUANTITY_CATEGORIES.has(document.getElementById("x_cat") ? document.getElementById("x_cat").value : EXPENSE_CATEGORIES[0]) ? `<div id="productPickerHost">${renderProductPickerRow(document.getElementById("x_cat") ? document.getElementById("x_cat").value : EXPENSE_CATEGORIES[0])}</div>` : ""}
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button class="btn btn-confirm" id="saveExpense">${editing ? "✓ Save changes" : "+ Add entry"}</button>
+      <button class="btn btn-close" id="cancelExpenseForm">Cancel</button>
+    </div>
+  `;
+}
+
+/** Wires the expense form. The entry-type toggle and category change both
+ * affect which fields show (Applies-to only for expenses, the product
+ * picker only for quantity-tracked expense categories, etc) -- rather than
+ * closing and reopening the modal for that, refreshModalContent() rebuilds
+ * just the form in place and this re-wires the fresh copy, the same way
+ * wireProductPicker already refreshes just its own row without touching
+ * the form around it. */
+function wireExpenseFormModal(editing) {
+  applyFeedUnitLock("x_cat", "x_unit", expenseFormEntryType === "income" ? INCOME_UNIT_LOCKS : UNIT_LOCKS);
+  const refreshForm = () => { refreshModalContent(expenseFormHtml(editing)); wireExpenseFormModal(editing); };
+  document.getElementById("entryTypeExpense").addEventListener("click", () => { expenseFormEntryType = "expense"; pendingExpenseCategory = null; refreshForm(); });
+  document.getElementById("entryTypeIncome").addEventListener("click", () => { expenseFormEntryType = "income"; pendingExpenseCategory = null; refreshForm(); });
+  document.getElementById("x_cat").addEventListener("change", (e) => { pendingExpenseCategory = e.target.value; refreshForm(); });
+  const productPickerHost = document.getElementById("productPickerHost");
+  if (productPickerHost) wireProductPicker(productPickerHost, { categoryFieldId: "x_cat", brandFieldId: "x_desc", qtyFieldId: "x_qty", unitFieldId: "x_unit", rerenderFn: refreshForm });
+
+  document.getElementById("saveExpense").addEventListener("click", async () => {
+    const amount = document.getElementById("x_amount").value;
+    if (!amount) return;
+    const perItemQty = document.getElementById("x_qty").value;
+    const category = document.getElementById("x_cat").value;
+    const unit = document.getElementById("x_unit").value || null;
+    const description = document.getElementById("x_desc").value;
+    const date = document.getElementById("x_date").value;
+    const countEl = document.getElementById("x_count");
+    const count = countEl ? Math.max(1, Number(countEl.value) || 1) : 1;
+    if (count > 200) { alert("That's a lot of separate bags for one entry — try 200 or fewer at a time"); return; }
+    // The expense's own quantity is the TOTAL across all bags (for accurate
+    // category aggregation elsewhere); the inventory gets `count` separate
+    // per-bag items instead, so each is trackable on its own.
+    const totalQty = perItemQty ? Number(perItemQty) * count : null;
+    const forTypeEl = document.getElementById("x_for");
+    const washoutUnitPrice = (expenseFormEntryType === "income" && (category === "Egg Sale" || category === "Meat Sale"))
+      ? computeWashoutSnapshotPrice(category, date)
+      : null;
+    const payload = { coop_id: currentCoopId, date, category, for_type: forTypeEl ? forTypeEl.value : null, description, amount: Number(amount), quantity: totalQty, unit, entry_type: expenseFormEntryType, washout_unit_price: washoutUnitPrice };
+    if (editing) {
+      await localExpenseUpdate(editing.id, payload);
+      showToast(expenseFormEntryType === "income" ? "Income updated" : "Expense updated", "update");
+    } else {
+      const created = await localExpenseCreate(payload);
+      showToast(expenseFormEntryType === "income" ? "Income added" : "Expense added", "create");
+      // A new purchase with a quantity, in a trackable category, becomes
+      // fresh "Full" item(s) in the Supply tab's inventory automatically --
+      // Supplies are local-first too now, so this works offline the same as
+      // the expense itself.
+      if (perItemQty && QUANTITY_CATEGORIES.has(category)) {
+        const selectedProduct = selectedProductId ? STATE.supplyProducts.find(p => p.id === selectedProductId) : null;
+        if (selectedProductId) await localSupplyProductUpdate(selectedProductId, { last_used_at: todayStr() });
+        await localBulkCreate("supplies", Array.from({ length: count }, () => ({
+          coop_id: currentCoopId, category, description: (selectedProduct && selectedProduct.default_description) || description || category, brand: selectedProduct ? selectedProduct.brand : null,
+          quantity: Number(perItemQty), unit, status: "Full", date_added: date, source_expense_id: created.id,
+          product_id: selectedProductId || null,
+        })));
+        showToast(count > 1 ? `${count} items added to inventory` : `Added to inventory: ${description || category}`, "create");
+      }
+    }
+    closeModal();
+    refreshAndRender();
+  });
+  document.getElementById("cancelExpenseForm").addEventListener("click", () => closeModal());
+}
+
+function openExpenseModal(editing) {
+  editingExpenseId = editing ? editing.id : null;
+  expenseFormEntryType = editing ? (editing.entry_type === "income" ? "income" : "expense") : "expense";
+  pendingExpenseCategory = null;
+  selectedProductId = null;
+  editingProductId = null;
+  newProductFormOpen = false;
+  openModal(expenseFormHtml(editing), () => {
+    editingExpenseId = null;
+    pendingExpenseCategory = null;
+    selectedProductId = null;
+    editingProductId = null;
+    newProductFormOpen = false;
+  });
+  wireExpenseFormModal(editing);
 }
 
 // ================= BEDDING =================
@@ -5616,42 +5655,32 @@ function supplyCardHtml(s) {
   </div>`;
 }
 
-let editingSupplyGroupKey = null;
-
-function renderSupplyGroupModal() {
-  const existing = document.getElementById("supplyGroupOverlay");
-  if (existing) existing.remove();
-  if (!editingSupplyGroupKey) return;
-  const members = STATE.supplies.filter(s => s.status === "Full" && !s.opened_at && supplyGroupKey(s) === editingSupplyGroupKey);
-  if (members.length === 0) { editingSupplyGroupKey = null; return; }
+function supplyGroupFormHtml(members) {
   const first = members[0];
-
-  const overlay = document.createElement("div");
-  overlay.className = "confirm-overlay";
-  overlay.id = "supplyGroupOverlay";
-  overlay.innerHTML = `
-    <div class="confirm-modal" style="max-width:420px;text-align:left">
-      <div class="form-head"><span>Edit group (${members.length} full)</span><button class="icon-btn icon-btn-close" id="closeGroupModal">✕</button></div>
-      <div class="dim" style="font-size:12px;margin:8px 0 14px">Changes apply to the whole pile. Raise the count to add more (e.g. you actually bought 10, not 9), lower it to remove some -- no need to open and delete bags one at a time.</div>
-      <div class="grid-form">
-        <label class="field"><span>Category</span><select id="grp_category">${[...QUANTITY_CATEGORIES].map(c => `<option ${first.category === c ? "selected" : ""}>${c}</option>`).join("")}</select></label>
-        <label class="field"><span>Brand</span><input id="grp_brand" value="${esc(first.brand || "")}"></label>
-        <label class="field"><span>Description</span><input id="grp_desc" value="${esc(first.description || "")}"></label>
-        <label class="field"><span>Quantity (per item)</span><input type="number" step="0.01" id="grp_qty" value="${first.quantity ?? ""}"></label>
-        <label class="field"><span>Unit</span><select id="grp_unit">${EXPENSE_UNITS.map(u => `<option ${first.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>
-        <label class="field"><span>Date added</span><input type="date" id="grp_date" value="${first.date_added || todayStr()}"></label>
-        <label class="field"><span>Count</span><input type="number" min="0" max="500" step="1" id="grp_count" value="${members.length}"></label>
-      </div>
-      <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
-        <button class="btn btn-confirm" id="saveGroupBtn">✓ Save changes</button>
-        <button class="btn btn-close" id="deleteGroupBtn">Delete all ${members.length}</button>
-      </div>
+  return `
+    <div class="form-head">Edit group (${members.length} full)</div>
+    <div class="dim" style="font-size:12px;margin:8px 0 14px">Changes apply to the whole pile. Raise the count to add more (e.g. you actually bought 10, not 9), lower it to remove some -- no need to open and delete bags one at a time.</div>
+    <div class="grid-form">
+      <label class="field"><span>Category</span><select id="grp_category">${[...QUANTITY_CATEGORIES].map(c => `<option ${first.category === c ? "selected" : ""}>${c}</option>`).join("")}</select></label>
+      <label class="field"><span>Brand</span><input id="grp_brand" value="${esc(first.brand || "")}"></label>
+      <label class="field"><span>Description</span><input id="grp_desc" value="${esc(first.description || "")}"></label>
+      <label class="field"><span>Quantity (per item)</span><input type="number" step="0.01" id="grp_qty" value="${first.quantity ?? ""}"></label>
+      <label class="field"><span>Unit</span><select id="grp_unit">${EXPENSE_UNITS.map(u => `<option ${first.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>
+      <label class="field"><span>Date added</span><input type="date" id="grp_date" value="${first.date_added || todayStr()}"></label>
+      <label class="field"><span>Count</span><input type="number" min="0" max="500" step="1" id="grp_count" value="${members.length}"></label>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+      <button class="btn btn-confirm" id="saveGroupBtn">✓ Save changes</button>
+      <button class="btn btn-close" id="deleteGroupBtn">Delete all ${members.length}</button>
     </div>
   `;
-  document.body.appendChild(overlay);
+}
+
+function openSupplyGroupModal(key) {
+  const members = STATE.supplies.filter(s => s.status === "Full" && !s.opened_at && supplyGroupKey(s) === key);
+  if (members.length === 0) return;
+  openModal(supplyGroupFormHtml(members));
   applyFeedUnitLock("grp_category", "grp_unit");
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) { editingSupplyGroupKey = null; renderSupplyGroupModal(); } });
-  document.getElementById("closeGroupModal").addEventListener("click", () => { editingSupplyGroupKey = null; renderSupplyGroupModal(); });
 
   document.getElementById("saveGroupBtn").addEventListener("click", async () => {
     const payload = {
@@ -5682,9 +5711,8 @@ function renderSupplyGroupModal() {
       addCount > 0 ? localBulkCreate("supplies", Array.from({ length: addCount }, () => payload)) : Promise.resolve(),
     ]);
     showToast(`Group updated (${targetCount} full)`, "update");
-    editingSupplyGroupKey = null;
+    closeModal();
     await loadCoopData();
-    renderSupplyGroupModal();
     renderSupplyInventory();
   });
 
@@ -5692,72 +5720,73 @@ function renderSupplyGroupModal() {
     if (!(await showConfirmDialog(`Delete all ${members.length} bags in this group? This can't be undone.`))) return;
     await localBulkDelete("supplies", members.map(m => m.id), currentCoopId);
     showToast(`${members.length} items deleted`, "delete");
-    editingSupplyGroupKey = null;
+    closeModal();
     await loadCoopData();
-    renderSupplyGroupModal();
     renderSupplyInventory();
   });
 }
 
-function renderEmptySupplyModal() {
-  const existing = document.getElementById("emptySupplyOverlay");
-  if (existing) existing.remove();
-  if (!showEmptySupplyModal) return;
-
+function emptySupplyModalHtml() {
   const emptyItems = STATE.supplies.filter(s => s.status === "Empty").sort((a, b) => (b.date_emptied || "").localeCompare(a.date_emptied || ""));
   const paged = emptyItems.slice(0, emptySupplyVisibleCount);
-
-  const overlay = document.createElement("div");
-  overlay.className = "confirm-overlay";
-  overlay.id = "emptySupplyOverlay";
-  overlay.innerHTML = `
-    <div class="confirm-modal" style="max-width:520px;max-height:82vh;overflow-y:auto;text-align:left">
-      <div class="form-head"><span>Emptied (${emptyItems.length})</span><button class="icon-btn icon-btn-close" id="closeEmptyModal">✕</button></div>
-      <div class="dim" style="font-size:12px;margin:8px 0 14px">Kept for your records — how long each one lasted stays intact for future cost/usage stats. Slide one back to a fill level if it was marked empty by mistake, or delete it for good.</div>
-      ${emptyItems.length === 0 ? `<div class="empty">Nothing emptied yet.</div>` : `
-      <div class="list-stack">
-        ${paged.map(s => {
-          const product = s.product_id ? STATE.supplyProducts.find(p => p.id === s.product_id) : null;
-          const photo = product ? productPhotoUrl(product) : null;
-          return `
-          <div class="list-card tone-slate">
-            ${photo ? `<div style="width:44px;height:44px;border-radius:6px;overflow:hidden;flex:0 0 auto;margin-right:2px"><img src="${photo}" style="width:100%;height:100%;object-fit:cover;opacity:0.75"></div>` : ""}
-            <div class="list-card-main">
-              <div style="font-weight:600">${esc(s.brand || s.description || s.category)}</div>
-              <div class="list-card-desc dim">${esc(s.category)}${s.quantity ? ` · ${s.quantity} ${esc(s.unit || "")}` : ""}</div>
-              <div class="list-card-desc dim">${s.date_added ? `added ${fmtDate(s.date_added)}` : ""}${s.date_emptied ? ` · emptied ${fmtDate(s.date_emptied)}` : ""}${s.date_added && s.date_emptied ? ` · lasted ${daysSince(s.date_added) - daysSince(s.date_emptied)}d` : ""}</div>
-            </div>
-            <div class="list-card-side">
-              <button class="icon-btn" data-restore-supply="${s.id}" title="Not actually empty -- restore to Full">↺</button>
-              <button class="icon-btn" data-del-supply-modal="${s.id}" title="Delete permanently">🗑</button>
-            </div>
-          </div>`;
-        }).join("")}
-      </div>
-      ${loadMoreButtonHtml(emptyItems.length, emptySupplyVisibleCount, "loadMoreEmptyBtn")}
-      `}
+  return `
+    <div class="form-head">Emptied (${emptyItems.length})</div>
+    <div class="dim" style="font-size:12px;margin:8px 0 14px">Kept for your records — how long each one lasted stays intact for future cost/usage stats. Slide one back to a fill level if it was marked empty by mistake, or delete it for good.</div>
+    ${emptyItems.length === 0 ? `<div class="empty">Nothing emptied yet.</div>` : `
+    <div class="list-stack">
+      ${paged.map(s => {
+        const product = s.product_id ? STATE.supplyProducts.find(p => p.id === s.product_id) : null;
+        const photo = product ? productPhotoUrl(product) : null;
+        return `
+        <div class="list-card tone-slate">
+          ${photo ? `<div style="width:44px;height:44px;border-radius:6px;overflow:hidden;flex:0 0 auto;margin-right:2px"><img src="${photo}" style="width:100%;height:100%;object-fit:cover;opacity:0.75"></div>` : ""}
+          <div class="list-card-main">
+            <div style="font-weight:600">${esc(s.brand || s.description || s.category)}</div>
+            <div class="list-card-desc dim">${esc(s.category)}${s.quantity ? ` · ${s.quantity} ${esc(s.unit || "")}` : ""}</div>
+            <div class="list-card-desc dim">${s.date_added ? `added ${fmtDate(s.date_added)}` : ""}${s.date_emptied ? ` · emptied ${fmtDate(s.date_emptied)}` : ""}${s.date_added && s.date_emptied ? ` · lasted ${daysSince(s.date_added) - daysSince(s.date_emptied)}d` : ""}</div>
+          </div>
+          <div class="list-card-side">
+            <button class="icon-btn" data-restore-supply="${s.id}" title="Not actually empty -- restore to Full">↺</button>
+            <button class="icon-btn" data-del-supply-modal="${s.id}" title="Delete permanently">🗑</button>
+          </div>
+        </div>`;
+      }).join("")}
     </div>
+    ${loadMoreButtonHtml(emptyItems.length, emptySupplyVisibleCount, "loadMoreEmptyBtn")}
+    `}
   `;
-  document.body.appendChild(overlay);
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) { showEmptySupplyModal = false; renderEmptySupplyModal(); } });
-  document.getElementById("closeEmptyModal").addEventListener("click", () => { showEmptySupplyModal = false; renderEmptySupplyModal(); });
-  overlay.querySelectorAll("[data-restore-supply]").forEach(b => b.addEventListener("click", async () => {
+}
+
+function wireEmptySupplyModal() {
+  document.querySelectorAll("[data-restore-supply]").forEach(b => b.addEventListener("click", async () => {
     await localSupplyUpdate(b.dataset.restoreSupply, { status: "Full", date_emptied: null });
     showToast("Restored to Full", "update");
     await loadCoopData();
-    renderEmptySupplyModal();
+    refreshModalContent(emptySupplyModalHtml());
+    wireEmptySupplyModal();
     renderSupplyInventory();
   }));
-  overlay.querySelectorAll("[data-del-supply-modal]").forEach(b => b.addEventListener("click", async () => {
+  document.querySelectorAll("[data-del-supply-modal]").forEach(b => b.addEventListener("click", async () => {
     if (!(await showConfirmDialog("Delete this supply item permanently? This can't be undone."))) return;
     await localSupplyDelete(b.dataset.delSupplyModal, currentCoopId);
     showToast("Supply item deleted", "delete");
     await loadCoopData();
-    renderEmptySupplyModal();
+    refreshModalContent(emptySupplyModalHtml());
+    wireEmptySupplyModal();
     renderSupplyInventory();
   }));
   const loadMoreEmptyEl = document.getElementById("loadMoreEmptyBtn");
-  if (loadMoreEmptyEl) loadMoreEmptyEl.addEventListener("click", () => { emptySupplyVisibleCount += PAGE_SIZE; renderEmptySupplyModal(); });
+  if (loadMoreEmptyEl) loadMoreEmptyEl.addEventListener("click", () => {
+    emptySupplyVisibleCount += PAGE_SIZE;
+    refreshModalContent(emptySupplyModalHtml());
+    wireEmptySupplyModal();
+  });
+}
+
+function openEmptySupplyModal() {
+  emptySupplyVisibleCount = PAGE_SIZE;
+  openModal(emptySupplyModalHtml());
+  wireEmptySupplyModal();
 }
 
 /** A pile of identical Full bags (same category/description/quantity/unit)
@@ -5908,7 +5937,7 @@ function renderSupplyInventory() {
   // ---- Supply inventory handlers ----
   document.getElementById("toggleSupplyForm").addEventListener("click", () => openSupplyModal(null));
   const openEmptyBtn = document.getElementById("openEmptyModal");
-  if (openEmptyBtn) openEmptyBtn.addEventListener("click", () => { showEmptySupplyModal = true; emptySupplyVisibleCount = PAGE_SIZE; renderEmptySupplyModal(); });
+  if (openEmptyBtn) openEmptyBtn.addEventListener("click", () => openEmptySupplyModal());
   el.querySelectorAll(".supply-check").forEach(cb => cb.addEventListener("change", (e) => {
     if (e.target.checked) selectedSupplyIds.add(cb.dataset.id); else selectedSupplyIds.delete(cb.dataset.id);
     renderSupplyInventory();
@@ -5940,10 +5969,7 @@ function renderSupplyInventory() {
     showToast("Bag opened -- still tracked as Full until you use some", "update");
     renderSupplyInventory();
   }));
-  el.querySelectorAll("[data-edit-group]").forEach(card => card.addEventListener("click", () => {
-    editingSupplyGroupKey = card.dataset.editGroup;
-    renderSupplyGroupModal();
-  }));
+  el.querySelectorAll("[data-edit-group]").forEach(card => card.addEventListener("click", () => openSupplyGroupModal(card.dataset.editGroup)));
   el.querySelectorAll(".supply-slider").forEach(slider => slider.addEventListener("change", async (e) => {
     const id = slider.dataset.id;
     const existing = STATE.supplies.find(s => s.id === id);
@@ -6074,8 +6100,6 @@ function renderBeddingFreshness() {
   );
   const sorted = [...filtered].sort((a, b) => b.date.localeCompare(a.date));
   const anyFilter = beddingFilters.area || beddingFilters.entryType || beddingFilters.year;
-  const editing = editingBeddingId ? STATE.bedding.find(b => b.id === editingBeddingId) : null;
-  const showForm = beddingFormOpen || !!editing;
   el.innerHTML = `
     <div class="card-title" style="margin-bottom:4px">Bedding Freshness</div>
     <div class="grid-stats" style="margin-bottom:16px">
@@ -6111,9 +6135,10 @@ function renderBeddingFreshness() {
 
     <div class="toolbar" style="margin-bottom:10px">
       <div class="dim">${sorted.length} of ${STATE.bedding.length} shown</div>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn ghost small" id="openBedThresholds" title="Add/remove/reorder tracking areas, and set warn/overdue timing for each">⚙ Areas &amp; thresholds</button>
         <button class="btn ghost small" id="toggleBedFilters">Filters${anyFilter ? " (on)" : ""} ${beddingFiltersOpen ? "▾" : "▸"}</button>
-        <button class="btn ${showForm ? 'btn-close' : ''}" id="toggleBedForm">${showForm ? "✕ Close" : "+ Add entry"}</button>
+        <button class="btn" id="toggleBedForm">+ Add entry</button>
       </div>
     </div>
 
@@ -6125,24 +6150,6 @@ function renderBeddingFreshness() {
         <label class="field"><span>Year</span><select id="filterBedYear"><option value="">All years</option>${years.map(y => `<option value="${y}" ${beddingFilters.year === y ? "selected" : ""}>${y}</option>`).join("")}</select></label>
       </div>
       ${anyFilter ? `<div style="margin-top:10px"><button class="btn ghost small" id="clearBedFilters">Clear filters</button></div>` : ""}
-    </div>
-    ` : ""}
-
-    ${showForm ? `
-    <div class="form-block" style="${editing ? "border-color:var(--rust)" : ""}">
-      <div class="form-head">${editing ? "Edit bedding entry" : "Log a bedding change"}</div>
-      <div class="grid-form">
-        <label class="field"><span>Date</span><input type="date" id="d_date" value="${editing ? editing.date : todayStr()}"></label>
-        <label class="field"><span>Area</span><select id="d_area">${getBeddingAreas().map(a => `<option ${editing && editing.area === a ? "selected" : ""}>${a}</option>`).join("")}</select></label>
-        <label class="field"><span>Entry type</span><select id="d_type">${BEDDING_TYPES.map(t => `<option ${editing && editing.entry_type === t ? "selected" : ""}>${t}</option>`).join("")}</select></label>
-        <label class="field"><span>Material</span><select id="d_material">${BEDDING_MATERIALS.map(m => `<option ${editing && editing.material === m ? "selected" : ""}>${m}</option>`).join("")}</select></label>
-        <label class="field"><span>Notes</span><input id="d_notes" placeholder="optional" value="${editing ? esc(editing.notes || "") : ""}"></label>
-      </div>
-      <div class="note-box" style="margin-top:10px"><strong style="color:var(--text)">Top-off</strong> is adding fresh material without stirring. <strong style="color:var(--text)">Churn</strong> is stirring what's already there without adding anything. <strong style="color:var(--text)">Top-off + Churn</strong> is both in the same visit. Only Churn and Top-off + Churn count toward the churn-due countdown above -- topping off alone doesn't reset it. Use <strong style="color:var(--text)">Full Clean-out</strong> when the coop or run is emptied down to bare floor.</div>
-      <div style="margin-top:12px;display:flex;gap:8px">
-        <button class="btn btn-confirm" id="saveBedding">${editing ? "✓ Save changes" : "+ Add entry"}</button>
-        <button class="btn btn-close" id="cancelBeddingForm">Cancel</button>
-      </div>
     </div>
     ` : ""}
 
@@ -6166,13 +6173,50 @@ function renderBeddingFreshness() {
     })()}
   `;
 
-  document.getElementById("toggleBedForm").addEventListener("click", () => {
-    if (showForm) { beddingFormOpen = false; editingBeddingId = null; } else { beddingFormOpen = true; }
-    renderBeddingFreshness();
-  });
+  document.getElementById("toggleBedForm").addEventListener("click", () => openBeddingModal(null));
+  document.getElementById("openBedThresholds").addEventListener("click", () => openBeddingThresholdsModal());
   document.getElementById("toggleBedFilters").addEventListener("click", () => { beddingFiltersOpen = !beddingFiltersOpen; renderBeddingFreshness(); });
-  const saveBtn = document.getElementById("saveBedding");
-  if (saveBtn) saveBtn.addEventListener("click", async () => {
+  const filterAreaEl = document.getElementById("filterBedArea");
+  if (filterAreaEl) filterAreaEl.addEventListener("change", (e) => { beddingFilters.area = e.target.value; beddingVisibleCount = PAGE_SIZE; renderBeddingFreshness(); });
+  const filterTypeEl = document.getElementById("filterBedType");
+  if (filterTypeEl) filterTypeEl.addEventListener("change", (e) => { beddingFilters.entryType = e.target.value; beddingVisibleCount = PAGE_SIZE; renderBeddingFreshness(); });
+  const filterYearEl = document.getElementById("filterBedYear");
+  if (filterYearEl) filterYearEl.addEventListener("change", (e) => { beddingFilters.year = e.target.value; beddingVisibleCount = PAGE_SIZE; renderBeddingFreshness(); });
+  const clearBtn = document.getElementById("clearBedFilters");
+  if (clearBtn) clearBtn.addEventListener("click", () => { beddingFilters = { area: "", entryType: "", year: "" }; beddingVisibleCount = PAGE_SIZE; renderBeddingFreshness(); });
+  const loadMoreEl = document.getElementById("loadMoreBtn");
+  if (loadMoreEl) loadMoreEl.addEventListener("click", () => { beddingVisibleCount += PAGE_SIZE; renderBeddingFreshness(); });
+  el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => openBeddingModal(STATE.bedding.find(b => b.id === card.dataset.edit))));
+  el.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
+    await localBeddingDelete(b.dataset.del, currentCoopId);
+    showToast("Bedding entry deleted", "delete");
+    if (editingBeddingId === b.dataset.del) editingBeddingId = null;
+    refreshAndRender();
+  }));
+}
+
+function beddingFormHtml(editing) {
+  return `
+    <div class="form-head">${editing ? "Edit bedding entry" : "Log a bedding change"}</div>
+    <div class="grid-form">
+      <label class="field"><span>Date</span><input type="date" id="d_date" value="${editing ? editing.date : todayStr()}"></label>
+      <label class="field"><span>Area</span><select id="d_area">${getBeddingAreas().map(a => `<option ${editing && editing.area === a ? "selected" : ""}>${a}</option>`).join("")}</select></label>
+      <label class="field"><span>Entry type</span><select id="d_type">${BEDDING_TYPES.map(t => `<option ${editing && editing.entry_type === t ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+      <label class="field"><span>Material</span><select id="d_material">${BEDDING_MATERIALS.map(m => `<option ${editing && editing.material === m ? "selected" : ""}>${m}</option>`).join("")}</select></label>
+      <label class="field"><span>Notes</span><input id="d_notes" placeholder="optional" value="${editing ? esc(editing.notes || "") : ""}"></label>
+    </div>
+    <div class="note-box" style="margin-top:10px"><strong style="color:var(--text)">Top-off</strong> is adding fresh material without stirring. <strong style="color:var(--text)">Churn</strong> is stirring what's already there without adding anything. <strong style="color:var(--text)">Top-off + Churn</strong> is both in the same visit. Only Churn and Top-off + Churn count toward the churn-due countdown above -- topping off alone doesn't reset it. Use <strong style="color:var(--text)">Full Clean-out</strong> when the coop or run is emptied down to bare floor.</div>
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button class="btn btn-confirm" id="saveBedding">${editing ? "✓ Save changes" : "+ Add entry"}</button>
+      <button class="btn btn-close" id="cancelBeddingForm">Cancel</button>
+    </div>
+  `;
+}
+
+function openBeddingModal(editing) {
+  editingBeddingId = editing ? editing.id : null;
+  openModal(beddingFormHtml(editing), () => { editingBeddingId = null; });
+  document.getElementById("saveBedding").addEventListener("click", async () => {
     const payload = {
       coop_id: currentCoopId,
       date: document.getElementById("d_date").value,
@@ -6184,29 +6228,10 @@ function renderBeddingFreshness() {
     if (editing) await localBeddingUpdate(editing.id, payload);
     else await localBeddingCreate(payload);
     showToast(editing ? "Bedding entry updated" : "Bedding entry added", editing ? "update" : "create");
-    editingBeddingId = null;
-    beddingFormOpen = false;
+    closeModal();
     refreshAndRender();
   });
-  const cancelBedBtn = document.getElementById("cancelBeddingForm");
-  if (cancelBedBtn) cancelBedBtn.addEventListener("click", () => { editingBeddingId = null; beddingFormOpen = false; renderBeddingFreshness(); });
-  const filterAreaEl = document.getElementById("filterBedArea");
-  if (filterAreaEl) filterAreaEl.addEventListener("change", (e) => { beddingFilters.area = e.target.value; beddingVisibleCount = PAGE_SIZE; renderBeddingFreshness(); });
-  const filterTypeEl = document.getElementById("filterBedType");
-  if (filterTypeEl) filterTypeEl.addEventListener("change", (e) => { beddingFilters.entryType = e.target.value; beddingVisibleCount = PAGE_SIZE; renderBeddingFreshness(); });
-  const filterYearEl = document.getElementById("filterBedYear");
-  if (filterYearEl) filterYearEl.addEventListener("change", (e) => { beddingFilters.year = e.target.value; beddingVisibleCount = PAGE_SIZE; renderBeddingFreshness(); });
-  const clearBtn = document.getElementById("clearBedFilters");
-  if (clearBtn) clearBtn.addEventListener("click", () => { beddingFilters = { area: "", entryType: "", year: "" }; beddingVisibleCount = PAGE_SIZE; renderBeddingFreshness(); });
-  const loadMoreEl = document.getElementById("loadMoreBtn");
-  if (loadMoreEl) loadMoreEl.addEventListener("click", () => { beddingVisibleCount += PAGE_SIZE; renderBeddingFreshness(); });
-  el.querySelectorAll("[data-edit]").forEach(card => card.addEventListener("click", () => { editingBeddingId = card.dataset.edit; beddingFormOpen = false; renderBeddingFreshness(); window.scrollTo({ top: 0, behavior: "smooth" }); }));
-  el.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
-    await localBeddingDelete(b.dataset.del, currentCoopId);
-    showToast("Bedding entry deleted", "delete");
-    if (editingBeddingId === b.dataset.del) editingBeddingId = null;
-    refreshAndRender();
-  }));
+  document.getElementById("cancelBeddingForm").addEventListener("click", () => closeModal());
 }
 
 // ---------- Init ----------
@@ -6461,10 +6486,10 @@ async function init() {
   const shortcutTabs = { eggs: "eggs", expenses: "expenses", flock: "flock" };
   if (currentCoopId && action && shortcutTabs[action]) {
     switchTab(shortcutTabs[action]);
-    if (action === "eggs") eggFormOpen = true;
-    if (action === "expenses") expenseFormOpen = true;
     if (action === "flock") { /* land on Flock; opening the new-bird form immediately felt presumptuous, so just land on the tab */ }
     renderActiveTab();
+    if (action === "expenses") openExpenseModal(null);
+    if (action === "eggs") openEggModal(null);
     window.history.replaceState({}, "", "/"); // drop the ?action= from the URL bar once it's been applied
   } else {
     switchTab(currentCoopId ? "dashboard" : "settings");
