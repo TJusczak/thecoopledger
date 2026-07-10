@@ -1,6 +1,11 @@
 services:
   coop-ledger:
     image: ghcr.io/tjusczak/thecoopledger:latest
+    # :latest = :stable, the safe default -- only updates when a version is
+    # deliberately promoted. Swap in :beta instead for newer features
+    # sooner (rebuilds on every push to main, less tested). See "Choosing
+    # a release channel" in the README for details.
+    #
     # To build from local source instead (e.g. you've modified the code,
     # or you're developing it), comment the image: line above and
     # uncomment this one:

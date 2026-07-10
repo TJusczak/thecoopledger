@@ -53,6 +53,55 @@ Enter that code (plus a name for yourself) on the app's login screen to get
 in. You can rotate it anytime from Settings → Connection once logged in —
 share the current code with anyone else you want to have access.
 
+### Choosing a release channel
+
+The image is published under two tags:
+
+- **`:stable`** (same as `:latest`) — only updates when a version is
+  deliberately promoted. This is the safe default, and what
+  `docker-compose.yml` points at out of the box.
+- **`:beta`** — rebuilds automatically on every push to `main`. Newer
+  features sooner, but less tested — expect the occasional rough edge.
+
+Switch by changing one line in `docker-compose.yml`:
+
+```yaml
+image: ghcr.io/tjusczak/thecoopledger:beta
+```
+
+then `docker compose pull && docker compose up -d`. Switching back to
+`:stable` works the same way, any time.
+
+If you'd rather freeze at a specific version and upgrade on your own
+schedule instead of tracking a moving tag, pin to a version number
+instead, e.g. `ghcr.io/tjusczak/thecoopledger:1.4.0` — see the
+[Releases page](https://github.com/TJusczak/thecoopledger/releases) for
+what's changed between versions.
+
+### Access the app from your own server's address
+
+Open the app at `http://<your-server-ip>:8000` directly, rather than
+using thecoopledger.com and pointing it at your server for sync. Every
+release ships frontend and backend together in the same image, so
+loading the app from your own server guarantees the two are always a
+matching pair — there's nothing to drift out of sync, on whatever channel
+you've chosen above.
+
+Opening thecoopledger.com itself and syncing with a self-hosted server
+elsewhere works too, but the two then update independently — you could
+end up with newer frontend code than your server's backend actually
+supports. The app detects this and quietly stops offering "update
+available" prompts in that situation, since they'd only reflect
+thecoopledger.com's own version rather than anything meaningful about
+your server, and shows an explanation instead if you check manually.
+
+**On Android:** the published app is a wrapped copy of thecoopledger.com,
+fixed to that address the same way a browser tab there would be. For a
+self-hosted server, installing directly from your own server's address in
+your phone's browser (Chrome → menu → **Add to Home Screen**) gets you an
+equivalent icon and standalone window, with the same guaranteed frontend/
+backend pairing as above.
+
 ### Building from source instead
 
 If you've modified the code, or just prefer building it yourself:
@@ -78,9 +127,12 @@ arm64, so it runs on a typical home server or a Raspberry Pi / ARM NAS
 alike) to GHCR, GitHub's own container registry.
 
 1. Push this repo to your own GitHub account.
-2. Push to `main` (or push a tag like `v1.0.0` for a pinned version) — the
-   workflow builds and publishes automatically. No extra account or secret
-   needed; it authenticates with the token GitHub Actions already provides.
+2. Push to `main` and the workflow builds and publishes `:beta`
+   automatically — no extra account or secret needed, it authenticates
+   with the token GitHub Actions already provides. When you're confident
+   in a particular build, push a version tag (e.g. `v1.0.0`) to also
+   publish it as `:stable`, `:latest`, and that pinned version number —
+   see **Choosing a release channel** above for what each tag means.
 3. **Important:** the first time it publishes, go to the package's page on
    GitHub (your profile or org → **Packages**) and set its visibility to
    **Public**. Packages default to private, and a private one will fail

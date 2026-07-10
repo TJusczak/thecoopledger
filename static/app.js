@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-130";
+const APP_VERSION = "2026.07.06-131";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], birdPhotos: [], activityLog: [], supplyProducts: [] };
@@ -2568,6 +2568,11 @@ function renderConnectionSection() {
       <div class="dim" style="font-size:12px;margin-bottom:10px">
         ${current ? `Currently using: <strong style="color:var(--text)">${esc(current)}</strong>` : `No server address set.`}
       </div>
+      ${current && current !== window.location.origin ? `
+      <div class="dim" style="font-size:12px;margin-bottom:10px;border-left:2px solid var(--gold);padding-left:10px">
+        This app was opened from a different address than the server above. That's fine, but the two update independently -- for guaranteed compatibility between what you see and what your server understands, open the app directly from your server's own address instead when you can. Frontend and backend always ship together there, so there's nothing to drift out of sync.
+      </div>
+      ` : ""}
       <div id="serverVersionLine" class="dim" style="font-size:12px;margin-bottom:10px">Sync server version: checking...</div>
       <div id="liveUpdatesLine" class="dim" style="font-size:12px;margin-bottom:14px">Live updates: checking...</div>
       <div class="dim" style="font-size:12px;margin-bottom:14px">
@@ -8399,6 +8404,19 @@ function showUpdateAvailableToast() {
 async function checkForAppUpdate({ manual = false } = {}) {
   if (localOnlyMode && !navigator.onLine) {
     if (manual) showToast("Can't check right now -- you're offline.", "delete");
+    return;
+  }
+  // The check below compares this page's own address against itself --
+  // meaningful only when that's also where synced data comes from. If a
+  // different server is configured (e.g. the app was opened from
+  // thecoopledger.com but points at a self-hosted server for sync), an
+  // "update available" here would only reflect thecoopledger.com's own
+  // code, not the actual server this device talks to -- misleading rather
+  // than useful, since reloading could pair newer frontend code with an
+  // older backend that doesn't support it yet.
+  const serverUrl = getServerUrl();
+  if (serverUrl && serverUrl !== window.location.origin) {
+    if (manual) showToast("This app was opened from a different address than the server you're syncing with, so this check isn't meaningful here. Open the app directly from your server's own address for a reliable check -- frontend and backend always ship together there.", "delete");
     return;
   }
   try {
