@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-128";
+const APP_VERSION = "2026.07.06-129";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], birdPhotos: [], activityLog: [], supplyProducts: [] };
@@ -342,7 +342,12 @@ function addDays(dateStr, days) {
   d.setDate(d.getDate() + days);
   return localDateStr(d);
 }
-async function resizeImageFileToBlob(file, maxDim = 700, quality = 0.82) {
+async function resizeImageFileToBlob(file, maxDim, quality) {
+  if (maxDim === undefined || quality === undefined) {
+    const tier = PHOTO_QUALITY_TIERS[getPhotoQualityTier()];
+    if (maxDim === undefined) maxDim = tier.maxDim;
+    if (quality === undefined) quality = tier.quality;
+  }
   // Phone cameras store photos with an EXIF orientation tag rather than
   // physically rotating the pixel data -- drawing that straight to a canvas
   // (the old approach here) ignores that tag and can leave the photo sideways
@@ -1137,6 +1142,28 @@ function getSyncIntervalSec() {
   return Number.isFinite(v) && v >= 0 ? v : 60;
 }
 function setSyncIntervalSec(sec) { localStorage.setItem(SYNC_INTERVAL_KEY, String(sec)); }
+
+/** How big new photos get saved at -- applies to every photo type (a
+ * bird's current photo, its timeline history, and product photos) since
+ * they all funnel through the same resize step. Per-device, not synced,
+ * since it's about this device's own storage/bandwidth tradeoff, not the
+ * data itself -- someone could reasonably want "low" on a phone with
+ * limited storage and "high" on a desktop. "medium" is an exact match for
+ * what every photo was already saved at before this setting existed, so
+ * leaving it alone changes nothing for anyone already using the app. */
+const PHOTO_QUALITY_KEY = "coopLedgerPhotoQuality";
+const PHOTO_QUALITY_TIERS = {
+  low:    { maxDim: 480,  quality: 0.72, label: "Low",    hint: "Smallest files, fastest to sync -- fine for a quick visual reference." },
+  medium: { maxDim: 700,  quality: 0.82, label: "Medium",  hint: "The default -- a solid balance of detail and file size." },
+  high:   { maxDim: 1600, quality: 0.88, label: "High",   hint: "Noticeably sharper, especially when zoomed in -- meaningfully bigger files, slower to sync." },
+};
+function getPhotoQualityTier() {
+  const raw = localStorage.getItem(PHOTO_QUALITY_KEY);
+  return PHOTO_QUALITY_TIERS[raw] ? raw : "medium";
+}
+function setPhotoQualityTier(tier) {
+  if (PHOTO_QUALITY_TIERS[tier]) localStorage.setItem(PHOTO_QUALITY_KEY, tier);
+}
 
 async function syncResource(resource, coopId) {
   if (localOnlyMode) return; // running local-only by choice -- never attempt to reach a server
@@ -2478,6 +2505,19 @@ function renderConnectionSection() {
     </div>
 
     <div class="card" style="margin-top:16px">
+      <div class="card-title">📸 Photo quality</div>
+      <div class="dim" style="font-size:12px;margin-bottom:12px">How big new photos get saved at -- applies to birds, their timeline history, and supply products alike, going forward only (nothing already saved changes). Per-device, not synced, so a phone and a desktop can each use whatever tier makes sense for them.</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${Object.entries(PHOTO_QUALITY_TIERS).map(([key, tier]) => `
+          <label class="field" style="display:flex;flex-direction:row;align-items:flex-start;gap:10px;cursor:pointer;margin:0">
+            <input type="radio" name="photoQualityTier" value="${key}" ${getPhotoQualityTier() === key ? "checked" : ""} style="width:auto;margin-top:3px">
+            <span><strong style="color:var(--text)">${tier.label}</strong> <span class="dim" style="font-size:11px">(~${tier.maxDim}px)</span><br><span class="dim" style="font-size:11px">${tier.hint}</span></span>
+          </label>
+        `).join("")}
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
       <div class="card-title">How this app runs</div>
       <div class="dim" style="font-size:12px;margin-bottom:12px">Switch anytime -- nothing is lost either way. Turning sync on later automatically pushes out everything you did while local-only.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -2601,6 +2641,10 @@ function renderConnectionSection() {
     deferredInstallPrompt = null;
     renderConnectionSection();
   });
+  document.querySelectorAll('input[name="photoQualityTier"]').forEach(radio => radio.addEventListener("change", (e) => {
+    setPhotoQualityTier(e.target.value);
+    showToast(`Photo quality set to ${PHOTO_QUALITY_TIERS[e.target.value].label} -- applies to new photos from here on`, "update");
+  }));
   if (SYNC_FOLDER_SUPPORTED) refreshSyncFolderUi();
   document.getElementById("saveUserNameBtn").addEventListener("click", () => {
     setUserName(document.getElementById("userNameInput").value);
