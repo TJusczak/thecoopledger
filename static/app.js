@@ -2,10 +2,10 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-124";
+const APP_VERSION = "2026.07.06-125";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
-const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], activityLog: [], supplyProducts: [] };
+const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], birdPhotos: [], activityLog: [], supplyProducts: [] };
 let currentCoopId = null;
 let activeTab = "dashboard";
 let chartRangeDays = 30; // default 30 days -- shows meaningful recent activity without hiding older data by surprise
@@ -276,6 +276,31 @@ function daysSince(dateStr) {
   if (!dateStr) return null;
   return Math.floor((new Date() - new Date(dateStr + "T00:00:00")) / 86400000);
 }
+/** Age phrased relative to a specific date (e.g. when a history photo was
+ * taken) rather than always "today" -- same phrasing rules as ageFromDate. */
+function ageAtDate(hatchDateStr, atDateStr) {
+  if (!hatchDateStr || !atDateStr) return null;
+  const days = Math.floor((new Date(atDateStr + "T00:00:00") - new Date(hatchDateStr + "T00:00:00")) / 86400000);
+  if (days < 0) return null;
+  if (days < 14) return `${days} day${days !== 1 ? "s" : ""} old`;
+  if (days < 56) { const w = Math.floor(days / 7); return `${w} week${w !== 1 ? "s" : ""} old`; }
+  if (days < 730) { const mo = Math.floor(days / 30.44); return `${mo} month${mo !== 1 ? "s" : ""} old`; }
+  const y = (days / 365.25).toFixed(1);
+  return `${y} year${y !== "1.0" ? "s" : ""} old`;
+}
+const BIRD_STAGES = ["Chick", "Adolescent", "Young Adult", "Adult"];
+/** A reasonable starting guess for growth stage, based on age at the photo's
+ * date -- always editable by hand afterward, since real development varies
+ * by breed and this is just meant to save a click in the common case. */
+function suggestStage(hatchDateStr, atDateStr) {
+  if (!hatchDateStr || !atDateStr) return "";
+  const days = Math.floor((new Date(atDateStr + "T00:00:00") - new Date(hatchDateStr + "T00:00:00")) / 86400000);
+  if (days < 0) return "";
+  if (days <= 56) return "Chick";        // 0-8 weeks
+  if (days <= 140) return "Adolescent";  // 8-20 weeks
+  if (days <= 365) return "Young Adult"; // 20 weeks-1 year
+  return "Adult";
+}
 function daysUntil(dateStr) {
   if (!dateStr) return null;
   return Math.ceil((new Date(dateStr + "T00:00:00") - new Date()) / 86400000);
@@ -450,8 +475,8 @@ async function loadCoops() {
 // talks to the server directly for now, unchanged -- this is deliberately a
 // single proven slice before the same pattern gets extended to the rest.
 const LOCAL_DB_NAME = "coopLedgerLocalDB";
-const LOCAL_DB_VERSION = 8;
-const LOCAL_STORES = ["coops", "birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "activity_log", "supply_products"];
+const LOCAL_DB_VERSION = 9;
+const LOCAL_STORES = ["coops", "birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "bird_photos", "activity_log", "supply_products"];
 let _localDbPromise = null;
 
 function openLocalDb() {
@@ -479,6 +504,10 @@ function openLocalDb() {
       // product and a bird that happened to share an id (astronomically
       // unlikely, but free to rule out) could never collide.
       if (!db.objectStoreNames.contains("pending_product_photos")) db.createObjectStore("pending_product_photos", { keyPath: "productId" });
+      // Bird photo HISTORY entries each have their own id (unlike the single
+      // "current photo" per bird above), so multiple can genuinely be queued
+      // for the same bird at once -- keyed by the bird_photos record's own id.
+      if (!db.objectStoreNames.contains("pending_bird_history_photos")) db.createObjectStore("pending_bird_history_photos", { keyPath: "photoId" });
       // FileSystemDirectoryHandle objects are structured-cloneable, so the
       // handle a user picks via showDirectoryPicker() can be stored here
       // directly and reused across sessions without re-prompting for the
@@ -679,6 +708,69 @@ async function pushPendingPhotosOnce() {
   }
 }
 
+async function queuePendingBirdHistoryPhoto(photoId, blob) {
+  const db = await openLocalDb();
+  const tx = db.transaction(["pending_bird_history_photos"], "readwrite");
+  tx.objectStore("pending_bird_history_photos").put({ photoId, blob, queuedAt: new Date().toISOString() });
+  await idbDone(tx);
+}
+async function getAllPendingBirdHistoryPhotos() {
+  const db = await openLocalDb();
+  const tx = db.transaction(["pending_bird_history_photos"], "readonly");
+  return (await idbRequest(tx.objectStore("pending_bird_history_photos").getAll())) || [];
+}
+async function clearPendingBirdHistoryPhoto(photoId) {
+  const db = await openLocalDb();
+  const tx = db.transaction(["pending_bird_history_photos"], "readwrite");
+  tx.objectStore("pending_bird_history_photos").delete(photoId);
+  await idbDone(tx);
+}
+/** Object URLs for queued-but-not-yet-uploaded history photos, same
+ * synchronous-lookup-map reasoning as pendingPhotoUrls. */
+let pendingBirdHistoryPhotoUrls = {};
+async function refreshPendingBirdHistoryPhotoUrls() {
+  Object.values(pendingBirdHistoryPhotoUrls).forEach(url => URL.revokeObjectURL(url));
+  pendingBirdHistoryPhotoUrls = {};
+  const pending = await getAllPendingBirdHistoryPhotos();
+  pending.forEach(p => { pendingBirdHistoryPhotoUrls[p.photoId] = URL.createObjectURL(p.blob); });
+}
+function birdHistoryPhotoUrl(photoRecord) {
+  return pendingBirdHistoryPhotoUrls[photoRecord.id] || (photoRecord.photo ? mediaUrl(photoRecord.photo) : null);
+}
+/** Small square thumbnails for a bird's photo history, sorted oldest to
+ * newest, each carrying its own stage label if one was set. */
+function birdPhotoHistoryThumbsHtml(birdId) {
+  const photos = STATE.birdPhotos.filter(p => p.bird_id === birdId).sort((a, b) => (a.date_taken || "").localeCompare(b.date_taken || ""));
+  return photos.map(p => {
+    const url = birdHistoryPhotoUrl(p);
+    return `<div class="thumb-clickable" data-history-photo="${p.id}" style="flex:0 0 auto;width:64px;height:64px;border-radius:8px;overflow:hidden;position:relative;cursor:pointer;border:1px solid var(--border)">
+      ${url ? `<img src="${url}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(p)};${photoTransformStyle(p)}">` : `<div style="width:100%;height:100%;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:20px">🐔</div>`}
+      ${p.stage ? `<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.62);color:#F2E9DC;font-size:8px;text-align:center;padding:1px 0;line-height:1.3">${esc(p.stage)}</div>` : ""}
+    </div>`;
+  }).join("");
+}
+/** Pushes any queued history photos to the server, one at a time -- same
+ * shape as pushPendingPhotosOnce. */
+async function pushPendingBirdHistoryPhotosOnce() {
+  const pending = await getAllPendingBirdHistoryPhotos();
+  let anyUploaded = false;
+  for (const p of pending) {
+    try {
+      const result = await apiUploadPhoto(p.photoId, p.blob, "bird_photos");
+      const existing = await localGetOne("bird_photos", p.photoId);
+      if (existing) await localPutMany("bird_photos", [{ ...existing, photo: result.photo }]);
+      await clearPendingBirdHistoryPhoto(p.photoId);
+      anyUploaded = true;
+    } catch (err) {
+      break;
+    }
+  }
+  if (anyUploaded && currentCoopId) {
+    STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
+    await refreshPendingBirdHistoryPhotoUrls();
+  }
+}
+
 async function getPendingProductPhoto(productId) {
   const db = await openLocalDb();
   const tx = db.transaction(["pending_product_photos"], "readonly");
@@ -758,6 +850,12 @@ async function pushPendingProductPhotos() {
   _pushProductPhotosInFlight = pushPendingProductPhotosOnce().finally(() => { _pushProductPhotosInFlight = null; });
   return _pushProductPhotosInFlight;
 }
+let _pushBirdHistoryPhotosInFlight = null;
+async function pushPendingBirdHistoryPhotos() {
+  if (_pushBirdHistoryPhotosInFlight) return _pushBirdHistoryPhotosInFlight;
+  _pushBirdHistoryPhotosInFlight = pushPendingBirdHistoryPhotosOnce().finally(() => { _pushBirdHistoryPhotosInFlight = null; });
+  return _pushBirdHistoryPhotosInFlight;
+}
 
 async function localGetAll(store, coopId) {
   const db = await openLocalDb();
@@ -810,7 +908,10 @@ let _suppressActivityLogging = false;
 async function countPendingChanges() {
   const outbox = await getOutbox();
   const pendingPhotos = await getAllPendingPhotos();
-  return outbox.filter(o => LOCAL_FIRST_RESOURCES.includes(o.resource) && o.resource !== "activity_log").length + pendingPhotos.length;
+  const pendingProductPhotos = await getAllPendingProductPhotos();
+  const pendingBirdHistoryPhotos = await getAllPendingBirdHistoryPhotos();
+  return outbox.filter(o => LOCAL_FIRST_RESOURCES.includes(o.resource) && o.resource !== "activity_log").length
+    + pendingPhotos.length + pendingProductPhotos.length + pendingBirdHistoryPhotos.length;
 }
 
 async function updateSyncIndicator() {
@@ -1028,6 +1129,7 @@ async function syncResource(resource, coopId) {
   await pushOutbox();
   await pushPendingPhotos();
   await pushPendingProductPhotos();
+  await pushPendingBirdHistoryPhotos();
   return pullChanges(resource, coopId);
 }
 
@@ -1056,7 +1158,7 @@ async function backgroundSyncTick() {
   refreshSyncStatus(); // the underlying timestamps advance on every successful attempt, whether or not anything new came in -- keep the display honest about that
   updateSyncIndicator();
   if (!anyChanged) return;
-  const stateKeyFor = { eggs: "eggs", expenses: "expenses", supplies: "supplies", bedding: "bedding", notes: "notes", bird_logs: "birdLogs", birds: "birds", hatches: "hatches", activity_log: "activityLog", supply_products: "supplyProducts" };
+  const stateKeyFor = { eggs: "eggs", expenses: "expenses", supplies: "supplies", bedding: "bedding", notes: "notes", bird_logs: "birdLogs", birds: "birds", hatches: "hatches", hatch_eggs: "hatchEggs", bird_photos: "birdPhotos", activity_log: "activityLog", supply_products: "supplyProducts" };
   for (const [resource, stateKey] of Object.entries(stateKeyFor)) {
     try {
       STATE[stateKey] = await localGetAll(resource, currentCoopId);
@@ -1399,6 +1501,43 @@ async function localHatchEggUpdate(id, payload, opts = {}) {
   return record;
 }
 
+async function localBirdPhotoCreate(payload, opts = {}) {
+  const record = { id: newLocalId(), updated_at: new Date().toISOString(), deleted_at: null, ...payload };
+  await localPutMany("bird_photos", [record]);
+  await queueOutbox({ resource: "bird_photos", op: "create", id: record.id, payload: record });
+  trySyncSoon("bird_photos", payload.coop_id);
+  if (!opts.suppressUndo) pushUndoAction(`Added a photo to the timeline`, [{ resource: "bird_photos", id: record.id, before: null, after: record }]);
+  return record;
+}
+async function localBirdPhotoUpdate(id, payload, opts = {}) {
+  const existing = await localGetOne("bird_photos", id);
+  const record = { ...(existing || { id }), ...payload, updated_at: new Date().toISOString() };
+  await localPutMany("bird_photos", [record]);
+  await queueOutbox({ resource: "bird_photos", op: "update", id, payload });
+  trySyncSoon("bird_photos", payload.coop_id || (existing && existing.coop_id));
+  if (existing && !opts.suppressUndo) pushUndoAction(`Edited a timeline photo`, [{ resource: "bird_photos", id, before: existing, after: record }]);
+  return record;
+}
+
+/** For a bird that already has a "current" photo but no timeline entries
+ * yet (every bird from before this feature existed), seeds the timeline
+ * with one entry mirroring that photo -- the exact original capture date
+ * isn't known, so it defaults to today (editable by hand afterward if the
+ * real date matters). Runs once per bird -- after this it behaves exactly
+ * like one that always had timeline entries. */
+async function ensureBirdPhotoHistorySeeded(bird) {
+  if (!bird.photo) return;
+  const existing = STATE.birdPhotos.filter(p => p.bird_id === bird.id);
+  if (existing.length > 0) return;
+  const today = todayStr();
+  await localBirdPhotoCreate({
+    coop_id: bird.coop_id, bird_id: bird.id, photo: bird.photo,
+    photo_pos_x: bird.photo_pos_x, photo_pos_y: bird.photo_pos_y, photo_zoom: bird.photo_zoom,
+    date_taken: today, stage: suggestStage(bird.hatch_date, today),
+  }, { suppressUndo: true });
+  STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
+}
+
 /** Lazily creates individual hatch_eggs rows for a clutch that doesn't have
  * any yet -- covers both a genuinely fresh clutch (all old counters at
  * zero, generates egg_count "Incubating" eggs) and an old clutch from
@@ -1586,7 +1725,7 @@ async function localCoopDelete(id) {
   // The server hard-deletes everything under this coop in one shot -- clean
   // up the same local records so nothing orphaned lingers in IndexedDB.
   const db = await openLocalDb();
-  for (const store of ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "supply_products"]) {
+  for (const store of ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "bird_photos", "supply_products"]) {
     const all = await localGetAll(store, id);
     const tx = db.transaction(store, "readwrite");
     all.forEach(r => tx.objectStore(store).delete(r.id));
@@ -1620,6 +1759,21 @@ async function birdPhotoToBlob(bird) {
   if (bird.photo) {
     try {
       const res = await fetch(mediaUrl(bird.photo));
+      if (res.ok) return await res.blob();
+    } catch (err) { /* offline or unreachable -- exported without this photo */ }
+  }
+  return null;
+}
+async function birdHistoryPhotoToBlob(photoRecord) {
+  const pending = await (async () => {
+    const db = await openLocalDb();
+    const tx = db.transaction(["pending_bird_history_photos"], "readonly");
+    return (await idbRequest(tx.objectStore("pending_bird_history_photos").get(photoRecord.id))) || null;
+  })();
+  if (pending && pending.blob) return pending.blob;
+  if (photoRecord.photo) {
+    try {
+      const res = await fetch(mediaUrl(photoRecord.photo));
       if (res.ok) return await res.blob();
     } catch (err) { /* offline or unreachable -- exported without this photo */ }
   }
@@ -1663,13 +1817,13 @@ async function buildLocalExportBundle(coopId, onProgress) {
   const coop = await localGetOne("coops", coopId);
   const bundle = { version: 1, exported_at: todayStr(), offline_export: true, coop };
   const photoBlobs = {}; // zip-relative path -> Blob, collected here so the zip step never has to re-derive or re-decode anything
-  const tables = ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "supply_products"];
+  const tables = ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "bird_photos", "supply_products"];
   for (let i = 0; i < tables.length; i++) {
     const table = tables[i];
     const rows = await localGetAll(table, coopId);
-    if (table === "birds" || table === "supply_products") {
-      const toBlobFn = table === "birds" ? birdPhotoToBlob : productPhotoToBlob;
-      const prefix = table === "birds" ? "bird" : "product";
+    if (table === "birds" || table === "supply_products" || table === "bird_photos") {
+      const toBlobFn = table === "birds" ? birdPhotoToBlob : table === "supply_products" ? productPhotoToBlob : birdHistoryPhotoToBlob;
+      const prefix = table === "birds" ? "bird" : table === "supply_products" ? "product" : "birdhist";
       for (let j = 0; j < rows.length; j++) {
         const r = rows[j];
         const blob = await toBlobFn(r);
@@ -1861,7 +2015,7 @@ function rowsToCsv(rows, fields) {
 async function exportLocalCsv(coopId) {
   const coop = await localGetOne("coops", coopId);
   const zip = new JSZip();
-  for (const table of ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "supply_products"]) {
+  for (const table of ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "bird_photos", "supply_products"]) {
     const rows = await localGetAll(table, coopId);
     if (rows.length === 0) continue;
     const fields = Object.keys(rows[0]).filter(f => f !== "coop_id" && f !== "photo");
@@ -1899,10 +2053,10 @@ async function importLocalBundle(bundle, photoBlobs, onProgress) {
     hatch_eggs: localHatchEggCreate,
   };
   // Birds and supply_products first (so their id maps exist), then
-  // everything else, bird_logs and supplies after that (bird_logs needs
-  // bird ids remapped, supplies needs product ids remapped), hatch_eggs
-  // last of all since it needs both hatches and birds already imported.
-  const tables = ["birds", "supply_products", "eggs", "expenses", "bedding", "notes", "hatches", "supplies", "bird_logs", "hatch_eggs"];
+  // everything else, bird_logs and bird_photos after that (both need bird
+  // ids remapped), hatch_eggs last of all since it needs both hatches and
+  // birds already imported.
+  const tables = ["birds", "supply_products", "eggs", "expenses", "bedding", "notes", "hatches", "supplies", "bird_logs", "bird_photos", "hatch_eggs"];
   const totalRows = tables.reduce((sum, t) => sum + (bundle[t] || []).length, 0) || 1;
   let doneRows = 0;
   _suppressActivityLogging = true;
@@ -1928,11 +2082,17 @@ async function importLocalBundle(bundle, photoBlobs, onProgress) {
           payload.hatch_id = newHatchId;
           if (row.bird_id) payload.bird_id = birdIdMap[row.bird_id] || null; // dangling reference just drops the flock link, egg stays otherwise intact
         }
-        if (table === "birds" || table === "supply_products") {
+        if (table === "bird_photos") {
+          const newBirdId = birdIdMap[row.bird_id];
+          if (!newBirdId) { doneRows++; continue; } // referenced bird wasn't in this export; skip it
+          payload.bird_id = newBirdId;
+        }
+        if (table === "birds" || table === "supply_products" || table === "bird_photos") {
           const photoRef = payload.photo;
           payload.photo = null;
-          const created = table === "birds" ? await localBirdCreate(payload) : await localSupplyProductCreate(payload);
-          (table === "birds" ? birdIdMap : productIdMap)[oldId] = created.id;
+          const created = table === "birds" ? await localBirdCreate(payload) : table === "supply_products" ? await localSupplyProductCreate(payload) : await localBirdPhotoCreate(payload, { suppressUndo: true });
+          if (table === "birds") birdIdMap[oldId] = created.id;
+          if (table === "supply_products") productIdMap[oldId] = created.id;
           // A zip import has real blobs already extracted (photoBlobs, keyed
           // by the path stored in the bundle); a plain JSON import (or an
           // older export) still has photos as literal data URIs inline --
@@ -1943,7 +2103,8 @@ async function importLocalBundle(bundle, photoBlobs, onProgress) {
           else if (typeof photoRef === "string" && photoRef.startsWith("data:")) blob = await dataUriToBlob(photoRef);
           if (blob) {
             if (table === "birds") await queuePendingPhoto(created.id, blob);
-            else await queuePendingProductPhoto(created.id, blob);
+            else if (table === "supply_products") await queuePendingProductPhoto(created.id, blob);
+            else await queuePendingBirdHistoryPhoto(created.id, blob);
           }
         } else {
           const created = await createFns[table](payload);
@@ -1999,14 +2160,14 @@ async function tryReadOfflineZipBundle(file, onProgress) {
 }
 
 async function loadCoopData() {
-  if (!currentCoopId) { STATE.birds = []; STATE.eggs = []; STATE.expenses = []; STATE.bedding = []; STATE.birdLogs = []; STATE.notes = []; STATE.supplies = []; STATE.hatches = []; STATE.hatchEggs = []; STATE.supplyProducts = []; return []; }
+  if (!currentCoopId) { STATE.birds = []; STATE.eggs = []; STATE.expenses = []; STATE.bedding = []; STATE.birdLogs = []; STATE.notes = []; STATE.supplies = []; STATE.hatches = []; STATE.hatchEggs = []; STATE.birdPhotos = []; STATE.supplyProducts = []; return []; }
 
   // Everything is local-first now, Birds included: eggs, expenses, supplies,
   // bedding, notes, bird_logs (health/medical records per bird), and birds
   // itself. Sync is best-effort per resource -- if one fails (offline), we
   // still read whatever's already in IndexedDB from last time, rather than
   // showing nothing, and one resource's failure can't block the others.
-  const stateKeyFor = { eggs: "eggs", expenses: "expenses", supplies: "supplies", bedding: "bedding", notes: "notes", bird_logs: "birdLogs", birds: "birds", hatches: "hatches", hatch_eggs: "hatchEggs", activity_log: "activityLog", supply_products: "supplyProducts" };
+  const stateKeyFor = { eggs: "eggs", expenses: "expenses", supplies: "supplies", bedding: "bedding", notes: "notes", bird_logs: "birdLogs", birds: "birds", hatches: "hatches", hatch_eggs: "hatchEggs", bird_photos: "birdPhotos", activity_log: "activityLog", supply_products: "supplyProducts" };
   let newActivityRows = [];
   await Promise.all(Object.entries(stateKeyFor).map(async ([resource, stateKey]) => {
     if (!localOnlyMode) {
@@ -2042,6 +2203,14 @@ async function loadCoopData() {
   const hatchesNeedingEggs = STATE.hatches.filter(h => !STATE.hatchEggs.some(e => e.hatch_id === h.id));
   if (hatchesNeedingEggs.length) {
     for (const h of hatchesNeedingEggs) await ensureHatchEggsExist(h);
+  }
+
+  // Photo timeline: any bird with a current photo but no history entries
+  // yet (every bird from before this feature existed) gets one seeded from
+  // that photo, so the timeline isn't empty despite already having a shot.
+  const birdsNeedingPhotoHistory = STATE.birds.filter(b => b.photo && !STATE.birdPhotos.some(p => p.bird_id === b.id));
+  if (birdsNeedingPhotoHistory.length) {
+    for (const b of birdsNeedingPhotoHistory) await ensureBirdPhotoHistorySeeded(b);
   }
 
   return newActivityRows;
@@ -2585,7 +2754,7 @@ function renderConnectionSection() {
   });
 }
 
-const LOCAL_FIRST_RESOURCES = ["eggs", "expenses", "supplies", "bedding", "notes", "bird_logs", "birds", "coops", "hatches", "hatch_eggs", "activity_log", "supply_products"];
+const LOCAL_FIRST_RESOURCES = ["eggs", "expenses", "supplies", "bedding", "notes", "bird_logs", "birds", "coops", "hatches", "hatch_eggs", "bird_photos", "activity_log", "supply_products"];
 /** Relative time like "3m ago" / "2h ago", falling back to a plain date once
  * it's more than a day old -- precise-enough-to-verify-syncing without
  * needing a raw timestamp. */
@@ -5361,6 +5530,156 @@ function renderBirdLogSection(birdId) {
   }));
 }
 
+/** Add-to-timeline flow for a bird's photo history: file, date taken
+ * (defaults today), and a stage (auto-suggested from age at that date,
+ * re-suggested live if the date changes, always overridable by hand). */
+function openAddHistoryPhotoModal(bird, onDone) {
+  const today = todayStr();
+  const html = `
+    <div class="form-head">Add a photo to ${esc(bird.name) || "this bird"}'s timeline</div>
+    <label class="field"><span>Photo</span><input type="file" id="hp_file" accept="image/*"></label>
+    <label class="field"><span>Date taken</span><input type="date" id="hp_date" value="${today}"></label>
+    <label class="field"><span>Stage</span><select id="hp_stage">
+      <option value="">Unspecified</option>
+      ${BIRD_STAGES.map(s => `<option value="${s}" ${s === suggestStage(bird.hatch_date, today) ? "selected" : ""}>${s}</option>`).join("")}
+    </select></label>
+    ${!bird.hatch_date ? `<div class="dim" style="font-size:11px;margin-top:-8px">Set a hatch date on this bird for the stage to auto-suggest by age.</div>` : ""}
+    <div class="modal-actions">
+      <button class="btn btn-confirm" id="hp_save">+ Add photo</button>
+    </div>
+  `;
+  openModal(html);
+  document.getElementById("hp_date").addEventListener("change", (e) => {
+    if (!bird.hatch_date) return;
+    document.getElementById("hp_stage").value = suggestStage(bird.hatch_date, e.target.value);
+  });
+  document.getElementById("hp_save").addEventListener("click", async () => {
+    const file = document.getElementById("hp_file").files[0];
+    if (!file) { showToast("Pick a photo first", "delete"); return; }
+    const dateTaken = document.getElementById("hp_date").value || today;
+    const stage = document.getElementById("hp_stage").value || null;
+    let blob;
+    try {
+      blob = await resizeImageFileToBlob(file);
+    } catch (err) {
+      alert("Couldn't read that image: " + err.message);
+      return;
+    }
+    const created = await localBirdPhotoCreate({ coop_id: currentCoopId, bird_id: bird.id, photo: null, date_taken: dateTaken, stage, photo_pos_x: 50, photo_pos_y: 50, photo_zoom: 1 });
+    await queuePendingBirdHistoryPhoto(created.id, blob);
+    await refreshPendingBirdHistoryPhotoUrls();
+    STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
+    showToast("Photo added to timeline", "create");
+    onDone();
+  });
+}
+
+/** Options for an existing timeline photo: view it with its age at that
+ * date, edit date/stage, reposition its crop, delete it, or promote it to
+ * be the bird's current photo (the one shown on cards everywhere). */
+function openHistoryPhotoOptionsModal(photo, bird, onDone) {
+  const ageLabel = photo.date_taken && bird.hatch_date ? ageAtDate(bird.hatch_date, photo.date_taken) : null;
+  const html = `
+    <div class="form-head">Timeline photo</div>
+    <div style="width:140px;height:140px;border-radius:10px;overflow:hidden;margin:0 auto 10px;border:1px solid var(--border)">
+      <img src="${birdHistoryPhotoUrl(photo)}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(photo)};${photoTransformStyle(photo)}">
+    </div>
+    ${ageLabel ? `<div class="dim" style="font-size:12px;text-align:center;margin-bottom:14px">${esc(ageLabel)}</div>` : ""}
+    <label class="field"><span>Date taken</span><input type="date" id="hpo_date" value="${photo.date_taken || ""}"></label>
+    <label class="field"><span>Stage</span><select id="hpo_stage">
+      <option value="">Unspecified</option>
+      ${BIRD_STAGES.map(s => `<option value="${s}" ${photo.stage === s ? "selected" : ""}>${s}</option>`).join("")}
+    </select></label>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+      <button class="btn ghost small" id="hpo_reposition">↔ Reposition</button>
+      <button class="btn ghost small" id="hpo_set_current">⭐ Set as current photo</button>
+      <button class="btn btn-close small" id="hpo_delete">🗑 Delete</button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-confirm" id="hpo_save">✓ Save changes</button>
+    </div>
+  `;
+  openModal(html);
+  document.getElementById("hpo_delete").addEventListener("click", async () => {
+    if (!(await showConfirmDialog("Delete this timeline photo? This can't be undone."))) return;
+    await localBulkDelete("bird_photos", [photo.id], currentCoopId);
+    STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
+    showToast("Timeline photo deleted", "delete");
+    onDone();
+  });
+  document.getElementById("hpo_save").addEventListener("click", async () => {
+    const dateTaken = document.getElementById("hpo_date").value || null;
+    const stage = document.getElementById("hpo_stage").value || null;
+    await localBirdPhotoUpdate(photo.id, { date_taken: dateTaken, stage });
+    STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
+    showToast("Timeline photo updated", "update");
+    onDone();
+  });
+  document.getElementById("hpo_reposition").addEventListener("click", () => {
+    openPhotoRepositionModal(birdHistoryPhotoUrl(photo), photo.photo_pos_x ?? 50, photo.photo_pos_y ?? 50, photoZoom(photo), "1/1", async (x, y, zoom) => {
+      await localBirdPhotoUpdate(photo.id, { photo_pos_x: x, photo_pos_y: y, photo_zoom: zoom });
+      STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
+      showToast("Photo position updated", "update");
+      onDone();
+    });
+  });
+  document.getElementById("hpo_set_current").addEventListener("click", async () => {
+    if (photo.photo) {
+      // Already uploaded -- just copy the reference and its crop over.
+      await localBirdUpdate(bird.id, { photo: photo.photo, photo_pos_x: photo.photo_pos_x, photo_pos_y: photo.photo_pos_y, photo_zoom: photo.photo_zoom });
+    } else {
+      // Still queued locally (added moments ago, hasn't synced yet) --
+      // grab that same local blob and queue it as the bird's own current
+      // photo too, rather than copying a reference that doesn't exist yet.
+      const db = await openLocalDb();
+      const tx = db.transaction(["pending_bird_history_photos"], "readonly");
+      const pending = await idbRequest(tx.objectStore("pending_bird_history_photos").get(photo.id));
+      if (!pending || !pending.blob) {
+        showToast("This photo hasn't finished saving yet -- try again in a moment", "delete");
+        return;
+      }
+      await localBirdUpdate(bird.id, { photo_pos_x: photo.photo_pos_x, photo_pos_y: photo.photo_pos_y, photo_zoom: photo.photo_zoom });
+      await queuePendingPhoto(bird.id, pending.blob);
+      await refreshPendingPhotoUrls();
+    }
+    STATE.birds = await localGetAll("birds", currentCoopId);
+    showToast(`Set as ${esc(bird.name) || "the bird's"} current photo`, "update");
+    onDone();
+  });
+}
+
+/** A scrollable, chronological gallery of a bird's full photo history --
+ * the "see how they've grown" view. Each photo is clickable through to the
+ * same edit/reposition/delete/set-as-current options as the form's strip. */
+function openBirdTimelineModal(bird) {
+  const photos = STATE.birdPhotos.filter(p => p.bird_id === bird.id).sort((a, b) => (a.date_taken || "").localeCompare(b.date_taken || ""));
+  const html = `
+    <div class="form-head">${esc(bird.name) || "Bird"}'s timeline</div>
+    <div class="dim" style="font-size:12px;margin:-8px 0 14px">${photos.length} photo${photos.length !== 1 ? "s" : ""} so far. Tap any photo to edit it.</div>
+    <div style="display:flex;flex-direction:column;gap:16px">
+      ${photos.map(p => {
+        const ageLabel = p.date_taken && bird.hatch_date ? ageAtDate(bird.hatch_date, p.date_taken) : null;
+        const url = birdHistoryPhotoUrl(p);
+        return `
+        <div class="thumb-clickable" data-timeline-photo="${p.id}" style="cursor:pointer">
+          <div style="width:100%;aspect-ratio:1/1;border-radius:10px;overflow:hidden;border:1px solid var(--border)">
+            ${url ? `<img src="${url}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(p)};${photoTransformStyle(p)}">` : `<div style="width:100%;height:100%;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:32px">🐔</div>`}
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+            <div style="font-size:13px">${p.date_taken ? esc(fmtDate(p.date_taken)) : "No date"}${ageLabel ? ` · ${esc(ageLabel)}` : ""}</div>
+            ${p.stage ? `<span class="stamp tone-slate">${esc(p.stage)}</span>` : ""}
+          </div>
+        </div>`;
+      }).join("")}
+    </div>
+  `;
+  openModal(html, () => { if (activeTab === "flock") renderFlockHub(); }); // refresh the flock grid on close, in case a photo became the new current photo while browsing
+  document.querySelectorAll("[data-timeline-photo]").forEach(el => el.addEventListener("click", () => {
+    const photo = STATE.birdPhotos.find(p => p.id === el.dataset.timelinePhoto);
+    openHistoryPhotoOptionsModal(photo, bird, () => openBirdTimelineModal(bird)); // back to the timeline after editing/deleting
+  }));
+}
+
 function showBirdForm(bird) {
   const isEdit = !!bird;
   let pendingPhotoBlob = null;   // a newly-picked file, resized, waiting to be uploaded on save
@@ -5428,6 +5747,18 @@ function showBirdForm(bird) {
         <label class="field"><span>Border style</span><select id="f_border_style">${["solid", "dashed", "dotted"].map(s => `<option value="${s}" ${(f.border_style || "solid") === s ? "selected" : ""}>${s[0].toUpperCase() + s.slice(1)}</option>`).join("")}</select></label>
         <label class="field"><span>Background</span><select id="f_pattern">${[["solid", "Solid tint"], ["gradient", "Gradient"], ["dots", "Dots"], ["stripes", "Stripes"]].map(([v, l]) => `<option value="${v}" ${(f.card_pattern || "solid") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
       </div>
+
+      ${isEdit ? `
+      <div class="form-block" style="margin-bottom:14px">
+        <div class="form-head" style="font-size:13px">📸 Photo history</div>
+        <div class="dim" style="font-size:11px;margin-bottom:8px">Track how ${esc(f.name) || "this bird"} looks over time -- as a chick, a few months in, fully grown. Tap a photo to reposition it, edit its date or stage, or set it as the current photo above.</div>
+        <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">
+          ${birdPhotoHistoryThumbsHtml(bird.id)}
+          <button class="btn ghost small" id="addHistoryPhotoBtn" style="flex:0 0 auto;height:64px;width:64px;border-radius:8px;font-size:22px;padding:0">+</button>
+        </div>
+        ${STATE.birdPhotos.filter(p => p.bird_id === bird.id).length > 1 ? `<button class="btn ghost small" id="viewTimelineBtn" style="margin-top:8px">🕐 View timeline</button>` : ""}
+      </div>
+      ` : ""}
 
       <div class="grid-form">
         <label class="field"><span>Name</span><input id="f_name" value="${esc(f.name)}" placeholder="e.g. Nugget"></label>
@@ -5518,6 +5849,21 @@ function showBirdForm(bird) {
       photoRemoved = true;
       previewUrl = null;
       document.getElementById("photoPreview").innerHTML = `<div style="width:84px;height:84px;border-radius:8px;background:var(--bg);border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:28px">🐔</div>`;
+    });
+    const addHistoryBtn = document.getElementById("addHistoryPhotoBtn");
+    if (addHistoryBtn) addHistoryBtn.addEventListener("click", () => {
+      formState = readCurrentValues();
+      openAddHistoryPhotoModal(formState, () => render(false));
+    });
+    document.querySelectorAll("[data-history-photo]").forEach(el => el.addEventListener("click", () => {
+      formState = readCurrentValues();
+      const photo = STATE.birdPhotos.find(p => p.id === el.dataset.historyPhoto);
+      openHistoryPhotoOptionsModal(photo, formState, () => render(false));
+    }));
+    const viewTimelineBtn = document.getElementById("viewTimelineBtn");
+    if (viewTimelineBtn) viewTimelineBtn.addEventListener("click", () => {
+      formState = readCurrentValues();
+      openBirdTimelineModal(formState);
     });
     const clearColorBtn = document.getElementById("clearColor");
     if (clearColorBtn) clearColorBtn.addEventListener("click", () => {

@@ -28,7 +28,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.06-124"
+SERVER_VERSION = "2026.07.06-125"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -50,6 +50,15 @@ SCHEMA = {
         "harvest_date": "TEXT", "harvest_weight": "REAL", "notes": "TEXT",
         "photo": "TEXT", "photo_pos_x": "REAL", "photo_pos_y": "REAL", "photo_zoom": "REAL", "batch_name": "TEXT", "price_per_lb": "REAL",
         "death_date": "TEXT", "death_cause": "TEXT", "card_color": "TEXT", "border_style": "TEXT", "hatch_id": "TEXT", "card_pattern": "TEXT", "location": "TEXT",
+    },
+    "bird_photos": {
+        # A bird's photo history, separate from birds.photo (the single
+        # "current" photo shown on cards everywhere, which this doesn't
+        # replace). Each entry has its own crop, its own date, and an
+        # optional growth-stage label, so a bird's timeline can show it as
+        # a chick, then months later as an adult, without losing either shot.
+        "coop_id": "TEXT", "bird_id": "TEXT", "photo": "TEXT", "photo_pos_x": "REAL", "photo_pos_y": "REAL", "photo_zoom": "REAL",
+        "date_taken": "TEXT", "stage": "TEXT",
     },
     "eggs": {
         "coop_id": "TEXT", "date": "TEXT", "count": "REAL", "notes": "TEXT", "price_per_egg": "REAL",
@@ -97,7 +106,7 @@ SCHEMA = {
         "coop_id": "TEXT", "resource": "TEXT", "op": "TEXT", "changed_by": "TEXT", "summary": "TEXT",
     },
 }
-SCOPED = {"birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "activity_log", "supply_products"}  # tables siloed by coop_id
+SCOPED = {"birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "bird_photos", "activity_log", "supply_products"}  # tables siloed by coop_id
 
 
 @contextmanager
@@ -495,10 +504,10 @@ def _do_import_bundle(bundle: dict, zip_photo_reader=None) -> dict:
         product_id_map = {}
         hatch_id_map = {}
         # supply_products before supplies (so product_id can be remapped),
-        # birds before bird_logs (so bird_id can be remapped), hatch_eggs
-        # last of all (needs both hatches and birds already imported) --
-        # everything else order doesn't matter.
-        import_order = ["birds", "supply_products"] + [t for t in SCOPED if t not in ("birds", "bird_logs", "supply_products", "supplies", "hatch_eggs")] + ["supplies", "bird_logs", "hatch_eggs"]
+        # birds before bird_logs and bird_photos (both need bird_id
+        # remapped), hatch_eggs last of all (needs both hatches and birds
+        # already imported) -- everything else order doesn't matter.
+        import_order = ["birds", "supply_products"] + [t for t in SCOPED if t not in ("birds", "bird_logs", "bird_photos", "supply_products", "supplies", "hatch_eggs")] + ["supplies", "bird_logs", "bird_photos", "hatch_eggs"]
         for table in import_order:
             cols = [c for c in SCHEMA[table] if c != "coop_id"]
             for row in bundle.get(table, []) or []:
@@ -545,6 +554,26 @@ def _do_import_bundle(bundle: dict, zip_photo_reader=None) -> dict:
                     if not new_bird_id:
                         continue  # log referenced a bird that wasn't in this export; skip it
                     row["bird_id"] = new_bird_id
+                if table == "bird_photos":
+                    new_bird_id = bird_id_map.get(row.get("bird_id"))
+                    if not new_bird_id:
+                        continue  # referenced a bird that wasn't in this export; skip it
+                    row["bird_id"] = new_bird_id
+                    photo = row.get("photo")
+                    new_photo = None
+                    if isinstance(photo, str) and photo.startswith("data:"):
+                        try:
+                            header, b64data = photo.split(",", 1)
+                            ext = ".png" if "png" in header else ".jpg"
+                            new_photo = _save_photo_bytes(new_row_id, base64.b64decode(b64data), ext)
+                        except Exception:
+                            new_photo = None
+                    elif isinstance(photo, str) and photo and zip_photo_reader is not None:
+                        content = zip_photo_reader(photo)
+                        if content:
+                            ext = Path(photo).suffix.lower() or ".jpg"
+                            new_photo = _save_photo_bytes(new_row_id, content, ext)
+                    row["photo"] = new_photo
                 if table == "hatch_eggs":
                     new_hatch_id = hatch_id_map.get(row.get("hatch_id"))
                     if not new_hatch_id:
@@ -602,10 +631,7 @@ def export_coop(coop_id: str):
         bundle = {"version": 1, "exported_at": date.today().isoformat(), "coop": dict(coop)}
         for table in SCOPED:
             rows = [dict(r) for r in conn.execute(f"SELECT * FROM {table} WHERE coop_id = ? AND deleted_at IS NULL", (coop_id,)).fetchall()]
-            if table == "birds":
-                for r in rows:
-                    r["photo"] = _photo_to_data_uri(r["photo"])
-            if table == "supply_products":
+            if table in ("birds", "supply_products", "bird_photos"):
                 for r in rows:
                     r["photo"] = _photo_to_data_uri(r["photo"])
             bundle[table] = rows
@@ -625,18 +651,7 @@ def export_coop_zip(coop_id: str):
         photo_files = {}
         for table in SCOPED:
             rows = [dict(r) for r in conn.execute(f"SELECT * FROM {table} WHERE coop_id = ? AND deleted_at IS NULL", (coop_id,)).fetchall()]
-            if table == "birds":
-                for r in rows:
-                    photo_ref = r["photo"]
-                    new_ref = None
-                    if photo_ref and isinstance(photo_ref, str) and photo_ref.startswith("/photos/"):
-                        p = PHOTOS_DIR / Path(photo_ref).name
-                        if p.exists():
-                            rel = f"photos/{p.name}"
-                            photo_files[rel] = p.read_bytes()
-                            new_ref = rel
-                    r["photo"] = new_ref
-            if table == "supply_products":
+            if table in ("birds", "supply_products", "bird_photos"):
                 for r in rows:
                     photo_ref = r["photo"]
                     new_ref = None
@@ -674,7 +689,7 @@ def export_coop_csv(coop_id: str):
         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for table in SCOPED:
                 fieldnames = ["id"] + [c for c in SCHEMA[table] if c != "coop_id"]
-                if table == "birds":
+                if table in ("birds", "supply_products", "bird_photos"):
                     fieldnames = [f for f in fieldnames if f != "photo"]  # base64 blobs don't belong in a spreadsheet
                 rows = [dict(r) for r in conn.execute(f"SELECT * FROM {table} WHERE coop_id = ? AND deleted_at IS NULL", (coop_id,)).fetchall()]
                 csv_buf = io.StringIO()
@@ -715,54 +730,57 @@ def delete_coop(coop_id: str):
         return {"deleted": coop_id}
 
 
-@app.post("/api/supply_products/{product_id}/photo")
-async def upload_supply_product_photo(product_id: str, file: UploadFile = File(...)):
+async def _upload_photo_for(table: str, item_id: str, file: UploadFile):
     with get_db() as conn:
-        row = conn.execute("SELECT * FROM supply_products WHERE id = ?", (product_id,)).fetchone()
+        row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (item_id,)).fetchone()
         if not row:
-            raise HTTPException(404, "Product not found")
+            raise HTTPException(404, "Not found")
         content = await file.read()
         ext = ".png" if (file.content_type or "").endswith("png") else ".jpg"
-        new_ref = _save_photo_bytes(product_id, content, ext)
+        new_ref = _save_photo_bytes(item_id, content, ext)
         _delete_photo_file(row["photo"])  # clean up the old file, if any
-        conn.execute('UPDATE supply_products SET photo = ?, updated_at = ? WHERE id = ?', (new_ref, _now_iso(), product_id))
+        conn.execute(f'UPDATE {table} SET photo = ?, updated_at = ? WHERE id = ?', (new_ref, _now_iso(), item_id))
         return {"photo": new_ref}
+
+
+def _remove_photo_for(table: str, item_id: str):
+    with get_db() as conn:
+        row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (item_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Not found")
+        _delete_photo_file(row["photo"])
+        conn.execute(f'UPDATE {table} SET photo = NULL, updated_at = ? WHERE id = ?', (_now_iso(), item_id))
+        return {"removed": True}
+
+
+@app.post("/api/supply_products/{product_id}/photo")
+async def upload_supply_product_photo(product_id: str, file: UploadFile = File(...)):
+    return await _upload_photo_for("supply_products", product_id, file)
 
 
 @app.delete("/api/supply_products/{product_id}/photo")
 def remove_supply_product_photo(product_id: str):
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM supply_products WHERE id = ?", (product_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "Product not found")
-        _delete_photo_file(row["photo"])
-        conn.execute('UPDATE supply_products SET photo = NULL, updated_at = ? WHERE id = ?', (_now_iso(), product_id))
-        return {"removed": True}
+    return _remove_photo_for("supply_products", product_id)
 
 
 @app.post("/api/birds/{bird_id}/photo")
 async def upload_bird_photo(bird_id: str, file: UploadFile = File(...)):
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM birds WHERE id = ?", (bird_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "Bird not found")
-        content = await file.read()
-        ext = ".png" if (file.content_type or "").endswith("png") else ".jpg"
-        new_ref = _save_photo_bytes(bird_id, content, ext)
-        _delete_photo_file(row["photo"])  # clean up the old file, if any
-        conn.execute('UPDATE birds SET photo = ?, updated_at = ? WHERE id = ?', (new_ref, _now_iso(), bird_id))
-        return {"photo": new_ref}
+    return await _upload_photo_for("birds", bird_id, file)
 
 
 @app.delete("/api/birds/{bird_id}/photo")
 def remove_bird_photo(bird_id: str):
-    with get_db() as conn:
-        row = conn.execute("SELECT * FROM birds WHERE id = ?", (bird_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "Bird not found")
-        _delete_photo_file(row["photo"])
-        conn.execute('UPDATE birds SET photo = NULL, updated_at = ? WHERE id = ?', (_now_iso(), bird_id))
-        return {"removed": True}
+    return _remove_photo_for("birds", bird_id)
+
+
+@app.post("/api/bird_photos/{photo_id}/photo")
+async def upload_bird_history_photo(photo_id: str, file: UploadFile = File(...)):
+    return await _upload_photo_for("bird_photos", photo_id, file)
+
+
+@app.delete("/api/bird_photos/{photo_id}/photo")
+def remove_bird_history_photo(photo_id: str):
+    return _remove_photo_for("bird_photos", photo_id)
 
 
 @app.post("/api/birds/bulk-update")
