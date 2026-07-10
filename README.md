@@ -179,6 +179,27 @@ need to update the Android app's fingerprint, edit
 which is a separate file for anyone self-hosting `static/` directly at
 their own domain and wanting their own Android build to verify there.
 
+### Beta channel for the website
+
+Cloudflare Pages builds a preview deployment for every branch automatically,
+not just the production one -- which is what makes a beta channel for the
+website nearly free to set up, no separate infrastructure needed:
+
+1. In the Cloudflare Pages dashboard for this project, under **Settings →
+   Builds & deployments**, change the **Production branch** from `main`
+   to `stable`.
+2. Under **Preview deployments**, add a custom domain for the `main`
+   branch specifically (e.g. `beta.thecoopledger.com`) pointed at its
+   preview build.
+
+From then on: `main` keeps building continuously exactly like it always
+has (no new habit there), and now also serves as the beta preview for the
+website. The `stable` branch only moves when a version tag is pushed --
+the `promote-stable-branch` job in
+`.github/workflows/docker-publish.yml` fast-forwards it to match
+automatically, at the same time the Docker `:stable` tag gets published.
+One tag push promotes the Docker image and the website together.
+
 ## Local-only mode: no server required at all
 
 The app doesn't require self-hosting to be useful. On first visit, "Start
