@@ -1,4 +1,4 @@
-name: Build and publish Docker image
+name: Build and publish Docker image, promote stable branch
 
 # Builds a multi-arch image (amd64 + arm64 -- covers a typical home server
 # and a Raspberry Pi / ARM NAS alike) and pushes it to GHCR, GitHub's own
@@ -6,9 +6,23 @@ name: Build and publish Docker image
 # separate account or secret to set up -- it authenticates with the
 # GITHUB_TOKEN that Actions already provides for free on every run.
 #
-# - Push to main/master -> published as `latest`
-# - Push a tag like v1.2.3 -> published as `1.2.3` (and `latest` is also
-#   updated to match) -- use this when you want something pinnable
+# Two release channels, so self-hosters can choose reliability vs. early
+# access with a one-word change in their own docker-compose.yml:
+#
+# - Push to main/master -> published as `beta` only. This is completely
+#   automatic -- normal day-to-day commits need no extra step at all.
+# - Push a tag like v1.2.3 -> published as `1.2.3`, `stable`, AND `latest`.
+#   This is the one deliberate act of "promote this build" -- do it once
+#   you're confident in whatever's currently on main. `latest` deliberately
+#   tracks `stable`, not `beta`, so anyone who doesn't specify a tag lands
+#   on the safe default rather than the bleeding edge.
+#
+# That same tag push also fast-forwards a `stable` branch to match (see
+# the promote-stable-branch job below) -- if Cloudflare Pages is set to
+# treat `stable` as its production branch, this promotes thecoopledger.com
+# itself at the same time as the Docker image, with `main` continuing to
+# preview automatically as the beta channel for the website too. See
+# "Choosing a release channel" in the README for the full picture.
 #
 # The published image ends up at:
 #   ghcr.io/<your-github-username-or-org>/<this-repo-name>
@@ -36,7 +50,7 @@ jobs:
 
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Compute lowercase image name
         # Docker/OCI registries require repository paths to be all-lowercase.
@@ -50,13 +64,13 @@ jobs:
         # Lets the amd64 runner below also emulate arm64 well enough to
         # build for it -- this is what makes the single job produce both
         # architectures instead of needing two separate runners.
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -64,15 +78,17 @@ jobs:
 
       - name: Derive image tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=beta,enable={{is_default_branch}}
+            type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{version}}
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -81,3 +97,24 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  promote-stable-branch:
+    # Only runs on a version tag push -- the same "promote this" signal
+    # that publishes the Docker :stable tag above. Fast-forwards the
+    # `stable` branch to match, which Cloudflare Pages should be
+    # configured to treat as its production branch for thecoopledger.com
+    # -- so pushing one tag promotes the website too, not just the image.
+    # `main` keeps building continuously as the beta preview, same as it
+    # always has; nothing about normal day-to-day commits changes.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # needs to push a branch, unlike the build job above which only reads
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v6
+
+      - name: Fast-forward stable to this tag
+        run: git push origin HEAD:refs/heads/stable --force
