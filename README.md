@@ -160,6 +160,13 @@ hand. In the Cloudflare dashboard for this project:
   ```
 - **Build output directory:** `dist`
 
+`wrangler.jsonc` at the repo root tells Cloudflare's deploy step where to
+find those built files (`./dist`) -- without it, deploys fail with
+`Missing entry-point to Worker script or to assets directory`, since
+newer Cloudflare projects deploy through Wrangler rather than the older
+Pages-only pipeline. This is checked into the repo, so there's nothing to
+configure for it in the dashboard.
+
 Note the `/.` (not `/*`) at the end of each source path — a trailing `/*`
 is a shell glob that silently skips hidden files and folders, which was
 quietly dropping `.well-known/assetlinks.json` (needed for the Android
