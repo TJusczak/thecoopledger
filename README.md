@@ -188,24 +188,51 @@ their own domain and wanting their own Android build to verify there.
 
 ### Beta channel for the website
 
-Cloudflare Pages builds a preview deployment for every branch automatically,
-not just the production one -- which is what makes a beta channel for the
-website nearly free to set up, no separate infrastructure needed:
+This project deploys through Cloudflare Workers Builds, not classic Pages,
+which changes how a beta channel actually needs to be set up -- the two
+platforms behave differently here. The **Production branch** setting
+(Worker → Settings → Build → Branch control) is already set to `stable`,
+and **Builds for non-production branches** should be checked so that
+`main` builds at all.
 
-1. In the Cloudflare Pages dashboard for this project, under **Settings →
-   Builds & deployments**, change the **Production branch** from `main`
-   to `stable`.
-2. Under **Preview deployments**, add a custom domain for the `main`
-   branch specifically (e.g. `beta.thecoopledger.com`) pointed at its
-   preview build.
+`wrangler.jsonc` defines a named `beta` environment, which Wrangler
+deploys as a genuinely separate Worker (`thecoopledger-beta`) with its
+own custom domain -- not a second copy of the production Worker, so
+there's no risk of a beta deploy overwriting what's live on
+thecoopledger.com:
 
-From then on: `main` keeps building continuously exactly like it always
-has (no new habit there), and now also serves as the beta preview for the
-website. The `stable` branch only moves when a version tag is pushed --
-the `promote-stable-branch` job in
-`.github/workflows/docker-publish.yml` fast-forwards it to match
-automatically, at the same time the Docker `:stable` tag gets published.
-One tag push promotes the Docker image and the website together.
+```jsonc
+"env": {
+  "beta": {
+    "name": "thecoopledger-beta",
+    "assets": { "directory": "./dist" },
+    "routes": [
+      { "pattern": "beta.thecoopledger.com/*", "custom_domain": true }
+    ]
+  }
+}
+```
+
+One dashboard change makes this active: under **Settings → Build**, the
+**non-production branch deploy command** needs to be
+
+```
+npx wrangler deploy --env beta
+```
+
+(not the default `npx wrangler versions upload`, which only uploads a
+version without publishing it live anywhere). Once that's set, `main`
+deploys live to `beta.thecoopledger.com` automatically on every push --
+the same zero-extra-habit behavior as the `:beta` Docker tag, just for
+the website. The **production** deploy command stays `npx wrangler
+deploy` exactly as it already is, untouched by any of this.
+
+The `stable` branch only moves when a version tag is pushed -- the
+`promote-stable-branch` job in `.github/workflows/docker-publish.yml`
+fast-forwards it to match automatically, at the same time the Docker
+`:stable` tag gets published. One tag push promotes the Docker image and
+the production website together; `main` continues to preview
+automatically on both the Docker `:beta` tag and beta.thecoopledger.com.
 
 ## Local-only mode: no server required at all
 
