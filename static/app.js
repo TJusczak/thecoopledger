@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-125";
+const APP_VERSION = "2026.07.06-128";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], birdPhotos: [], activityLog: [], supplyProducts: [] };
@@ -257,7 +257,21 @@ const DEFAULT_BEDDING_THRESHOLDS = {
 };
 
 // ---------- Helpers ----------
-const todayStr = () => new Date().toISOString().slice(0, 10);
+/** Formats a Date as YYYY-MM-DD in LOCAL time -- deliberately not
+ * toISOString(), which is always UTC and will silently roll a date over to
+ * "tomorrow" (or back to "yesterday") for anyone whose local time and UTC
+ * fall on different calendar days, which is most of the day for most
+ * timezones. Every calendar-date string in the app should go through this,
+ * not toISOString().slice(0, 10) -- that pattern is only correct for actual
+ * timestamps (updated_at, queuedAt), where UTC is the right, unambiguous
+ * choice for cross-device ordering. */
+function localDateStr(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+const todayStr = () => localDateStr(new Date());
 const esc = (s) => (s === undefined || s === null) ? "" : String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmtDate = (d) => !d ? "—" : new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 const fmtMoney = (n) => `$${(Number(n) || 0).toFixed(2)}`;
@@ -321,12 +335,12 @@ function weekStart(dateStr) {
   const d = new Date(dateStr + "T00:00:00");
   const day = d.getDay();
   d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day));
-  return d.toISOString().slice(0, 10);
+  return localDateStr(d);
 }
 function addDays(dateStr, days) {
   const d = new Date(dateStr + "T00:00:00");
   d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  return localDateStr(d);
 }
 async function resizeImageFileToBlob(file, maxDim = 700, quality = 0.82) {
   // Phone cameras store photos with an EXIF orientation tag rather than
@@ -607,6 +621,7 @@ function photoTransformStyle(record) {
  * percentage, so it zooms in predictably regardless of the source photo's
  * own resolution or aspect ratio. */
 function openPhotoRepositionModal(photoUrl, initialX, initialY, initialZoom, aspectRatio, onSave) {
+  const preservedOnClose = modalOnClose; // whatever the parent modal already had, carried forward -- opening this shouldn't silently drop it
   const html = `
     <div class="form-head">Reposition photo</div>
     <div class="dim" style="font-size:12px;margin-bottom:12px">Drag to reframe, or use the slider to zoom in for more control -- this only changes what shows in cards, the original photo itself is never altered.</div>
@@ -617,7 +632,7 @@ function openPhotoRepositionModal(photoUrl, initialX, initialY, initialZoom, asp
       <button class="btn ghost" id="resetCropBtn">Reset</button>
     </div>
   `;
-  openModal(html);
+  openModal(html, preservedOnClose);
   let posX = initialX, posY = initialY, zoom = initialZoom || 1;
   let dragging = false, startClientX, startClientY, startPosX, startPosY;
   let imgW = 0, imgH = 0; // natural dimensions, filled in once the image loads
@@ -886,9 +901,9 @@ function setUserName(name) { localStorage.setItem(USER_NAME_KEY, (name || "").tr
 const RESOURCE_LABELS = {
   eggs: "an egg entry", expenses: "an expense", birds: "a bird", supplies: "a supply item",
   bedding: "a bedding entry", notes: "a note", bird_logs: "a health log entry", coops: "a coop",
-  supply_products: "a saved product",
+  supply_products: "a saved product", bird_photos: "a timeline photo",
 };
-const RESOURCE_LABELS_PLURAL = { birds: "birds", supplies: "supply items", supply_products: "saved products" };
+const RESOURCE_LABELS_PLURAL = { birds: "birds", supplies: "supply items", supply_products: "saved products", bird_photos: "timeline photos" };
 const OP_VERBS = { create: "added", update: "updated", delete: "deleted" };
 
 let _suppressActivityLogging = false;
@@ -5426,6 +5441,8 @@ function showBulkEditForm() {
       <label class="field"><span>Gender</span><select id="be_gender"><option value="">(no change)</option><option value="Hen">Hen</option><option value="Rooster">Rooster</option></select></label>
       <label class="field"><span>Status</span><select id="be_status"><option value="">(no change)</option>${BIRD_STATUSES.map(s => `<option value="${s}">${s}</option>`).join("")}</select></label>
       <label class="field"><span>Location</span><select id="be_location"><option value="">(no change)</option>${getBeddingAreas().map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join("")}</select></label>
+      <label class="field"><span>Hatch date</span><input type="date" id="be_hatch"></label>
+      <label class="field"><span>Acquired date</span><input type="date" id="be_acquired"></label>
       <label class="field"><span>Target harvest date</span><input type="date" id="be_target"></label>
     </div>
     <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="be_set_batch" style="width:auto"><span>Set batch (leave name blank to remove from any batch)</span></label>
@@ -5457,6 +5474,8 @@ function showBulkEditForm() {
     const gender = document.getElementById("be_gender").value;
     const status = document.getElementById("be_status").value;
     const location = document.getElementById("be_location").value;
+    const hatchDate = document.getElementById("be_hatch").value;
+    const acquiredDate = document.getElementById("be_acquired").value;
     const batch = document.getElementById("be_batch").value;
     const setBatch = document.getElementById("be_set_batch").checked;
     const target = document.getElementById("be_target").value;
@@ -5472,6 +5491,8 @@ function showBulkEditForm() {
     if (gender) updates.gender = gender;
     if (status) updates.status = status;
     if (location) updates.location = location;
+    if (hatchDate) updates.hatch_date = hatchDate;
+    if (acquiredDate) updates.acquired_date = acquiredDate;
     if (setBatch) updates.batch_name = batch.trim() || null;
     if (target) updates.target_harvest_date = target;
     // Layers don't have a harvest date -- clear it out unless this same
@@ -5536,40 +5557,61 @@ function renderBirdLogSection(birdId) {
 function openAddHistoryPhotoModal(bird, onDone) {
   const today = todayStr();
   const html = `
-    <div class="form-head">Add a photo to ${esc(bird.name) || "this bird"}'s timeline</div>
-    <label class="field"><span>Photo</span><input type="file" id="hp_file" accept="image/*"></label>
+    <div class="form-head">Add photos to ${esc(bird.name) || "this bird"}'s timeline</div>
+    <label class="field"><span>Photos</span><input type="file" id="hp_file" accept="image/*" multiple></label>
+    <div class="dim" style="font-size:11px;margin-top:-8px">Pick more than one to add them all at once, sharing the same date and stage below -- handy for a batch taken the same day.</div>
     <label class="field"><span>Date taken</span><input type="date" id="hp_date" value="${today}"></label>
     <label class="field"><span>Stage</span><select id="hp_stage">
       <option value="">Unspecified</option>
       ${BIRD_STAGES.map(s => `<option value="${s}" ${s === suggestStage(bird.hatch_date, today) ? "selected" : ""}>${s}</option>`).join("")}
     </select></label>
     ${!bird.hatch_date ? `<div class="dim" style="font-size:11px;margin-top:-8px">Set a hatch date on this bird for the stage to auto-suggest by age.</div>` : ""}
+    <div id="hp_progress" class="dim" style="font-size:12px;margin-top:8px"></div>
     <div class="modal-actions">
       <button class="btn btn-confirm" id="hp_save">+ Add photo</button>
     </div>
   `;
-  openModal(html);
+  openModal(html, () => { if (activeTab === "flock") renderFlockHub(); });
   document.getElementById("hp_date").addEventListener("change", (e) => {
     if (!bird.hatch_date) return;
     document.getElementById("hp_stage").value = suggestStage(bird.hatch_date, e.target.value);
   });
+  document.getElementById("hp_file").addEventListener("change", (e) => {
+    const n = e.target.files.length;
+    document.getElementById("hp_save").textContent = n > 1 ? `+ Add ${n} photos` : "+ Add photo";
+  });
   document.getElementById("hp_save").addEventListener("click", async () => {
-    const file = document.getElementById("hp_file").files[0];
-    if (!file) { showToast("Pick a photo first", "delete"); return; }
+    const files = [...document.getElementById("hp_file").files];
+    if (files.length === 0) { showToast("Pick a photo first", "delete"); return; }
     const dateTaken = document.getElementById("hp_date").value || today;
     const stage = document.getElementById("hp_stage").value || null;
-    let blob;
-    try {
-      blob = await resizeImageFileToBlob(file);
-    } catch (err) {
-      alert("Couldn't read that image: " + err.message);
+    const saveBtn = document.getElementById("hp_save");
+    const progressEl = document.getElementById("hp_progress");
+    saveBtn.disabled = true;
+    const validBlobs = [];
+    for (let i = 0; i < files.length; i++) {
+      if (files.length > 1) progressEl.textContent = `Reading photo ${i + 1} of ${files.length}...`;
+      try {
+        validBlobs.push(await resizeImageFileToBlob(files[i]));
+      } catch (err) {
+        console.error(`Couldn't read ${files[i].name}:`, err); // skip this one, keep going with the rest of the batch rather than losing everything to one bad file
+      }
+    }
+    if (validBlobs.length === 0) {
+      saveBtn.disabled = false;
+      progressEl.textContent = "";
+      alert("Couldn't read any of those images -- try a different file.");
       return;
     }
-    const created = await localBirdPhotoCreate({ coop_id: currentCoopId, bird_id: bird.id, photo: null, date_taken: dateTaken, stage, photo_pos_x: 50, photo_pos_y: 50, photo_zoom: 1 });
-    await queuePendingBirdHistoryPhoto(created.id, blob);
+    progressEl.textContent = validBlobs.length > 1 ? "Saving..." : "";
+    const payloads = validBlobs.map(() => ({ coop_id: currentCoopId, bird_id: bird.id, photo: null, date_taken: dateTaken, stage, photo_pos_x: 50, photo_pos_y: 50, photo_zoom: 1 }));
+    const created = await localBulkCreate("bird_photos", payloads);
+    for (let i = 0; i < created.length; i++) await queuePendingBirdHistoryPhoto(created[i].id, validBlobs[i]);
     await refreshPendingBirdHistoryPhotoUrls();
     STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
-    showToast("Photo added to timeline", "create");
+    saveBtn.disabled = false;
+    progressEl.textContent = "";
+    showToast(validBlobs.length > 1 ? `${validBlobs.length} photos added to timeline` : "Photo added to timeline", "create");
     onDone();
   });
 }
@@ -5599,7 +5641,7 @@ function openHistoryPhotoOptionsModal(photo, bird, onDone) {
       <button class="btn btn-confirm" id="hpo_save">✓ Save changes</button>
     </div>
   `;
-  openModal(html);
+  openModal(html, () => { if (activeTab === "flock") renderFlockHub(); });
   document.getElementById("hpo_delete").addEventListener("click", async () => {
     if (!(await showConfirmDialog("Delete this timeline photo? This can't be undone."))) return;
     await localBulkDelete("bird_photos", [photo.id], currentCoopId);
@@ -5651,32 +5693,133 @@ function openHistoryPhotoOptionsModal(photo, bird, onDone) {
 /** A scrollable, chronological gallery of a bird's full photo history --
  * the "see how they've grown" view. Each photo is clickable through to the
  * same edit/reposition/delete/set-as-current options as the form's strip. */
+/** Swipeable/clickable viewer for all photos taken on one specific day --
+ * reached by tapping a multi-photo stack in the timeline. Arrow buttons and
+ * touch swipe both work; re-renders in place rather than reopening the
+ * modal each time, so navigating feels instant. */
+function openDayPhotosModal(dateTaken, bird, onDone) {
+  let idx = 0;
+  const getPhotos = () => STATE.birdPhotos.filter(p => p.bird_id === bird.id && p.date_taken === dateTaken).sort((a, b) => a.id.localeCompare(b.id));
+  let touchStartX = null;
+
+  function render(firstOpen) {
+    const photos = getPhotos();
+    if (photos.length === 0) { onDone(); return; } // the last one here got deleted -- nothing left to show
+    idx = Math.max(0, Math.min(idx, photos.length - 1));
+    const p = photos[idx];
+    const ageLabel = p.date_taken && bird.hatch_date ? ageAtDate(bird.hatch_date, p.date_taken) : null;
+    const url = birdHistoryPhotoUrl(p);
+    const html = `
+      <div class="form-head">${esc(fmtDate(dateTaken))}${photos.length > 1 ? ` · ${idx + 1} of ${photos.length}` : ""}</div>
+      ${ageLabel ? `<div class="dim" style="font-size:12px;margin:-8px 0 12px">${esc(ageLabel)}</div>` : ""}
+      <div id="dp_stage_area" style="position:relative">
+        <div style="width:100%;aspect-ratio:1/1;border-radius:10px;overflow:hidden;border:1px solid var(--border)">
+          ${url ? `<img src="${url}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(p)};${photoTransformStyle(p)}">` : `<div style="width:100%;height:100%;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:32px">🐔</div>`}
+        </div>
+        ${photos.length > 1 ? `
+          <button id="dp_prev" class="icon-btn" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);background:rgba(20,16,13,0.6);color:#F2E9DC;font-size:20px">‹</button>
+          <button id="dp_next" class="icon-btn" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:rgba(20,16,13,0.6);color:#F2E9DC;font-size:20px">›</button>
+        ` : ""}
+      </div>
+      ${photos.length > 1 ? `<div style="display:flex;justify-content:center;gap:5px;margin-top:10px">${photos.map((_, i) => `<div style="width:6px;height:6px;border-radius:50%;background:${i === idx ? "var(--gold)" : "var(--border)"}"></div>`).join("")}</div>` : ""}
+      ${p.stage ? `<div style="text-align:center;margin-top:10px"><span class="stamp tone-slate">${esc(p.stage)}</span></div>` : ""}
+      <div class="modal-actions">
+        <button class="btn ghost small" id="dp_edit">✎ Edit this photo</button>
+      </div>
+    `;
+    if (firstOpen) openModal(html, () => { if (activeTab === "flock") renderFlockHub(); });
+    else refreshModalContent(html);
+
+    const prevBtn = document.getElementById("dp_prev");
+    const nextBtn = document.getElementById("dp_next");
+    if (prevBtn) prevBtn.addEventListener("click", () => { idx = (idx - 1 + photos.length) % photos.length; render(false); });
+    if (nextBtn) nextBtn.addEventListener("click", () => { idx = (idx + 1) % photos.length; render(false); });
+    document.getElementById("dp_edit").addEventListener("click", () => {
+      openHistoryPhotoOptionsModal(p, bird, () => { idx = Math.min(idx, getPhotos().length - 1); render(true); });
+    });
+    if (photos.length > 1) {
+      const stage = document.getElementById("dp_stage_area");
+      stage.addEventListener("touchstart", (e) => { touchStartX = e.touches[0].clientX; }, { passive: true });
+      stage.addEventListener("touchend", (e) => {
+        if (touchStartX === null) return;
+        const dx = e.changedTouches[0].clientX - touchStartX;
+        touchStartX = null;
+        if (Math.abs(dx) < 40) return; // too small to count as an intentional swipe
+        idx = dx < 0 ? (idx + 1) % photos.length : (idx - 1 + photos.length) % photos.length;
+        render(false);
+      });
+    }
+  }
+  render(true);
+}
+
+/** A single timeline entry for one day -- a plain thumbnail if only one
+ * photo was taken that day, or a small stack (a couple of offset cards
+ * peeking out behind the top one, plus a count badge) if there's more than
+ * one, so a whole batch added at once collapses to a single row instead of
+ * stretching the timeline out. */
+function dayGroupThumbHtml(dateTaken, photosOnDay, bird) {
+  const top = photosOnDay[0];
+  const ageLabel = dateTaken && bird.hatch_date ? ageAtDate(bird.hatch_date, dateTaken) : null;
+  const url = birdHistoryPhotoUrl(top);
+  const isStack = photosOnDay.length > 1;
+  const topImgHtml = url
+    ? `<img src="${url}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(top)};${photoTransformStyle(top)}">`
+    : `<div style="width:100%;height:100%;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:32px">🐔</div>`;
+  return `
+    <div class="thumb-clickable" data-day-group="${esc(dateTaken || "")}" style="cursor:pointer">
+      <div style="position:relative;width:100%;aspect-ratio:1/1">
+        ${isStack ? `
+          <div style="position:absolute;inset:0;transform:rotate(5deg) scale(0.95);border-radius:10px;border:1px solid var(--border);background:var(--surface-raised)"></div>
+          <div style="position:absolute;inset:0;transform:rotate(-4deg) scale(0.97);border-radius:10px;border:1px solid var(--border);background:var(--surface-raised)"></div>
+        ` : ""}
+        <div style="position:absolute;inset:0;border-radius:10px;overflow:hidden;border:1px solid var(--border)">${topImgHtml}</div>
+        ${isStack ? `<div style="position:absolute;top:6px;right:6px;background:rgba(20,16,13,0.75);color:#F2E9DC;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">📷 ${photosOnDay.length}</div>` : ""}
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+        <div style="font-size:13px">${dateTaken ? esc(fmtDate(dateTaken)) : "No date"}${ageLabel ? ` · ${esc(ageLabel)}` : ""}</div>
+        ${top.stage ? `<span class="stamp tone-slate">${esc(top.stage)}</span>` : ""}
+      </div>
+    </div>`;
+}
+
 function openBirdTimelineModal(bird) {
   const photos = STATE.birdPhotos.filter(p => p.bird_id === bird.id).sort((a, b) => (a.date_taken || "").localeCompare(b.date_taken || ""));
+  // Group into one entry per day (for stacking), then those day-groups into
+  // year sections -- a photo with no date at all gets its own "Undated" bucket.
+  const dayGroups = [];
+  for (const p of photos) {
+    const last = dayGroups[dayGroups.length - 1];
+    if (last && last.date === p.date_taken) last.photos.push(p);
+    else dayGroups.push({ date: p.date_taken, photos: [p] });
+  }
+  const yearOf = (dateStr) => dateStr ? dateStr.slice(0, 4) : "Undated";
+  const yearSections = [];
+  for (const g of dayGroups) {
+    const y = yearOf(g.date);
+    const last = yearSections[yearSections.length - 1];
+    if (last && last.year === y) last.groups.push(g);
+    else yearSections.push({ year: y, groups: [g] });
+  }
   const html = `
     <div class="form-head">${esc(bird.name) || "Bird"}'s timeline</div>
-    <div class="dim" style="font-size:12px;margin:-8px 0 14px">${photos.length} photo${photos.length !== 1 ? "s" : ""} so far. Tap any photo to edit it.</div>
-    <div style="display:flex;flex-direction:column;gap:16px">
-      ${photos.map(p => {
-        const ageLabel = p.date_taken && bird.hatch_date ? ageAtDate(bird.hatch_date, p.date_taken) : null;
-        const url = birdHistoryPhotoUrl(p);
-        return `
-        <div class="thumb-clickable" data-timeline-photo="${p.id}" style="cursor:pointer">
-          <div style="width:100%;aspect-ratio:1/1;border-radius:10px;overflow:hidden;border:1px solid var(--border)">
-            ${url ? `<img src="${url}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(p)};${photoTransformStyle(p)}">` : `<div style="width:100%;height:100%;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:32px">🐔</div>`}
-          </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
-            <div style="font-size:13px">${p.date_taken ? esc(fmtDate(p.date_taken)) : "No date"}${ageLabel ? ` · ${esc(ageLabel)}` : ""}</div>
-            ${p.stage ? `<span class="stamp tone-slate">${esc(p.stage)}</span>` : ""}
-          </div>
-        </div>`;
-      }).join("")}
-    </div>
+    <div class="dim" style="font-size:12px;margin:-8px 0 14px">${photos.length} photo${photos.length !== 1 ? "s" : ""} so far. Tap a photo (or a stack) to look closer.</div>
+    ${yearSections.map(section => `
+      <div class="flock-section-header" style="margin:14px 0 8px">${esc(section.year)}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(120px, 1fr));gap:14px">
+        ${section.groups.map(g => dayGroupThumbHtml(g.date, g.photos, bird)).join("")}
+      </div>
+    `).join("")}
   `;
   openModal(html, () => { if (activeTab === "flock") renderFlockHub(); }); // refresh the flock grid on close, in case a photo became the new current photo while browsing
-  document.querySelectorAll("[data-timeline-photo]").forEach(el => el.addEventListener("click", () => {
-    const photo = STATE.birdPhotos.find(p => p.id === el.dataset.timelinePhoto);
-    openHistoryPhotoOptionsModal(photo, bird, () => openBirdTimelineModal(bird)); // back to the timeline after editing/deleting
+  document.querySelectorAll("[data-day-group]").forEach(el => el.addEventListener("click", () => {
+    const dateTaken = el.dataset.dayGroup || null;
+    const photosOnDay = STATE.birdPhotos.filter(p => p.bird_id === bird.id && (p.date_taken || null) === dateTaken);
+    if (photosOnDay.length === 1) {
+      openHistoryPhotoOptionsModal(photosOnDay[0], bird, () => openBirdTimelineModal(bird));
+    } else {
+      openDayPhotosModal(dateTaken, bird, () => openBirdTimelineModal(bird));
+    }
   }));
 }
 
@@ -5787,7 +5930,7 @@ function showBirdForm(bird) {
     `;
 
     if (firstOpen) {
-      openModal(html, null, isEdit ? () => confirmAndDelete(
+      openModal(html, () => { if (activeTab === "flock") renderFlockHub(); }, isEdit ? () => confirmAndDelete(
         "Delete this bird? This can't be undone.",
         () => localBirdDelete(bird.id, currentCoopId),
         "Bird deleted",
