@@ -1,5 +1,7 @@
 # The Coop Ledger
 
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/thecoopledger)
+
 **Try it now: [thecoopledger.com](https://thecoopledger.com)** — no account needed for local use.
 
 Self-hosted flock tracker: birds (including batches for meat birds), egg

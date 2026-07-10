@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-129";
+const APP_VERSION = "2026.07.06-130";
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], birdPhotos: [], activityLog: [], supplyProducts: [] };
@@ -626,7 +626,11 @@ function photoTransformStyle(record) {
  * percentage, so it zooms in predictably regardless of the source photo's
  * own resolution or aspect ratio. */
 function openPhotoRepositionModal(photoUrl, initialX, initialY, initialZoom, aspectRatio, onSave) {
-  const preservedOnClose = modalOnClose; // whatever the parent modal already had, carried forward -- opening this shouldn't silently drop it
+  // Whatever the parent modal already had, carried forward -- opening this
+  // shouldn't silently drop it. Nested flows (e.g. a timeline photo's
+  // options) set onBack, not onClose, so that's checked first.
+  const preservedOnBack = modalOnBack;
+  const preservedOnClose = modalOnClose;
   const html = `
     <div class="form-head">Reposition photo</div>
     <div class="dim" style="font-size:12px;margin-bottom:12px">Drag to reframe, or use the slider to zoom in for more control -- this only changes what shows in cards, the original photo itself is never altered.</div>
@@ -637,7 +641,8 @@ function openPhotoRepositionModal(photoUrl, initialX, initialY, initialZoom, asp
       <button class="btn ghost" id="resetCropBtn">Reset</button>
     </div>
   `;
-  openModal(html, preservedOnClose);
+  if (preservedOnBack) openModal(html, null, null, preservedOnBack);
+  else openModal(html, preservedOnClose);
   let posX = initialX, posY = initialY, zoom = initialZoom || 1;
   let dragging = false, startClientX, startClientY, startPosX, startPosY;
   let imgW = 0, imgH = 0; // natural dimensions, filled in once the image loads
@@ -4572,20 +4577,33 @@ function ensureModalDom() {
 }
 
 let modalOnClose = null;
+let modalOnBack = null;
 
 /** Renders html into the shared modal/bottom-sheet. onClose (optional) runs
- * once, however the modal ends up closing -- backdrop click, Escape, the X
- * button, or a form's own Cancel button calling closeModal() itself --
- * so cleanup (clearing an editing-id, resetting a sub-picker's state) only
- * has to be written once instead of once per dismissal path.
+ * once the modal is TRULY closing (backdrop click, Escape, or the X button
+ * with no onBack in play, or a form's own Cancel button calling
+ * closeModal() itself) -- so cleanup (clearing an editing-id, refreshing a
+ * grid behind it) only has to be written once instead of once per
+ * dismissal path.
  *
  * onDelete (optional) shows a trash icon in the header, next to the close
  * button, instead of a form having to render its own Delete button in the
  * footer -- keeps the destructive action grouped with "leave this record"
- * rather than sitting next to the primary Save action at the bottom. */
-function openModal(html, onClose = null, onDelete = null) {
+ * rather than sitting next to the primary Save action at the bottom.
+ *
+ * onBack (optional) is for nested modal flows (e.g. a bird's edit form ->
+ * its photo timeline -> a single photo) -- when set, Escape/X/backdrop
+ * calls it INSTEAD of actually closing, so the overlay stays visually open
+ * the whole time and the content just swaps back to the previous screen,
+ * rather than closing all the way out to whatever's behind the modal
+ * entirely. Each screen in the chain passes the one below it as onBack. */
+let modalContentClearTimeout = null;
+
+function openModal(html, onClose = null, onDelete = null, onBack = null) {
   ensureModalDom();
+  if (modalContentClearTimeout) { clearTimeout(modalContentClearTimeout); modalContentClearTimeout = null; } // cancel any pending clear from a just-closed modal -- we're about to overwrite the content anyway, but the stale timer must not fire later and wipe out THIS modal's content
   modalOnClose = onClose;
+  modalOnBack = onBack;
   document.getElementById("modalContent").innerHTML = html;
   document.body.style.overflow = "hidden";
   const overlay = document.getElementById("modalOverlay");
@@ -4600,6 +4618,7 @@ function openModal(html, onClose = null, onDelete = null) {
 }
 
 function closeModal() {
+  if (modalOnBack) { const goBack = modalOnBack; modalOnBack = null; goBack(); return; } // "back" navigation -- overlay stays open, content just swaps; the back screen is responsible for setting its own modalOnBack/onClose again via its own openModal call
   const overlay = document.getElementById("modalOverlay");
   if (!overlay || !overlay.classList.contains("open")) return;
   overlay.classList.remove("open");
@@ -4607,7 +4626,8 @@ function closeModal() {
   const deleteBtn = document.getElementById("modalDeleteBtn");
   if (deleteBtn) { deleteBtn.style.display = "none"; deleteBtn.onclick = null; }
   if (modalOnClose) { modalOnClose(); modalOnClose = null; }
-  setTimeout(() => { const c = document.getElementById("modalContent"); if (c) c.innerHTML = ""; }, 320);
+  if (modalContentClearTimeout) clearTimeout(modalContentClearTimeout);
+  modalContentClearTimeout = setTimeout(() => { const c = document.getElementById("modalContent"); if (c) c.innerHTML = ""; modalContentClearTimeout = null; }, 320);
 }
 
 /** For long-running operations (export, import) where the person needs to
@@ -5615,7 +5635,7 @@ function openAddHistoryPhotoModal(bird, onDone) {
       <button class="btn btn-confirm" id="hp_save">+ Add photo</button>
     </div>
   `;
-  openModal(html, () => { if (activeTab === "flock") renderFlockHub(); });
+  openModal(html, null, null, onDone);
   document.getElementById("hp_date").addEventListener("change", (e) => {
     if (!bird.hatch_date) return;
     document.getElementById("hp_stage").value = suggestStage(bird.hatch_date, e.target.value);
@@ -5685,7 +5705,7 @@ function openHistoryPhotoOptionsModal(photo, bird, onDone) {
       <button class="btn btn-confirm" id="hpo_save">✓ Save changes</button>
     </div>
   `;
-  openModal(html, () => { if (activeTab === "flock") renderFlockHub(); });
+  openModal(html, null, null, onDone);
   document.getElementById("hpo_delete").addEventListener("click", async () => {
     if (!(await showConfirmDialog("Delete this timeline photo? This can't be undone."))) return;
     await localBulkDelete("bird_photos", [photo.id], currentCoopId);
@@ -5771,7 +5791,7 @@ function openDayPhotosModal(dateTaken, bird, onDone) {
         <button class="btn ghost small" id="dp_edit">✎ Edit this photo</button>
       </div>
     `;
-    if (firstOpen) openModal(html, () => { if (activeTab === "flock") renderFlockHub(); });
+    if (firstOpen) openModal(html, null, null, onDone);
     else refreshModalContent(html);
 
     const prevBtn = document.getElementById("dp_prev");
@@ -5827,7 +5847,7 @@ function dayGroupThumbHtml(dateTaken, photosOnDay, bird) {
     </div>`;
 }
 
-function openBirdTimelineModal(bird) {
+function openBirdTimelineModal(bird, onBack) {
   const photos = STATE.birdPhotos.filter(p => p.bird_id === bird.id).sort((a, b) => (a.date_taken || "").localeCompare(b.date_taken || ""));
   // Group into one entry per day (for stacking), then those day-groups into
   // year sections -- a photo with no date at all gets its own "Undated" bucket.
@@ -5855,14 +5875,18 @@ function openBirdTimelineModal(bird) {
       </div>
     `).join("")}
   `;
-  openModal(html, () => { if (activeTab === "flock") renderFlockHub(); }); // refresh the flock grid on close, in case a photo became the new current photo while browsing
+  // onBack (the normal path, opened from the bird form) keeps the overlay
+  // open on Escape/X, swapping straight back to the form -- only the
+  // standalone fallback with no parent to return to is a true close.
+  if (onBack) openModal(html, null, null, onBack);
+  else openModal(html, () => { if (activeTab === "flock") renderFlockHub(); });
   document.querySelectorAll("[data-day-group]").forEach(el => el.addEventListener("click", () => {
     const dateTaken = el.dataset.dayGroup || null;
     const photosOnDay = STATE.birdPhotos.filter(p => p.bird_id === bird.id && (p.date_taken || null) === dateTaken);
     if (photosOnDay.length === 1) {
-      openHistoryPhotoOptionsModal(photosOnDay[0], bird, () => openBirdTimelineModal(bird));
+      openHistoryPhotoOptionsModal(photosOnDay[0], bird, () => openBirdTimelineModal(bird, onBack));
     } else {
-      openDayPhotosModal(dateTaken, bird, () => openBirdTimelineModal(bird));
+      openDayPhotosModal(dateTaken, bird, () => openBirdTimelineModal(bird, onBack));
     }
   }));
 }
@@ -6040,17 +6064,17 @@ function showBirdForm(bird) {
     const addHistoryBtn = document.getElementById("addHistoryPhotoBtn");
     if (addHistoryBtn) addHistoryBtn.addEventListener("click", () => {
       formState = readCurrentValues();
-      openAddHistoryPhotoModal(formState, () => render(false));
+      openAddHistoryPhotoModal(formState, () => render(true));
     });
     document.querySelectorAll("[data-history-photo]").forEach(el => el.addEventListener("click", () => {
       formState = readCurrentValues();
       const photo = STATE.birdPhotos.find(p => p.id === el.dataset.historyPhoto);
-      openHistoryPhotoOptionsModal(photo, formState, () => render(false));
+      openHistoryPhotoOptionsModal(photo, formState, () => render(true));
     }));
     const viewTimelineBtn = document.getElementById("viewTimelineBtn");
     if (viewTimelineBtn) viewTimelineBtn.addEventListener("click", () => {
       formState = readCurrentValues();
-      openBirdTimelineModal(formState);
+      openBirdTimelineModal(formState, () => render(true));
     });
     const clearColorBtn = document.getElementById("clearColor");
     if (clearColorBtn) clearColorBtn.addEventListener("click", () => {

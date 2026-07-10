@@ -221,6 +221,14 @@ h1, h2, h3 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 .android-card-main p { font-size: 14px; color: var(--text-dim); margin: 0; }
 .android-download { flex: 0 0 auto; }
 
+.support-card {
+  background: var(--surface); border: 1px solid rgba(212, 160, 23, 0.35); border-radius: 12px;
+  padding: 24px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
+}
+.support-card-main { flex: 1 1 380px; }
+.support-card-main p { font-size: 14px; color: var(--text-dim); margin: 0; }
+.support-btn { flex: 0 0 auto; }
+
 /* ---------- scroll reveal ---------- */
 
 .reveal { opacity: 0; transform: translateY(16px); transition: opacity 0.5s ease, transform 0.5s ease; }
