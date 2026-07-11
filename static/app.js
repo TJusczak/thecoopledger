@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-132";
+const APP_VERSION = "2026.07.06-133";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -12,8 +12,16 @@ const APP_VERSION = "2026.07.06-132";
 const BUILD_CHANNEL = "__BUILD_CHANNEL__";
 const IS_BETA_BUILD = BUILD_CHANNEL !== "stable";
 if (IS_BETA_BUILD) {
-  const ribbon = document.getElementById("betaRibbon");
-  if (ribbon) ribbon.style.display = "block";
+  const wrap = document.getElementById("betaTabWrap");
+  const btn = document.getElementById("betaTabBtn");
+  const panel = document.getElementById("betaTabPanel");
+  if (wrap && btn && panel) {
+    wrap.style.display = "flex";
+    btn.addEventListener("click", () => {
+      const nowOpen = panel.classList.toggle("open");
+      btn.setAttribute("aria-expanded", String(nowOpen));
+    });
+  }
 }
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists

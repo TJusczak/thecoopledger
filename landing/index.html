@@ -23,7 +23,15 @@
 </head>
 <body>
 
-<div class="beta-ribbon channel-__BUILD_CHANNEL__">BETA</div>
+<div id="betaTabWrap" class="beta-tab-wrap channel-__BUILD_CHANNEL__">
+  <button id="betaTabBtn" class="beta-tab-btn" type="button" aria-expanded="false">🧪 BETA</button>
+  <div id="betaTabPanel" class="beta-tab-panel">
+    <div class="beta-tab-panel-inner">
+      <p>You're looking at the <strong>beta build</strong> — it tracks active development directly, so new features and fixes show up here first, before they're tested and promoted to the stable release at thecoopledger.com.</p>
+      <p>Expect rough edges. Bugs and half-finished features are normal here — that's what testing something in progress looks like. If you try it out, back up your data regularly, and consider the stable release instead for anything you can't afford to lose.</p>
+    </div>
+  </div>
+</div>
 
 <div class="sky" id="sky" aria-hidden="true">
   <div class="sky-gradient" id="skyGradient"></div>
@@ -419,6 +427,16 @@
   window.addEventListener("scroll", onScroll, { passive: true });
   window.addEventListener("resize", onScroll);
   update();
+})();
+
+(function () {
+  var btn = document.getElementById("betaTabBtn");
+  var panel = document.getElementById("betaTabPanel");
+  if (!btn || !panel) return;
+  btn.addEventListener("click", function () {
+    var nowOpen = panel.classList.toggle("open");
+    btn.setAttribute("aria-expanded", String(nowOpen));
+  });
 })();
 </script>
 
