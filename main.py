@@ -28,7 +28,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.06-139"
+SERVER_VERSION = "2026.07.06-140"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -270,14 +270,52 @@ def _photo_relpath(photo_value):
     return p
 
 
-def _delete_photo_file(photo_value):
-    """Remove a bird's photo file from disk if it's one of ours (a /photos/... reference)."""
+def _photo_still_referenced(conn, photo_value):
+    """Whether any live (non-soft-deleted) row still references this exact
+    photo path -- checked before physically deleting a file, since photos
+    can now be shared (e.g. a group of birds created together with one
+    group photo, all pointing at the same file rather than each having
+    its own copy).
+
+    Takes the CALLER's own connection rather than opening a new one: a
+    caller that just soft-deleted (or updated) the row referencing this
+    photo, in the same transaction, needs that change to be visible here
+    even though it hasn't committed yet. A separate connection can't see
+    another connection's uncommitted work, so it would see the row as
+    still "live" and wrongly conclude the file is still needed."""
+    if not photo_value:
+        return False
+    for table in ("birds", "bird_photos", "supply_products"):
+        if conn.execute(f"SELECT 1 FROM {table} WHERE photo = ? AND deleted_at IS NULL", (photo_value,)).fetchone():
+            return True
+    return False
+
+
+def _delete_photo_file(conn, photo_value):
+    """Remove a photo file from disk if it's one of ours (a /photos/...
+    reference) AND nothing else still references it. See
+    _photo_still_referenced for why this needs the caller's own
+    connection, and why call ordering (update/delete the row first, then
+    call this) matters."""
     p = _photo_relpath(photo_value)
-    if p and p.exists():
+    if p and p.exists() and not _photo_still_referenced(conn, photo_value):
         try:
             p.unlink()
         except OSError:
             pass
+
+
+def _cascade_delete_bird_photos(conn, bird_id, now):
+    """Soft-deletes a bird's timeline (bird_photos) entries and cleans up
+    their files where nothing else references them -- call alongside the
+    existing bird_logs cascade, after the bird itself is already
+    soft-deleted. Without this, a bird's auto-seeded timeline entry stays
+    live forever even after the bird is gone, permanently pinning its
+    photo file (shared or not) and preventing it from ever being cleaned up."""
+    rows = conn.execute("SELECT id, photo FROM bird_photos WHERE bird_id = ? AND deleted_at IS NULL", (bird_id,)).fetchall()
+    conn.execute('UPDATE bird_photos SET deleted_at = ?, updated_at = ? WHERE bird_id = ?', (now, now, bird_id))
+    for r in rows:
+        _delete_photo_file(conn, r["photo"])
 
 
 def _save_photo_bytes(coop_id: str, item_id: str, content: bytes, ext: str = ".jpg") -> str:
@@ -766,11 +804,14 @@ def delete_coop(coop_id: str):
         row = conn.execute("SELECT * FROM coops WHERE id = ?", (coop_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Coop not found")
+        photo_values = []
         for photo_table in ("birds", "bird_photos", "supply_products"):
             for r in conn.execute(f"SELECT photo FROM {photo_table} WHERE coop_id = ?", (coop_id,)).fetchall():
-                _delete_photo_file(r["photo"])
+                photo_values.append(r["photo"])
         for table in SCOPED:
             conn.execute(f"DELETE FROM {table} WHERE coop_id = ?", (coop_id,))
+        for photo_value in photo_values:
+            _delete_photo_file(conn, photo_value)
         # Soft delete, not a hard DELETE -- same reasoning as every other
         # resource in this app: a hard delete leaves nothing behind for a
         # future "what's changed since X" sync to detect, so other devices
@@ -790,8 +831,9 @@ async def _upload_photo_for(table: str, item_id: str, file: UploadFile):
         content = await file.read()
         ext = ".png" if (file.content_type or "").endswith("png") else ".jpg"
         new_ref = _save_photo_bytes(row["coop_id"], item_id, content, ext)
-        _delete_photo_file(row["photo"])  # clean up the old file, if any
+        old_photo = row["photo"]
         conn.execute(f'UPDATE {table} SET photo = ?, updated_at = ? WHERE id = ?', (new_ref, _now_iso(), item_id))
+        _delete_photo_file(conn, old_photo)  # after the update, so a shared old photo isn't wrongly seen as still used by this row
         return {"photo": new_ref}
 
 
@@ -800,8 +842,9 @@ def _remove_photo_for(table: str, item_id: str):
         row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (item_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Not found")
-        _delete_photo_file(row["photo"])
+        old_photo = row["photo"]
         conn.execute(f'UPDATE {table} SET photo = NULL, updated_at = ? WHERE id = ?', (_now_iso(), item_id))
+        _delete_photo_file(conn, old_photo)
         return {"removed": True}
 
 
@@ -865,9 +908,10 @@ def bulk_delete_birds(payload: dict = Body(...)):
         for bird_id in ids:
             row = conn.execute("SELECT photo FROM birds WHERE id = ? AND deleted_at IS NULL", (bird_id,)).fetchone()
             if row:
-                _delete_photo_file(row["photo"])
                 conn.execute('UPDATE bird_logs SET deleted_at = ?, updated_at = ? WHERE bird_id = ?', (now, now, bird_id))
                 conn.execute('UPDATE birds SET deleted_at = ?, updated_at = ? WHERE id = ?', (now, now, bird_id))
+                _cascade_delete_bird_photos(conn, bird_id, now)
+                _delete_photo_file(conn, row["photo"])
                 deleted += 1
         return {"deleted": deleted}
 
@@ -1227,17 +1271,22 @@ def delete_items_bulk(resource: str, payload: dict = Body(...)):
     coop_ids_touched = set()
     with get_db() as conn:
         for item_id in ids:
+            photo_to_clean = None
             if resource == "birds":
                 row = conn.execute("SELECT photo FROM birds WHERE id = ?", (item_id,)).fetchone()
                 if row:
-                    _delete_photo_file(row["photo"])
+                    photo_to_clean = row["photo"]
                 conn.execute('UPDATE bird_logs SET deleted_at = ?, updated_at = ? WHERE bird_id = ?', (now, now, item_id))
             elif resource in ("bird_photos", "supply_products"):
                 row = conn.execute(f"SELECT photo FROM {resource} WHERE id = ?", (item_id,)).fetchone()
                 if row:
-                    _delete_photo_file(row["photo"])
+                    photo_to_clean = row["photo"]
             coop_row = conn.execute(f"SELECT coop_id FROM {resource} WHERE id = ?", (item_id,)).fetchone() if resource in SCOPED else None
             cur = conn.execute(f'UPDATE {resource} SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL', (now, now, item_id))
+            if resource == "birds":
+                _cascade_delete_bird_photos(conn, item_id, now)
+            if photo_to_clean:
+                _delete_photo_file(conn, photo_to_clean)
             if cur.rowcount > 0:
                 deleted_ids.append(item_id)
                 if coop_row and coop_row["coop_id"]:
@@ -1397,21 +1446,26 @@ def delete_item(resource: str, item_id: str):
         raise HTTPException(404, f"Unknown resource: {resource}")
     with get_db() as conn:
         now = _now_iso()
+        photo_to_clean = None
         if resource == "birds":
             row = conn.execute("SELECT photo FROM birds WHERE id = ?", (item_id,)).fetchone()
             if row:
-                _delete_photo_file(row["photo"])
+                photo_to_clean = row["photo"]
             # Soft-delete cascaded logs too, so a syncing client learns those are gone as well.
             conn.execute('UPDATE bird_logs SET deleted_at = ?, updated_at = ? WHERE bird_id = ?', (now, now, item_id))
         elif resource in ("bird_photos", "supply_products"):
             row = conn.execute(f"SELECT photo FROM {resource} WHERE id = ?", (item_id,)).fetchone()
             if row:
-                _delete_photo_file(row["photo"])
+                photo_to_clean = row["photo"]
         coop_row = conn.execute(f"SELECT coop_id FROM {resource} WHERE id = ?", (item_id,)).fetchone() if resource in SCOPED else None
         # Soft delete: a syncing client needs to be told a row disappeared, not
         # just stop seeing it -- an actual DELETE gives no way to distinguish
         # "removed" from "never existed" once a client is offline for a while.
         cur = conn.execute(f'UPDATE {resource} SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL', (now, now, item_id))
+        if resource == "birds":
+            _cascade_delete_bird_photos(conn, item_id, now)
+        if photo_to_clean:
+            _delete_photo_file(conn, photo_to_clean)
         if cur.rowcount == 0:
             raise HTTPException(404, "Item not found")
         _sse_publish(coop_row["coop_id"] if coop_row else None, resource)

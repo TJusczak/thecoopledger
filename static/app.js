@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-139";
+const APP_VERSION = "2026.07.06-140";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5549,8 +5549,13 @@ function wireBatchEditModal(batchName) {
     const file = e.target.files[0];
     if (!file) return;
     const blob = await resizeImageFileToBlob(file);
-    await Promise.all(birds.map(b => queuePendingPhoto(b.id, blob)));
-    trySyncSoon("birds", currentCoopId);
+    try {
+      const result = await apiUploadPhoto(birds[0].id, blob, "birds");
+      await localBulkUpdate("birds", birds.map(b => ({ id: b.id, fields: { photo: result.photo } })), currentCoopId, { suppressUndo: true });
+    } catch (err) {
+      await Promise.all(birds.map(b => queuePendingPhoto(b.id, blob)));
+      trySyncSoon("birds", currentCoopId);
+    }
     showToast("Group photo updated", "update");
     await loadCoopData();
     refresh();
@@ -6309,8 +6314,20 @@ function showBulkForm() {
     const photoFile = document.getElementById("k_photo").files[0];
     if (photoFile) {
       const blob = await resizeImageFileToBlob(photoFile);
-      await Promise.all(created.map(b => queuePendingPhoto(b.id, blob)));
-      trySyncSoon("birds", currentCoopId);
+      try {
+        // One upload, shared by the whole batch -- a group of 25 birds
+        // with the same photo used to mean 25 separate copies of the
+        // identical image on the server.
+        const result = await apiUploadPhoto(created[0].id, blob, "birds");
+        await localBulkUpdate("birds", created.map(b => ({ id: b.id, fields: { photo: result.photo } })), currentCoopId, { suppressUndo: true });
+        STATE.birds = await localGetAll("birds", currentCoopId);
+      } catch (err) {
+        // Offline (or local-only, with no server to share a reference
+        // against at all) -- fall back to each bird queueing its own copy
+        // of the blob, so this still works without a connection.
+        await Promise.all(created.map(b => queuePendingPhoto(b.id, blob)));
+        trySyncSoon("birds", currentCoopId);
+      }
     }
     showToast(`${count} bird batch added`, "create");
     closeModal();
