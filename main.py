@@ -28,7 +28,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.06-135"
+SERVER_VERSION = "2026.07.06-136"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -252,21 +252,46 @@ def init_db():
                 conn.execute(f"UPDATE {table} SET coop_id = ? WHERE coop_id IS NULL", (default_id,))
 
 
+def _photo_relpath(photo_value):
+    """The path of a /photos/... reference relative to PHOTOS_DIR, with a
+    containment check -- used by both delete and read so a malformed or
+    unexpected value can never resolve outside the photos directory.
+    Works for both the current per-coop layout (/photos/<coop_id>/<file>)
+    and the flat layout every photo used before this existed, since both
+    are just "whatever comes after /photos/" to this function."""
+    if not (photo_value and isinstance(photo_value, str) and photo_value.startswith("/photos/")):
+        return None
+    rel = photo_value[len("/photos/"):]
+    p = PHOTOS_DIR / rel
+    try:
+        p.resolve().relative_to(PHOTOS_DIR.resolve())
+    except ValueError:
+        return None
+    return p
+
+
 def _delete_photo_file(photo_value):
     """Remove a bird's photo file from disk if it's one of ours (a /photos/... reference)."""
-    if photo_value and isinstance(photo_value, str) and photo_value.startswith("/photos/"):
-        p = PHOTOS_DIR / Path(photo_value).name
-        if p.exists():
-            try:
-                p.unlink()
-            except OSError:
-                pass
+    p = _photo_relpath(photo_value)
+    if p and p.exists():
+        try:
+            p.unlink()
+        except OSError:
+            pass
 
 
-def _save_photo_bytes(bird_id: str, content: bytes, ext: str = ".jpg") -> str:
-    filename = f"{bird_id}-{uuid.uuid4().hex[:6]}{ext}"
-    (PHOTOS_DIR / filename).write_bytes(content)
-    return f"/photos/{filename}"
+def _save_photo_bytes(coop_id: str, item_id: str, content: bytes, ext: str = ".jpg") -> str:
+    # Grouped under the owning coop's own folder so photos from different
+    # coops on the same shared server don't all pile into one directory --
+    # falls back to a shared "_unscoped" folder only if a coop_id genuinely
+    # isn't available (shouldn't normally happen; better than crashing or
+    # silently writing into PHOTOS_DIR's own root where it'd look like a
+    # coop folder to future listing/cleanup code).
+    coop_dir = PHOTOS_DIR / (coop_id or "_unscoped")
+    coop_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{item_id}-{uuid.uuid4().hex[:6]}{ext}"
+    (coop_dir / filename).write_bytes(content)
+    return f"/photos/{coop_id or '_unscoped'}/{filename}"
 
 
 def _photo_to_data_uri(photo_value):
@@ -275,26 +300,24 @@ def _photo_to_data_uri(photo_value):
         return None
     if photo_value.startswith("data:"):
         return photo_value
-    if photo_value.startswith("/photos/"):
-        p = PHOTOS_DIR / Path(photo_value).name
-        if not p.exists():
-            return None
-        ext = p.suffix.lower()
-        mime = "image/png" if ext == ".png" else "image/jpeg"
-        return f"data:{mime};base64,{base64.b64encode(p.read_bytes()).decode()}"
-    return None
+    p = _photo_relpath(photo_value)
+    if not p or not p.exists():
+        return None
+    ext = p.suffix.lower()
+    mime = "image/png" if ext == ".png" else "image/jpeg"
+    return f"data:{mime};base64,{base64.b64encode(p.read_bytes()).decode()}"
 
 
 def migrate_base64_photos_to_files():
     """One-time upgrade: birds saved with an earlier version embedded photos directly
     in the database as base64. Convert those into real files on disk."""
     with get_db() as conn:
-        rows = conn.execute("SELECT id, photo FROM birds WHERE photo LIKE 'data:%'").fetchall()
+        rows = conn.execute("SELECT id, coop_id, photo FROM birds WHERE photo LIKE 'data:%'").fetchall()
         for r in rows:
             try:
                 header, b64data = r["photo"].split(",", 1)
                 ext = ".png" if "png" in header else ".jpg"
-                new_ref = _save_photo_bytes(r["id"], base64.b64decode(b64data), ext)
+                new_ref = _save_photo_bytes(r["coop_id"], r["id"], base64.b64decode(b64data), ext)
                 conn.execute("UPDATE birds SET photo = ? WHERE id = ?", (new_ref, r["id"]))
             except Exception:
                 pass  # leave the bird's photo as-is if anything about it is malformed
@@ -521,14 +544,14 @@ def _do_import_bundle(bundle: dict, zip_photo_reader=None) -> dict:
                         try:
                             header, b64data = photo.split(",", 1)
                             ext = ".png" if "png" in header else ".jpg"
-                            new_photo = _save_photo_bytes(new_row_id, base64.b64decode(b64data), ext)
+                            new_photo = _save_photo_bytes(new_id, new_row_id, base64.b64decode(b64data), ext)
                         except Exception:
                             new_photo = None
                     elif isinstance(photo, str) and photo and zip_photo_reader is not None:
                         content = zip_photo_reader(photo)
                         if content:
                             ext = Path(photo).suffix.lower() or ".jpg"
-                            new_photo = _save_photo_bytes(new_row_id, content, ext)
+                            new_photo = _save_photo_bytes(new_id, new_row_id, content, ext)
                     row["photo"] = new_photo
                 if table == "supply_products":
                     old_product_id = row.get("id")
@@ -538,14 +561,14 @@ def _do_import_bundle(bundle: dict, zip_photo_reader=None) -> dict:
                         try:
                             header, b64data = photo.split(",", 1)
                             ext = ".png" if "png" in header else ".jpg"
-                            new_photo = _save_photo_bytes(new_row_id, base64.b64decode(b64data), ext)
+                            new_photo = _save_photo_bytes(new_id, new_row_id, base64.b64decode(b64data), ext)
                         except Exception:
                             new_photo = None
                     elif isinstance(photo, str) and photo and zip_photo_reader is not None:
                         content = zip_photo_reader(photo)
                         if content:
                             ext = Path(photo).suffix.lower() or ".jpg"
-                            new_photo = _save_photo_bytes(new_row_id, content, ext)
+                            new_photo = _save_photo_bytes(new_id, new_row_id, content, ext)
                     row["photo"] = new_photo
                 if table == "supplies" and row.get("product_id"):
                     row["product_id"] = product_id_map.get(row["product_id"])  # None if the product wasn't in this export -- fine, just an unlinked bag
@@ -565,14 +588,14 @@ def _do_import_bundle(bundle: dict, zip_photo_reader=None) -> dict:
                         try:
                             header, b64data = photo.split(",", 1)
                             ext = ".png" if "png" in header else ".jpg"
-                            new_photo = _save_photo_bytes(new_row_id, base64.b64decode(b64data), ext)
+                            new_photo = _save_photo_bytes(new_id, new_row_id, base64.b64decode(b64data), ext)
                         except Exception:
                             new_photo = None
                     elif isinstance(photo, str) and photo and zip_photo_reader is not None:
                         content = zip_photo_reader(photo)
                         if content:
                             ext = Path(photo).suffix.lower() or ".jpg"
-                            new_photo = _save_photo_bytes(new_row_id, content, ext)
+                            new_photo = _save_photo_bytes(new_id, new_row_id, content, ext)
                     row["photo"] = new_photo
                 if table == "hatch_eggs":
                     new_hatch_id = hatch_id_map.get(row.get("hatch_id"))
@@ -655,12 +678,11 @@ def export_coop_zip(coop_id: str):
                 for r in rows:
                     photo_ref = r["photo"]
                     new_ref = None
-                    if photo_ref and isinstance(photo_ref, str) and photo_ref.startswith("/photos/"):
-                        p = PHOTOS_DIR / Path(photo_ref).name
-                        if p.exists():
-                            rel = f"photos/{p.name}"
-                            photo_files[rel] = p.read_bytes()
-                            new_ref = rel
+                    p = _photo_relpath(photo_ref)
+                    if p and p.exists():
+                        rel = f"photos/{p.relative_to(PHOTOS_DIR).as_posix()}"
+                        photo_files[rel] = p.read_bytes()
+                        new_ref = rel
                     r["photo"] = new_ref
             bundle[table] = rows
 
@@ -737,7 +759,7 @@ async def _upload_photo_for(table: str, item_id: str, file: UploadFile):
             raise HTTPException(404, "Not found")
         content = await file.read()
         ext = ".png" if (file.content_type or "").endswith("png") else ".jpg"
-        new_ref = _save_photo_bytes(item_id, content, ext)
+        new_ref = _save_photo_bytes(row["coop_id"], item_id, content, ext)
         _delete_photo_file(row["photo"])  # clean up the old file, if any
         conn.execute(f'UPDATE {table} SET photo = ?, updated_at = ? WHERE id = ?', (new_ref, _now_iso(), item_id))
         return {"photo": new_ref}

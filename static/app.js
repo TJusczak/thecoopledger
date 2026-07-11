@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-135";
+const APP_VERSION = "2026.07.06-136";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -3477,6 +3477,31 @@ function openNoteModal(editing, presetCategory) {
 }
 
 // ================= COOPS =================
+/** Editing this is rare -- mainly for someone importing history from
+ * elsewhere, or fixing a coop that got created a few days after it
+ * actually started. A native date input rather than the prompt() dialog
+ * used for renaming, since typing a date by hand invites typos that a
+ * picker avoids entirely. */
+function openEditCoopDateModal(coopId, currentDate) {
+  const html = `
+    <div class="form-head">Established date</div>
+    <div class="dim" style="font-size:12px;margin-bottom:14px">When this coop actually started -- shown on its card and used for any "days since established" stats.</div>
+    <label class="field"><span>Date</span><input type="date" id="editCoopDate" value="${esc(currentDate || "")}"></label>
+    <div class="modal-actions"><button class="btn btn-confirm" id="saveCoopDate">✓ Save</button></div>
+  `;
+  openModal(html);
+  document.getElementById("saveCoopDate").addEventListener("click", async () => {
+    const newDate = document.getElementById("editCoopDate").value;
+    if (!newDate) { showToast("Pick a date first", "delete"); return; }
+    await localCoopUpdate(coopId, { created_date: newDate });
+    showToast("Established date updated", "update");
+    await loadCoops();
+    updateHeader();
+    closeModal();
+    renderCoopsSection();
+  });
+}
+
 function renderCoopsSection() {
   const el = document.getElementById("settingsContent");
   el.innerHTML = `
@@ -3516,6 +3541,7 @@ function renderCoopsSection() {
           <div style="display:flex;gap:6px;margin-top:14px;flex-wrap:wrap">
             ${c.id !== currentCoopId ? `<button class="btn small" data-select="${c.id}">Switch to this coop</button>` : ""}
             <button class="btn ghost small" data-rename="${c.id}" data-name="${esc(c.name)}">Rename</button>
+            <button class="btn ghost small" data-edit-date="${c.id}" data-current-date="${esc(c.created_date || "")}">Edit date</button>
             <button class="btn ghost small" data-export-offline-zip="${c.id}">📦 Export (.zip)</button>
             <button class="btn ghost small" data-export-csv="${c.id}" title="Not a backup -- plain CSV for a spreadsheet, no photos, can't be re-imported">Spreadsheet (.csv)</button>
             <button class="btn btn-close small" data-delete="${c.id}" data-name="${esc(c.name)}">Delete</button>
@@ -3629,6 +3655,9 @@ function renderCoopsSection() {
     await loadCoops();
     updateHeader();
     renderCoopsSection();
+  }));
+  el.querySelectorAll("[data-edit-date]").forEach(b => b.addEventListener("click", () => {
+    openEditCoopDateModal(b.dataset.editDate, b.dataset.currentDate);
   }));
   el.querySelectorAll("[data-delete]").forEach(b => b.addEventListener("click", async () => {
     const confirmed = await showTypeToConfirmDialog(
