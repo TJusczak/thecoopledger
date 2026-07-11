@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-133";
+const APP_VERSION = "2026.07.06-135";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -11,18 +11,7 @@ const APP_VERSION = "2026.07.06-133";
 // caution badge than silently hide it on an unverified build.
 const BUILD_CHANNEL = "__BUILD_CHANNEL__";
 const IS_BETA_BUILD = BUILD_CHANNEL !== "stable";
-if (IS_BETA_BUILD) {
-  const wrap = document.getElementById("betaTabWrap");
-  const btn = document.getElementById("betaTabBtn");
-  const panel = document.getElementById("betaTabPanel");
-  if (wrap && btn && panel) {
-    wrap.style.display = "flex";
-    btn.addEventListener("click", () => {
-      const nowOpen = panel.classList.toggle("open");
-      btn.setAttribute("aria-expanded", String(nowOpen));
-    });
-  }
-}
+renderBetaBadge();
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], birdPhotos: [], activityLog: [], supplyProducts: [] };
@@ -2330,6 +2319,7 @@ function updateHeader() {
   document.getElementById("coopHeaderName").textContent = coop ? `${coopIcon(coop)} ${coop.name}` : "🐔 No coop selected";
   document.getElementById("eyebrowText").textContent = (coop && coop.created_date) ? `Est. ${fmtDate(coop.created_date)}` : "";
   renderLocalOnlyBadge();
+  renderBetaBadge();
 }
 
 /** A persistent, always-visible corner tag while running local-only --
@@ -2369,6 +2359,37 @@ function renderLocalOnlyBadge() {
   inner.title = overdue
     ? "It's been a while since your last backup, and this coop's data lives only in this browser. Clearing this browser's site data, or uninstalling/removing the browser, will permanently delete it -- tap to back it up now."
     : "This coop's data lives only in this browser. Clearing this browser's site data, or uninstalling/removing the browser, will permanently delete it -- tap to export a backup or switch to a synced server.";
+}
+
+/** A loud, hard-to-miss badge for anyone who's ended up on the beta
+ * channel -- deliberately styled to match the local-only "back up now"
+ * warning (same rust color, same pulsing glow) since the goal here is
+ * the same: something you'd notice even if you weren't looking for it,
+ * in case someone's landed here by accident rather than on purpose. */
+function renderBetaBadge() {
+  if (!IS_BETA_BUILD) return;
+  if (document.getElementById("betaBadgeWrap")) return; // channel never changes mid-session, nothing to update after first render
+  const wrap = document.createElement("div");
+  wrap.id = "betaBadgeWrap";
+  wrap.className = "status-banner-inner";
+  wrap.innerHTML = `
+    <div class="beta-status-badge-wrap">
+      <button id="betaStatusBadge" class="beta-status-badge" type="button" aria-expanded="false">🚨 BETA 🚨</button>
+      <div id="betaTabPanel" class="beta-tab-panel">
+        <div class="beta-tab-panel-inner">
+          <p>You're using the <strong>beta channel</strong> — it tracks active development directly, so new features and fixes land here first, before they're tested and promoted to a stable release.</p>
+          <p>Expect rough edges. Bugs and half-finished features happen here — that's the nature of testing something in progress. <strong>Please don't rely on this for flock data you can't afford to lose.</strong> Back up regularly (Settings → Backup), or switch to the stable release if you'd rather not deal with any of that.</p>
+        </div>
+      </div>
+    </div>
+  `;
+  const btn = wrap.querySelector("#betaStatusBadge");
+  const panel = wrap.querySelector("#betaTabPanel");
+  btn.addEventListener("click", () => {
+    const nowOpen = panel.classList.toggle("open");
+    btn.setAttribute("aria-expanded", String(nowOpen));
+  });
+  document.getElementById("statusBannerSlot").appendChild(wrap);
 }
 
 /** Set by checkConnection() when the sync server's reported version doesn't
@@ -8252,10 +8273,16 @@ function showLoginScreen() {
         <label class="field" style="margin-top:12px"><span>Invite code</span><input id="loginCode" placeholder="e.g. KTRHY8NW" style="text-transform:uppercase"></label>
         <div id="loginError" style="color:var(--rust);font-size:12px;margin-top:10px;min-height:1em"></div>
         <button class="btn btn-confirm" id="loginBtn" style="margin-top:16px;width:100%;justify-content:center">Log in</button>
+        <button class="btn ghost" id="loginUseLocalBtn" style="margin-top:10px;width:100%;justify-content:center">Use offline instead</button>
+        <div class="dim" style="font-size:11px;margin-top:6px;text-align:center">Switches to local-only mode using whatever's already saved on this device -- handy if this server's unreachable right now. Reconnect anytime from Settings.</div>
       </div>
     </div>
   `;
   document.getElementById("loginBtn").addEventListener("click", doLogin);
+  document.getElementById("loginUseLocalBtn").addEventListener("click", () => {
+    setLocalOnlyMode(true);
+    location.reload();
+  });
   ["loginName", "loginCode"].forEach(id => document.getElementById(id).addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); }));
 }
 

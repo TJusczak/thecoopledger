@@ -34,10 +34,12 @@ h1, h2, h3 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 
 /* ---------- top bar ---------- */
 
-.topbar {
+.sticky-nav-group {
   position: sticky; top: 0; z-index: 50;
   background: color-mix(in srgb, var(--bg) 92%, transparent);
   backdrop-filter: blur(8px);
+}
+.topbar {
   border-bottom: 1px solid var(--border);
 }
 .topbar-inner {
@@ -287,18 +289,17 @@ a:focus-visible, .btn:focus-visible { outline: 2px solid var(--gold); outline-of
 /* ---------- beta channel tab ---------- */
 
 .beta-tab-wrap {
-  position: fixed; top: 0; left: 50%; transform: translateX(-50%);
-  z-index: 9999; display: flex; flex-direction: column; align-items: center;
-  max-width: 92vw;
+  display: flex; flex-direction: column; align-items: center;
+  border-bottom: 1px solid var(--border);
 }
 .beta-tab-wrap.channel-stable { display: none; }
 .beta-tab-btn {
-  background: var(--gold); color: var(--bg); border: none; font: inherit;
+  background: var(--rust); color: #F2E9DC; border: none; font: inherit;
   font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 11px;
-  letter-spacing: 0.12em; padding: 5px 18px; border-radius: 0 0 9px 9px;
-  cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  letter-spacing: 0.02em; padding: 6px 18px; border-radius: 0 0 9px 9px;
+  cursor: pointer; animation: beta-pulse 2.2s ease-in-out infinite;
 }
-.beta-tab-btn:hover { filter: brightness(1.08); }
+@keyframes beta-pulse { 0%, 100% { box-shadow: 0 2px 6px rgba(0,0,0,0.3); } 50% { box-shadow: 0 2px 12px rgba(193,80,46,0.7); } }
 .beta-tab-panel {
   max-height: 0; overflow: hidden; width: min(92vw, 420px);
   background: var(--surface); border: 1px solid var(--border); border-top: none;

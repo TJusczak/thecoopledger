@@ -23,16 +23,6 @@
 </head>
 <body>
 
-<div id="betaTabWrap" class="beta-tab-wrap channel-__BUILD_CHANNEL__">
-  <button id="betaTabBtn" class="beta-tab-btn" type="button" aria-expanded="false">🧪 BETA</button>
-  <div id="betaTabPanel" class="beta-tab-panel">
-    <div class="beta-tab-panel-inner">
-      <p>You're looking at the <strong>beta build</strong> — it tracks active development directly, so new features and fixes show up here first, before they're tested and promoted to the stable release at thecoopledger.com.</p>
-      <p>Expect rough edges. Bugs and half-finished features are normal here — that's what testing something in progress looks like. If you try it out, back up your data regularly, and consider the stable release instead for anything you can't afford to lose.</p>
-    </div>
-  </div>
-</div>
-
 <div class="sky" id="sky" aria-hidden="true">
   <div class="sky-gradient" id="skyGradient"></div>
   <div class="sun-rays" id="sunRays"></div>
@@ -42,20 +32,32 @@
   <div class="stars" id="stars"></div>
 </div>
 
-<header class="topbar">
-  <div class="topbar-inner">
-    <div class="brand">🐔 <span>The Coop Ledger</span></div>
-    <nav class="topnav">
-      <a href="#what-it-tracks">What it tracks</a>
-      <a href="#how-it-works">How it works</a>
-      <a href="#android">Android</a>
-      <a href="#self-host">Self-host</a>
-      <a href="#support">Support</a>
-      <a href="#faq">FAQ</a>
-      <a href="https://github.com/TJusczak/thecoopledger" class="topnav-github">GitHub ↗</a>
+<div class="sticky-nav-group">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">🐔 <span>The Coop Ledger</span></div>
+      <nav class="topnav">
+        <a href="#what-it-tracks">What it tracks</a>
+        <a href="#how-it-works">How it works</a>
+        <a href="#android">Android</a>
+        <a href="#self-host">Self-host</a>
+        <a href="#support">Support</a>
+        <a href="#faq">FAQ</a>
+        <a href="https://github.com/TJusczak/thecoopledger" class="topnav-github">GitHub ↗</a>
     </nav>
   </div>
-</header>
+  </header>
+
+  <div id="betaTabWrap" class="beta-tab-wrap channel-__BUILD_CHANNEL__">
+    <button id="betaTabBtn" class="beta-tab-btn" type="button" aria-expanded="false">🚨 BETA 🚨</button>
+    <div id="betaTabPanel" class="beta-tab-panel">
+      <div class="beta-tab-panel-inner">
+        <p>You're looking at the <strong>beta build</strong> — it tracks active development directly, so new features and fixes show up here first, before they're tested and promoted to the stable release at thecoopledger.com.</p>
+        <p>Expect rough edges. Bugs and half-finished features are normal here — that's what testing something in progress looks like. If you try it out, back up your data regularly, and consider the stable release instead for anything you can't afford to lose.</p>
+      </div>
+    </div>
+  </div>
+</div>
 
 <main>
 
