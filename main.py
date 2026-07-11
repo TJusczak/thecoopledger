@@ -28,7 +28,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.06-140"
+SERVER_VERSION = "2026.07.06-141"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -74,7 +74,7 @@ SCHEMA = {
         "coop_id": "TEXT", "bird_id": "TEXT", "date": "TEXT", "note": "TEXT",
     },
     "notes": {
-        "coop_id": "TEXT", "category": "TEXT", "title": "TEXT", "body": "TEXT", "created_date": "TEXT",
+        "coop_id": "TEXT", "category": "TEXT", "title": "TEXT", "body": "TEXT", "created_date": "TEXT", "color": "TEXT",
     },
     "supplies": {
         "coop_id": "TEXT", "category": "TEXT", "description": "TEXT", "brand": "TEXT", "quantity": "REAL", "unit": "TEXT",

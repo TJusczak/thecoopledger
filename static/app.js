@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-140";
+const APP_VERSION = "2026.07.06-141";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -3373,6 +3373,110 @@ let editingNoteId = null;
 let notesFiltersOpen = false;
 let noteFilters = { category: "", search: "" };
 
+const NOTE_COLORS = [
+  { key: "", label: "Default", css: "var(--border)" },
+  { key: "gold", label: "Gold", css: "var(--gold)" },
+  { key: "rust", label: "Rust", css: "var(--rust)" },
+  { key: "sage", label: "Sage", css: "var(--sage)" },
+  { key: "slate", label: "Slate", css: "var(--slate)" },
+];
+function noteColorCss(key) { return (NOTE_COLORS.find(c => c.key === key) || NOTE_COLORS[0]).css; }
+
+/** "Created X" alone, or "Created X · Edited Y" once an edit has actually
+ * happened -- compares just the date portion of updated_at against
+ * created_date, so saving a note the same day it was created (the very
+ * common case) doesn't show a redundant "edited today" next to "created
+ * today." */
+function noteTimestampLabel(n) {
+  if (!n.created_date) return "";
+  const created = fmtDate(n.created_date);
+  const editedDatePart = n.updated_at ? n.updated_at.slice(0, 10) : null;
+  const edited = (editedDatePart && editedDatePart !== n.created_date) ? fmtDate(editedDatePart) : null;
+  return edited ? `Created ${created} · Edited ${edited}` : `Created ${created}`;
+}
+
+/** A small, purpose-built markdown subset for notes -- bold, italic, and
+ * interactive checklists, not a full CommonMark implementation. Escapes
+ * first (the same esc() used everywhere else in the app) so markdown
+ * syntax characters are the only thing ever interpreted -- raw HTML typed
+ * into a note is never rendered as markup, just shown as plain text. */
+function inlineMd(escapedLine) {
+  return escapedLine
+    .replace(/\*\*([^\n]+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*\n]+?)\*/g, "<em>$1</em>")
+    .replace(/(^|[^A-Za-z0-9_])_([^_\n]+?)_(?![A-Za-z0-9_])/g, "$1<em>$2</em>");
+}
+function renderNoteMarkdown(text) {
+  if (!text) return "";
+  const lines = esc(text).split("\n");
+  let html = "";
+  let listType = null; // null | "check" | "bullet"
+  const closeListIfOpen = () => { if (listType) { html += "</ul>"; listType = null; } };
+  lines.forEach((line, idx) => {
+    const checkMatch = line.match(/^\s*-\s*\[([ xX])\]\s*(.*)$/);
+    const bulletMatch = !checkMatch ? line.match(/^\s*[-*]\s+(.*)$/) : null;
+    if (checkMatch) {
+      if (listType !== "check") { closeListIfOpen(); html += `<ul class="note-checklist">`; listType = "check"; }
+      const checked = checkMatch[1].toLowerCase() === "x";
+      html += `<li class="note-check-item${checked ? " checked" : ""}" data-line="${idx}"><span class="note-check-box">${checked ? "☑" : "☐"}</span><span>${inlineMd(checkMatch[2])}</span></li>`;
+    } else if (bulletMatch) {
+      if (listType !== "bullet") { closeListIfOpen(); html += `<ul class="note-bullet-list">`; listType = "bullet"; }
+      html += `<li>${inlineMd(bulletMatch[1])}</li>`;
+    } else {
+      closeListIfOpen();
+      html += line.trim() === "" ? "<br>" : `<div>${inlineMd(line)}</div>`;
+    }
+  });
+  closeListIfOpen();
+  return html;
+}
+
+/** Toggles a single checklist line's [ ]/[x] state and saves -- used both
+ * from the note card preview and the modal's own preview, so ticking
+ * something off never requires opening the edit form first. */
+async function toggleNoteChecklistLine(noteId, lineIndex) {
+  const note = STATE.notes.find(n => n.id === noteId);
+  if (!note || !note.body) return;
+  const lines = note.body.split("\n");
+  const line = lines[lineIndex];
+  if (line == null) return;
+  const match = line.match(/^(\s*-\s*\[)([ xX])(\]\s*.*)$/);
+  if (!match) return;
+  const newChar = match[2].toLowerCase() === "x" ? " " : "x";
+  lines[lineIndex] = match[1] + newChar + match[3];
+  await localNoteUpdate(noteId, { body: lines.join("\n") });
+  STATE.notes = await localGetAll("notes", currentCoopId);
+  renderNotesSection();
+}
+
+/** Wraps the textarea's current selection in markdown delimiters (or just
+ * inserts them at the cursor with nothing selected), used by the Bold/
+ * Italic toolbar buttons. */
+function wrapTextareaSelection(textareaId, before, after = before) {
+  const ta = document.getElementById(textareaId);
+  if (!ta) return;
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  const value = ta.value;
+  const selected = value.slice(start, end);
+  ta.value = value.slice(0, start) + before + selected + after + value.slice(end);
+  ta.focus();
+  ta.selectionStart = start + before.length;
+  ta.selectionEnd = start + before.length + selected.length;
+}
+/** Inserts a prefix at the start of the current line, used by the
+ * Checklist/Bullet toolbar buttons. */
+function insertAtLineStart(textareaId, prefix) {
+  const ta = document.getElementById(textareaId);
+  if (!ta) return;
+  const start = ta.selectionStart;
+  const value = ta.value;
+  const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+  ta.value = value.slice(0, lineStart) + prefix + value.slice(lineStart);
+  const newPos = start + prefix.length;
+  ta.focus();
+  ta.selectionStart = ta.selectionEnd = newPos;
+}
+
 function renderNotesSection() {
   const el = document.getElementById("flockSubContent");
   if (!currentCoopId) { el.innerHTML = noCoopMessage(); return; }
@@ -3427,12 +3531,13 @@ function renderNotesSection() {
       <div class="flock-section-header" style="margin-top:18px">${esc(cat)}</div>
       <div class="list-stack">
         ${groups[cat].map(n => `
-          <div class="list-card${selectedNoteIds.has(n.id) ? " card-selected" : ""}" data-edit="${n.id}" data-id="${n.id}" style="cursor:pointer;flex-direction:column;align-items:stretch">
+          <div class="list-card${selectedNoteIds.has(n.id) ? " card-selected" : ""}" data-edit="${n.id}" data-id="${n.id}" style="cursor:pointer;flex-direction:column;align-items:stretch;border-left:4px solid ${noteColorCss(n.color)}">
             <div style="display:flex;gap:8px;align-items:flex-start">
               ${selectionState.notes.mode ? `<input type="checkbox" class="list-card-check note-check" data-id="${n.id}" ${selectedNoteIds.has(n.id) ? "checked" : ""} onclick="event.stopPropagation()">` : ""}
-              <div style="font-weight:700">${esc(n.title || "Untitled")}</div>
+              <div style="font-weight:700;flex:1">${esc(n.title || "Untitled")}</div>
             </div>
-            <div class="dim" style="white-space:pre-wrap;margin-top:4px;font-size:13px">${esc(n.body || "")}</div>
+            <div class="note-body-preview dim" data-note-id="${n.id}" style="margin-top:4px;font-size:13px">${renderNoteMarkdown(n.body)}</div>
+            ${noteTimestampLabel(n) ? `<div class="dim" style="font-size:10px;margin-top:8px">${noteTimestampLabel(n)}</div>` : ""}
           </div>`).join("")}
       </div>
     `).join("")}
@@ -3447,6 +3552,11 @@ function renderNotesSection() {
     renderNotesSection();
   });
 
+  el.querySelectorAll(".note-body-preview [data-line]").forEach(item => item.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const noteId = item.closest("[data-note-id]").dataset.noteId;
+    toggleNoteChecklistLine(noteId, Number(item.dataset.line));
+  }));
   el.querySelectorAll(".note-check").forEach(cb => cb.addEventListener("change", (e) => {
     if (e.target.checked) selectedNoteIds.add(cb.dataset.id); else selectedNoteIds.delete(cb.dataset.id);
     renderNotesSection();
@@ -3475,14 +3585,42 @@ function noteFormHtml(editing, presetCategory) {
   const allGroups = {};
   STATE.notes.forEach(n => { const cat = n.category || "General"; (allGroups[cat] = allGroups[cat] || []).push(n); });
   const categoryNames = Object.keys(allGroups).sort();
+  const currentColor = editing ? (editing.color || "") : "";
   return `
     <div class="form-head">${editing ? "Edit note" : "Add a note"}</div>
+    ${editing && noteTimestampLabel(editing) ? `<div class="dim" style="font-size:11px;margin-top:-6px;margin-bottom:12px">${noteTimestampLabel(editing)}</div>` : ""}
     <div class="grid-form">
       <label class="field"><span>Category</span><input id="n_category" list="noteCategories" placeholder="e.g. Meat Birds, Feed, General" value="${editing ? esc(editing.category || "") : esc(presetCategory || "")}"></label>
       <label class="field"><span>Title</span><input id="n_title" placeholder="e.g. Processing age" value="${editing ? esc(editing.title || "") : ""}"></label>
     </div>
     <datalist id="noteCategories">${categoryNames.map(c => `<option value="${esc(c)}">`).join("")}</datalist>
-    <label class="field" style="margin-top:10px"><span>Note</span><textarea id="n_body" rows="4" placeholder="e.g. Cornish Cross are typically processed around 8 weeks — go by weight and behavior, not just the calendar.">${editing ? esc(editing.body || "") : ""}</textarea></label>
+
+    <div class="field" style="margin-top:10px">
+      <span>Color</span>
+      <div class="note-color-picker" id="n_color_picker">
+        ${NOTE_COLORS.map(c => `<button type="button" class="note-color-swatch${currentColor === c.key ? " active" : ""}" data-color="${c.key}" style="--swatch-color:${c.css}" title="${c.label}"></button>`).join("")}
+      </div>
+    </div>
+
+    <div class="field" style="margin-top:10px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px">
+        <span>Note</span>
+        <div style="display:flex;gap:4px">
+          <button type="button" class="btn ghost small active" id="n_tab_write">✎ Write</button>
+          <button type="button" class="btn ghost small" id="n_tab_preview">👁 Preview</button>
+        </div>
+      </div>
+      <div class="note-toolbar" id="n_toolbar">
+        <button type="button" class="note-toolbar-btn" id="nt_bold" title="Bold"><strong>B</strong></button>
+        <button type="button" class="note-toolbar-btn" id="nt_italic" title="Italic"><em>I</em></button>
+        <button type="button" class="note-toolbar-btn" id="nt_check" title="Checklist item">☑ Check</button>
+        <button type="button" class="note-toolbar-btn" id="nt_bullet" title="Bullet item">• List</button>
+      </div>
+      <textarea id="n_body" rows="10" placeholder="e.g. Cornish Cross are typically processed around 8 weeks — go by weight and behavior, not just the calendar.&#10;&#10;- [ ] Order feed for next batch&#10;- [x] Clean brooder">${editing ? esc(editing.body || "") : ""}</textarea>
+      <div id="n_preview" class="note-preview-box" style="display:none"></div>
+      <div class="dim" style="font-size:11px;margin-top:6px">Markdown: **bold**, *italic*, "- [ ] task" for a checklist, "- item" for a bullet.</div>
+    </div>
+
     <div class="modal-actions">
       <button class="btn btn-confirm" id="saveNote">${editing ? "✓ Save changes" : "+ Add note"}</button>
     </div>
@@ -3491,6 +3629,7 @@ function noteFormHtml(editing, presetCategory) {
 
 function openNoteModal(editing, presetCategory) {
   editingNoteId = editing ? editing.id : null;
+  let selectedColor = editing ? (editing.color || "") : "";
   openModal(
     noteFormHtml(editing, presetCategory),
     () => { editingNoteId = null; },
@@ -3499,16 +3638,67 @@ function openNoteModal(editing, presetCategory) {
       () => localNoteDelete(editing.id, currentCoopId),
       "Note deleted",
       async () => { await loadCoopData(); renderNotesSection(); }
-    ) : null
+    ) : null,
+    null,
+    "modal-panel-large"
   );
   if (!editing) { const titleInput = document.getElementById("n_title"); if (titleInput) titleInput.focus(); }
+
+  document.getElementById("n_color_picker").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-color]");
+    if (!btn) return;
+    selectedColor = btn.dataset.color;
+    document.querySelectorAll(".note-color-swatch").forEach(s => s.classList.toggle("active", s.dataset.color === selectedColor));
+  });
+
+  const writeTab = document.getElementById("n_tab_write");
+  const previewTab = document.getElementById("n_tab_preview");
+  const toolbar = document.getElementById("n_toolbar");
+  const textarea = document.getElementById("n_body");
+  const previewBox = document.getElementById("n_preview");
+
+  function wirePreviewChecklist() {
+    previewBox.querySelectorAll("[data-line]").forEach(item => item.addEventListener("click", () => {
+      const lines = textarea.value.split("\n");
+      const idx = Number(item.dataset.line);
+      const line = lines[idx];
+      const match = line != null && line.match(/^(\s*-\s*\[)([ xX])(\]\s*.*)$/);
+      if (!match) return;
+      lines[idx] = match[1] + (match[2].toLowerCase() === "x" ? " " : "x") + match[3];
+      textarea.value = lines.join("\n");
+      previewBox.innerHTML = renderNoteMarkdown(textarea.value) || `<span class="dim">Nothing to preview yet.</span>`;
+      wirePreviewChecklist();
+    }));
+  }
+  previewTab.addEventListener("click", () => {
+    previewBox.innerHTML = renderNoteMarkdown(textarea.value) || `<span class="dim">Nothing to preview yet.</span>`;
+    wirePreviewChecklist();
+    previewBox.style.display = "block";
+    textarea.style.display = "none";
+    toolbar.style.display = "none";
+    previewTab.classList.add("active");
+    writeTab.classList.remove("active");
+  });
+  writeTab.addEventListener("click", () => {
+    previewBox.style.display = "none";
+    textarea.style.display = "block";
+    toolbar.style.display = "flex";
+    writeTab.classList.add("active");
+    previewTab.classList.remove("active");
+    textarea.focus();
+  });
+  document.getElementById("nt_bold").addEventListener("click", () => wrapTextareaSelection("n_body", "**"));
+  document.getElementById("nt_italic").addEventListener("click", () => wrapTextareaSelection("n_body", "*"));
+  document.getElementById("nt_check").addEventListener("click", () => insertAtLineStart("n_body", "- [ ] "));
+  document.getElementById("nt_bullet").addEventListener("click", () => insertAtLineStart("n_body", "- "));
+
   document.getElementById("saveNote").addEventListener("click", async () => {
     const title = document.getElementById("n_title").value.trim();
     const body = document.getElementById("n_body").value.trim();
     if (!title && !body) return;
-    const payload = { coop_id: currentCoopId, category: document.getElementById("n_category").value.trim() || "General", title, body, created_date: todayStr() };
+    const payload = { coop_id: currentCoopId, category: document.getElementById("n_category").value.trim() || "General", title, body, color: selectedColor };
     if (editing) await localNoteUpdate(editing.id, payload);
-    else await localNoteCreate(payload);
+    else await localNoteCreate({ ...payload, created_date: todayStr() });
     showToast(editing ? "Note updated" : "Note added", editing ? "update" : "create");
     closeModal();
     await loadCoopData();
@@ -4714,12 +4904,13 @@ let modalOnBack = null;
  * entirely. Each screen in the chain passes the one below it as onBack. */
 let modalContentClearTimeout = null;
 
-function openModal(html, onClose = null, onDelete = null, onBack = null) {
+function openModal(html, onClose = null, onDelete = null, onBack = null, extraClass = null) {
   ensureModalDom();
   if (modalContentClearTimeout) { clearTimeout(modalContentClearTimeout); modalContentClearTimeout = null; } // cancel any pending clear from a just-closed modal -- we're about to overwrite the content anyway, but the stale timer must not fire later and wipe out THIS modal's content
   modalOnClose = onClose;
   modalOnBack = onBack;
   document.getElementById("modalContent").innerHTML = html;
+  document.getElementById("modalPanel").className = "modal-panel" + (extraClass ? ` ${extraClass}` : "");
   document.body.style.overflow = "hidden";
   const overlay = document.getElementById("modalOverlay");
   document.getElementById("modalPanel").scrollTop = 0;
@@ -7517,41 +7708,39 @@ function wireProductPicker(el, { categoryFieldId, brandFieldId, descFieldId, qty
   });
 }
 
+const FULLNESS_STEPS = [
+  { status: "Empty", icon: "○", label: "Empty" },
+  { status: "1/4", icon: "◔", label: "1/4 full" },
+  { status: "1/2", icon: "◑", label: "1/2 full" },
+  { status: "3/4", icon: "◕", label: "3/4 full" },
+  { status: "Full", icon: "●", label: "Full" },
+];
+
 function supplyCardHtml(s) {
   const tone = supplyStatusTone(s.status); // "sage" | "gold" | "rust" | "slate"
   const catTone = supplyCategoryTone(s.category);
-  const headerText = (catTone === "rust" || catTone === "danger") ? "#F2E9DC" : "#1E1712";
-  const fillPctMap = { "Full": 100, "3/4": 75, "1/2": 50, "1/4": 25, "Empty": 3 };
-  const fillPct = fillPctMap[s.status] ?? 100;
-  const sliderVal = supplySliderValue(s.status);
   const amountLabel = s.quantity ? `${s.quantity} ${esc(s.unit || "")}` : "";
   const product = s.product_id ? STATE.supplyProducts.find(p => p.id === s.product_id) : null;
   const photo = product ? productPhotoUrl(product) : null;
-  // Flipped from a colored overlay showing how full a bag is, to full
-  // color where product remains and greyscale + red dashes where it's
-  // been used -- clip-path on the color layer is what reveals only the
-  // remaining fraction, from the bottom up.
-  const bagBorderStyle = `border-color:color-mix(in srgb, var(--${catTone}) 45%, var(--border))`;
-  const bagStyle = photo ? bagBorderStyle : `background:color-mix(in srgb, var(--${catTone}) 10%, var(--bg));${bagBorderStyle}`;
-  const bagInner = photo
-    ? `<div class="supply-bag-grey-base" style="background-image:url('${photo}');background-position:${photoPosition(product)};${photoTransformStyle(product)}"></div>
-       <div class="supply-bag-dash-overlay"></div>
-       <div class="supply-bag-color-reveal" style="background-image:url('${photo}');background-position:${photoPosition(product)};${photoTransformStyle(product)}clip-path:inset(${100 - fillPct}% 0 0 0)"></div>`
-    : `<div class="supply-bag-fill" style="height:${fillPct}%;background:var(--${tone})"></div>`;
   const line1 = s.brand || s.description || s.category;
   const line2 = (s.description && s.description !== line1) ? s.description : "";
-  return `<div class="supply-card${selectedSupplyIds.has(s.id) ? " card-selected" : ""}" data-edit-supply="${s.id}" data-id="${s.id}" style="border-color:var(--${catTone})">
-    ${selectionState.supplies.mode ? `<input type="checkbox" class="supply-card-check supply-check" data-id="${s.id}" ${selectedSupplyIds.has(s.id) ? "checked" : ""} onclick="event.stopPropagation()">` : ""}
-    <div class="supply-card-header-bar" style="background:var(--${catTone});color:${headerText}">
-      <div class="supply-card-header-name">${esc(line1)}</div>
-      ${line2 ? `<div class="supply-card-header-sub">${esc(line2)}</div>` : ""}
+  const thumb = photo
+    ? `<div style="width:48px;height:48px;border-radius:6px;overflow:hidden;flex:0 0 auto"><img src="${photo}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(product)};${photoTransformStyle(product)}"></div>`
+    : `<div style="width:48px;height:48px;border-radius:6px;flex:0 0 auto;background:color-mix(in srgb, var(--${catTone}) 12%, var(--bg));display:flex;align-items:center;justify-content:center;font-size:20px">📦</div>`;
+  return `<div class="list-card tone-${catTone}${selectedSupplyIds.has(s.id) ? " card-selected" : ""}" data-edit-supply="${s.id}" data-id="${s.id}">
+    ${selectionState.supplies.mode ? `<input type="checkbox" class="list-card-check supply-check" data-id="${s.id}" ${selectedSupplyIds.has(s.id) ? "checked" : ""} onclick="event.stopPropagation()">` : ""}
+    ${thumb}
+    <div class="list-card-main">
+      <div style="font-weight:700">${esc(line1)}</div>
+      <div class="list-card-desc dim">${esc(s.category)}${amountLabel ? ` · ${amountLabel}` : ""}</div>
+      ${line2 ? `<div class="list-card-desc dim">${esc(line2)}</div>` : ""}
     </div>
-    <div class="supply-card-meta dim" style="text-align:center">${esc(s.category)}${amountLabel ? ` -- ${amountLabel}` : ""}</div>
-    <div class="supply-bag-visual" title="${esc(s.status)}" style="${bagStyle}">${bagInner}</div>
-    <div class="supply-slider-wrap">
-      <input type="range" class="supply-slider" min="0" max="4" step="1" value="${sliderVal}" data-id="${s.id}" style="accent-color:var(--${tone});color:var(--${tone})" onclick="event.stopPropagation()">
+    <div class="list-card-side">
+      <span class="stamp tone-${tone}">${esc(supplyStampLabel(s))}</span>
+      <div class="fullness-pills" onclick="event.stopPropagation()">
+        ${FULLNESS_STEPS.map(f => `<button type="button" class="fullness-pill${s.status === f.status ? " active" : ""}" data-status="${f.status}" data-id="${s.id}" title="${f.label}" style="--pill-tone:var(--${tone})">${f.icon}</button>`).join("")}
+      </div>
     </div>
-    <div class="supply-stamp-row"><span class="stamp tone-${tone}">${esc(supplyStampLabel(s))}</span></div>
   </div>`;
 }
 
@@ -7713,10 +7902,7 @@ function supplyGroupCardHtml(items) {
   const count = items.length;
   const key = supplyGroupKey(first);
   const catTone = supplyCategoryTone(first.category);
-  const headerText = (catTone === "rust" || catTone === "danger") ? "#F2E9DC" : "#1E1712";
   const amountLabel = first.quantity ? `${first.quantity} ${esc(first.unit || "")} each` : "";
-  const MAX_SHOWN = 6;
-  const shownCount = Math.min(count, MAX_SHOWN);
   // Any item in the group with a resolvable photo, not just whichever
   // happens to be first -- a group can end up mixing older items (created
   // before they were linked to a product) with newer, correctly-linked
@@ -7729,22 +7915,22 @@ function supplyGroupCardHtml(items) {
     const url = p ? productPhotoUrl(p) : null;
     if (url) { groupPhoto = url; groupPhotoPos = photoPosition(p); break; }
   }
-  const miniBagStyle = groupPhoto
-    ? `background-image:url('${groupPhoto}');background-size:cover;background-position:${groupPhotoPos}`
-    : `background:var(--${catTone})`;
-  const miniBags = Array.from({ length: shownCount }, () => `<div class="supply-mini-bag" style="${miniBagStyle}"></div>`).join("");
-  const overflow = count > MAX_SHOWN ? `<span class="supply-mini-bag-more">+${count - MAX_SHOWN} more</span>` : "";
+  const thumb = groupPhoto
+    ? `<div style="width:48px;height:48px;border-radius:6px;overflow:hidden;flex:0 0 auto"><img src="${groupPhoto}" style="width:100%;height:100%;object-fit:cover;object-position:${groupPhotoPos}"></div>`
+    : `<div style="width:48px;height:48px;border-radius:6px;flex:0 0 auto;background:color-mix(in srgb, var(--${catTone}) 12%, var(--bg));display:flex;align-items:center;justify-content:center;font-size:20px">📦</div>`;
   const line1 = first.brand || first.description || first.category;
   const line2 = (first.description && first.description !== line1) ? first.description : "";
-  return `<div class="supply-card" style="border-color:var(--${catTone})">
-    <div class="supply-card-header-bar" data-edit-group="${esc(key)}" style="background:var(--${catTone});color:${headerText};cursor:pointer">
-      <div class="supply-card-header-name">${esc(line1)}</div>
-      ${line2 ? `<div class="supply-card-header-sub">${esc(line2)}</div>` : ""}
+  return `<div class="list-card tone-${catTone}" data-edit-group="${esc(key)}" style="cursor:pointer">
+    ${thumb}
+    <div class="list-card-main">
+      <div style="font-weight:700">${esc(line1)}</div>
+      <div class="list-card-desc dim">${esc(first.category)}${amountLabel ? ` · ${amountLabel}` : ""}</div>
+      ${line2 ? `<div class="list-card-desc dim">${esc(line2)}</div>` : ""}
     </div>
-    <div class="supply-card-meta dim" style="text-align:center">${esc(first.category)}${amountLabel ? ` -- ${amountLabel}` : ""}</div>
-    <div class="supply-mini-bag-grid" data-edit-group="${esc(key)}" title="${count} sealed bags">${miniBags}${overflow}</div>
-    <div class="supply-stamp-row"><span class="stamp tone-sage">Full × ${count}</span></div>
-    <button class="supply-open-one-btn" data-open-one-supply="${first.id}" style="--fold-color:var(--${catTone})">📦 Open one →</button>
+    <div class="list-card-side">
+      <span class="stamp tone-sage">Full × ${count}</span>
+      <button class="btn ghost small supply-open-one-btn" data-open-one-supply="${first.id}" onclick="event.stopPropagation()">📦 Open one</button>
+    </div>
   </div>`;
 }
 
@@ -7805,7 +7991,7 @@ function renderSupplyInventory() {
   const pagedBedding = beddingEntries.slice(0, beddingSupplyVisibleCount);
   el.innerHTML = `
     <div class="card-title" style="margin-bottom:4px">Feed &amp; Bedding Inventory</div>
-    <div class="dim" style="font-size:12px;margin-bottom:12px">Bags/supplies logged with a quantity on the Finances tab show up here automatically as "Full." Drag the slider as you work through one, or add something directly if you didn't buy it through an expense entry.</div>
+    <div class="dim" style="font-size:12px;margin-bottom:12px">Bags/supplies logged with a quantity on the Finances tab show up here automatically as "Full." Tap a fullness dot as you work through one, or add something directly if you didn't buy it through an expense entry.</div>
 
     <div class="toolbar" style="margin-bottom:10px">
       <div class="dim">${pagedFeed.length + pagedBedding.length} of ${feedEntries.length + beddingEntries.length} shown</div>
@@ -7895,17 +8081,20 @@ function renderSupplyInventory() {
     renderSupplyInventory();
   }));
   el.querySelectorAll("[data-edit-group]").forEach(card => card.addEventListener("click", () => openSupplyGroupModal(card.dataset.editGroup)));
-  el.querySelectorAll(".supply-slider").forEach(slider => slider.addEventListener("change", async (e) => {
-    const id = slider.dataset.id;
+  el.querySelectorAll(".fullness-pill").forEach(pill => pill.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const id = pill.dataset.id;
+    const newStatus = pill.dataset.status;
     const existing = STATE.supplies.find(s => s.id === id);
-    const newStatus = supplyStatusFromSlider(e.target.value);
+    if (existing && existing.status === newStatus) return; // already this status -- nothing to do
     const payload = { status: newStatus };
     // date_emptied needs to be a two-way gate, not just set-on-reaching-Empty:
-    // dragging back up (correcting an accidental drag, or just changing your
-    // mind) needs to clear it too, or the stale date keeps counting this
-    // bag as "used" in usage totals long after it's no longer actually empty.
+    // picking a fuller status again (correcting an accidental tap, or just
+    // changing your mind) needs to clear it too, or the stale date keeps
+    // counting this bag as "used" in usage totals long after it's no longer
+    // actually empty.
     payload.date_emptied = newStatus === "Empty" ? todayStr() : null;
-    // Any slider interaction implies the bag has been handled -- mark it
+    // Any fullness change implies the bag has been handled -- mark it
     // opened (once, idempotently) so it stops being grouped with sealed
     // spares from here on, regardless of how little has actually been used.
     if (existing && !existing.opened_at) payload.opened_at = todayStr();
