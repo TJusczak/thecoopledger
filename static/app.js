@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-136";
+const APP_VERSION = "2026.07.06-137";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -2677,6 +2677,17 @@ function renderConnectionSection() {
     </div>
     `}
 
+    <div class="card" style="margin-top:16px;border-color:rgba(184,76,62,0.4)">
+      <div class="card-title">⚠️ Clear local data</div>
+      <div class="dim" style="font-size:12px;margin-bottom:14px">
+        Wipes everything cached on this device -- every coop, bird, egg entry, all of it -- and starts fresh. Mainly useful if switching servers has left old, unrelated coops sitting in this device's local cache.
+        ${localOnlyMode
+          ? " You're in local-only mode, so this is permanent -- there's no server copy to fall back on. Export a backup first if there's anything here you'd want to keep."
+          : " If you're synced with a server, this is generally safe -- everything gets re-downloaded from there once reconnected. But anything saved on this device that hasn't synced yet (e.g. while offline) will be lost for good."}
+      </div>
+      <button class="btn btn-close" id="clearLocalDataBtn">🗑 Clear local data and start fresh</button>
+    </div>
+
     <div class="card" style="margin-top:16px">
       <div class="card-title">Diagnostics</div>
       <div id="diagText" class="dim" style="font-size:11px;font-family:'JetBrains Mono',monospace;line-height:1.8;white-space:pre-wrap">${esc(buildDiagnosticsText())}</div>
@@ -2726,6 +2737,25 @@ function renderConnectionSection() {
     if (currentCoopId) refreshAndRender();
   });
 
+  document.getElementById("clearLocalDataBtn").addEventListener("click", async () => {
+    const confirmed = await showTypeToConfirmDialog(
+      localOnlyMode
+        ? "This permanently deletes everything cached on this device -- every coop, bird, and log entry -- with no server copy to restore from. Export a backup first if you want to keep any of it."
+        : "This deletes everything cached on this device. Anything already synced re-downloads from the server automatically, but anything saved here that hasn't synced yet (e.g. while offline) is lost for good.",
+      "CLEAR",
+      "Clear local data"
+    );
+    if (!confirmed) return;
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.deleteDatabase(LOCAL_DB_NAME);
+      req.onsuccess = resolve;
+      req.onerror = () => reject(req.error);
+      req.onblocked = resolve; // another tab has it open -- still proceeds, just may need a manual refresh there too
+    });
+    localStorage.removeItem(COOP_KEY);
+    location.reload();
+  });
+
   if (localOnlyMode) return; // nothing else on this page applies in local-only mode
 
   document.getElementById("saveConnBtn").addEventListener("click", async () => {
@@ -2734,7 +2764,17 @@ function renderConnectionSection() {
       document.getElementById("userNameInput").focus();
       return;
     }
-    setServerUrl(document.getElementById("conn_url").value);
+    const previousUrl = getServerUrl();
+    const newUrl = document.getElementById("conn_url").value.trim().replace(/\/$/, "");
+    setServerUrl(newUrl);
+    if (previousUrl && newUrl && newUrl !== previousUrl) {
+      // A genuine switch to a different server, not just re-saving the same
+      // one -- the previously-selected coop almost certainly doesn't exist
+      // on this new server at all, so clearing it forces a fresh pick
+      // instead of the app quietly trying to keep using a coop id that
+      // belongs to somewhere else entirely.
+      localStorage.removeItem(COOP_KEY);
+    }
     showToast("Server connection saved", "update");
     location.reload();
   });
