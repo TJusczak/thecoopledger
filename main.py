@@ -28,7 +28,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.06-137"
+SERVER_VERSION = "2026.07.06-139"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -323,6 +323,34 @@ def migrate_base64_photos_to_files():
                 pass  # leave the bird's photo as-is if anything about it is malformed
 
 
+def migrate_flat_photos_to_coop_folders():
+    """One-time upgrade: every photo saved before per-coop folders existed
+    sits directly in PHOTOS_DIR with no subfolder. Moves each one into its
+    owning coop's folder and updates the database reference to match.
+    Runs on every startup, but only ever touches files still in the old
+    flat layout -- a no-op once everything's been migrated once. Includes
+    soft-deleted rows too, so anything that predates the delete-cleanup
+    fix doesn't get left behind forever in the old location."""
+    with get_db() as conn:
+        for table in ("birds", "supply_products", "bird_photos"):
+            rows = conn.execute(f"SELECT id, coop_id, photo FROM {table} WHERE photo LIKE '/photos/%'").fetchall()
+            for r in rows:
+                rel = r["photo"][len("/photos/"):]
+                if "/" in rel:
+                    continue  # already has a coop subfolder -- already migrated
+                old_path = PHOTOS_DIR / rel
+                if not old_path.exists():
+                    continue  # reference is already stale -- nothing on disk to move
+                coop_id = r["coop_id"] or "_unscoped"
+                new_dir = PHOTOS_DIR / coop_id
+                new_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    old_path.rename(new_dir / rel)
+                except OSError:
+                    continue
+                conn.execute(f"UPDATE {table} SET photo = ? WHERE id = ?", (f"/photos/{coop_id}/{rel}", r["id"]))
+
+
 app = FastAPI(title="Coop Ledger")
 
 
@@ -456,6 +484,7 @@ app.add_middleware(
 def on_startup():
     init_db()
     migrate_base64_photos_to_files()
+    migrate_flat_photos_to_coop_folders()
 
 
 @app.get("/api/health")
@@ -737,8 +766,9 @@ def delete_coop(coop_id: str):
         row = conn.execute("SELECT * FROM coops WHERE id = ?", (coop_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Coop not found")
-        for r in conn.execute("SELECT photo FROM birds WHERE coop_id = ?", (coop_id,)).fetchall():
-            _delete_photo_file(r["photo"])
+        for photo_table in ("birds", "bird_photos", "supply_products"):
+            for r in conn.execute(f"SELECT photo FROM {photo_table} WHERE coop_id = ?", (coop_id,)).fetchall():
+                _delete_photo_file(r["photo"])
         for table in SCOPED:
             conn.execute(f"DELETE FROM {table} WHERE coop_id = ?", (coop_id,))
         # Soft delete, not a hard DELETE -- same reasoning as every other
@@ -1202,6 +1232,10 @@ def delete_items_bulk(resource: str, payload: dict = Body(...)):
                 if row:
                     _delete_photo_file(row["photo"])
                 conn.execute('UPDATE bird_logs SET deleted_at = ?, updated_at = ? WHERE bird_id = ?', (now, now, item_id))
+            elif resource in ("bird_photos", "supply_products"):
+                row = conn.execute(f"SELECT photo FROM {resource} WHERE id = ?", (item_id,)).fetchone()
+                if row:
+                    _delete_photo_file(row["photo"])
             coop_row = conn.execute(f"SELECT coop_id FROM {resource} WHERE id = ?", (item_id,)).fetchone() if resource in SCOPED else None
             cur = conn.execute(f'UPDATE {resource} SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL', (now, now, item_id))
             if cur.rowcount > 0:
@@ -1369,6 +1403,10 @@ def delete_item(resource: str, item_id: str):
                 _delete_photo_file(row["photo"])
             # Soft-delete cascaded logs too, so a syncing client learns those are gone as well.
             conn.execute('UPDATE bird_logs SET deleted_at = ?, updated_at = ? WHERE bird_id = ?', (now, now, item_id))
+        elif resource in ("bird_photos", "supply_products"):
+            row = conn.execute(f"SELECT photo FROM {resource} WHERE id = ?", (item_id,)).fetchone()
+            if row:
+                _delete_photo_file(row["photo"])
         coop_row = conn.execute(f"SELECT coop_id FROM {resource} WHERE id = ?", (item_id,)).fetchone() if resource in SCOPED else None
         # Soft delete: a syncing client needs to be told a row disappeared, not
         # just stop seeing it -- an actual DELETE gives no way to distinguish

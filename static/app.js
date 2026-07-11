@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-137";
+const APP_VERSION = "2026.07.06-139";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -8229,6 +8229,9 @@ function showOnboardingIfNeeded() {
         <h1 style="font-size:24px;margin:2px 0 4px">Get started</h1>
         <div class="dim" style="font-size:12px;margin-bottom:18px">Track your flock, eggs, expenses, and supplies -- right on this device, no account needed.</div>
 
+        <label class="field"><span>Your name</span><input id="gs_name" placeholder="e.g. Alex"></label>
+        <div class="dim" style="font-size:11px;margin:4px 0 16px">Used for activity logging -- captured once here either way, so it's already set if you connect to a server later.</div>
+
         <button class="btn btn-confirm" id="gs_local" style="width:100%;justify-content:center;font-size:15px;padding:12px">📱 Start tracking now</button>
         <div class="dim" style="font-size:11px;margin-top:8px">Everything stays on this device -- nothing is sent anywhere. Export a backup anytime from Settings, or connect to a server later without losing what you've entered.</div>
 
@@ -8240,8 +8243,7 @@ function showOnboardingIfNeeded() {
         <div id="gs_server_section" style="display:none;margin-top:10px">
           <label class="field"><span>Server address</span><input id="gs_server" placeholder="e.g. https://your-server.example.com"></label>
           <div class="dim" style="font-size:11px;margin:4px 0 12px">Leave blank only if this page is itself your own self-hosted server. If you got this app from somewhere else and want to sync with your own server, enter its address here.</div>
-          <label class="field"><span>Your name</span><input id="gs_name" placeholder="e.g. Alex"></label>
-          <label class="field" style="margin-top:12px"><span>Invite code</span><input id="gs_code" placeholder="e.g. KTRHY8NW" style="text-transform:uppercase"></label>
+          <label class="field"><span>Invite code</span><input id="gs_code" placeholder="e.g. KTRHY8NW" style="text-transform:uppercase"></label>
           <div id="gs_error" style="color:var(--rust);font-size:12px;margin-top:10px;min-height:1em"></div>
           <button class="btn ghost" id="gs_connect" style="margin-top:4px;width:100%;justify-content:center">Connect &amp; log in</button>
         </div>
@@ -8256,8 +8258,15 @@ function showOnboardingIfNeeded() {
     arrow.textContent = nowOpen ? "▴" : "▾";
   });
   document.getElementById("gs_connect").addEventListener("click", doGetStartedConnect);
-  ["gs_server", "gs_name", "gs_code"].forEach(id => document.getElementById(id).addEventListener("keydown", (e) => { if (e.key === "Enter") doGetStartedConnect(); }));
+  ["gs_name", "gs_server", "gs_code"].forEach(id => document.getElementById(id).addEventListener("keydown", (e) => { if (e.key === "Enter") doGetStartedConnect(); }));
   document.getElementById("gs_local").addEventListener("click", () => {
+    const name = document.getElementById("gs_name").value.trim();
+    if (!name) {
+      showToast("Enter your name first", "delete");
+      document.getElementById("gs_name").focus();
+      return;
+    }
+    setUserName(name);
     setLocalOnlyMode(true);
     location.reload();
   });
@@ -8337,7 +8346,13 @@ function showLoginScreen() {
       <div class="card" style="max-width:380px;width:100%;border:2px solid var(--rust);box-shadow:0 0 0 1px rgba(193,80,46,0.15), 0 12px 32px rgba(0,0,0,0.35)">
         <div class="eyebrow">🐔 The Coop Ledger</div>
         <h1 style="font-size:24px;margin:2px 0 4px">Welcome back</h1>
-        <div class="dim" style="font-size:12px;margin-bottom:18px">Connecting to <strong style="color:var(--text)">${esc(getServerUrl() || window.location.origin)}</strong></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px">
+          <div class="dim" style="font-size:12px">Connecting to <strong style="color:var(--text)">${esc(getServerUrl() || window.location.origin)}</strong></div>
+          <button type="button" class="btn ghost small" id="loginToggleServerBtn" style="flex:0 0 auto;font-size:11px;padding:4px 8px">Not this one?</button>
+        </div>
+        <div id="loginServerSection" style="display:none;margin-bottom:14px">
+          <label class="field"><span>Server address</span><input id="loginServerUrl" value="${esc(getServerUrl())}" placeholder="e.g. https://your-server.example.com"></label>
+        </div>
         <label class="field"><span>Your name</span><input id="loginName" placeholder="e.g. Alex"></label>
         <label class="field" style="margin-top:12px"><span>Invite code</span><input id="loginCode" placeholder="e.g. KTRHY8NW" style="text-transform:uppercase"></label>
         <div id="loginError" style="color:var(--rust);font-size:12px;margin-top:10px;min-height:1em"></div>
@@ -8348,22 +8363,30 @@ function showLoginScreen() {
     </div>
   `;
   document.getElementById("loginBtn").addEventListener("click", doLogin);
+  document.getElementById("loginToggleServerBtn").addEventListener("click", () => {
+    const section = document.getElementById("loginServerSection");
+    const nowOpen = section.style.display === "none";
+    section.style.display = nowOpen ? "block" : "none";
+    if (nowOpen) document.getElementById("loginServerUrl").focus();
+  });
   document.getElementById("loginUseLocalBtn").addEventListener("click", () => {
     setLocalOnlyMode(true);
     location.reload();
   });
-  ["loginName", "loginCode"].forEach(id => document.getElementById(id).addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); }));
+  ["loginName", "loginCode", "loginServerUrl"].forEach(id => document.getElementById(id).addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); }));
 }
 
 async function doLogin() {
   const name = document.getElementById("loginName").value.trim();
   const code = document.getElementById("loginCode").value.trim();
+  const serverUrl = document.getElementById("loginServerUrl").value.trim();
   const errEl = document.getElementById("loginError");
   errEl.textContent = "";
   if (!name || !code) { errEl.textContent = "Enter your name and the invite code."; return; }
   const btn = document.getElementById("loginBtn");
   btn.disabled = true;
   btn.textContent = "Logging in...";
+  setServerUrl(serverUrl); // apiUrl() reads this immediately, so the login attempt right below already uses it
   try {
     const res = await fetch(apiUrl("/api/auth/login"), {
       method: "POST",
