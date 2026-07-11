@@ -156,7 +156,7 @@ hand. In the Cloudflare dashboard for this project:
 - **Root directory:** leave blank (repo root)
 - **Build command:**
   ```
-  mkdir -p dist && cp -r landing/. dist/ && mkdir -p dist/app && cp -r static/. dist/app/
+  mkdir -p dist && cp -r landing/. dist/ && mkdir -p dist/app && cp -r static/. dist/app/ && sed -i 's/__BUILD_CHANNEL__/stable/' dist/index.html dist/app/app.js
   ```
 - **Build output directory:** `dist`
 
@@ -210,10 +210,13 @@ connected to the same GitHub repo:
    that becomes its real identity, so there's nothing for the CI to
    override.
 2. Its **Production branch**: `main`.
-3. **Build command** and **Build output directory**: identical to the
-   main project (see Quick start above) -- a fresh project doesn't infer
-   these from the other one, and without a build command the deploy step
-   fails looking for a `dist/` that was never created.
+3. **Build command**: the same as the main project (see Quick start
+   above), except the channel stamp at the end needs to say `beta`
+   instead of `stable`:
+   ```
+   mkdir -p dist && cp -r landing/. dist/ && mkdir -p dist/app && cp -r static/. dist/app/ && sed -i 's/__BUILD_CHANNEL__/beta/' dist/index.html dist/app/app.js
+   ```
+   **Build output directory**: `dist`, same as the main project.
 4. **Deploy command**: `npx wrangler deploy` (no `--env` needed here --
    this project has its own identity now, not a borrowed environment).
 5. Add `beta.thecoopledger.com` as its custom domain -- a bare hostname,
@@ -222,7 +225,10 @@ connected to the same GitHub repo:
 From then on, this second project tracks `main` independently: every
 push deploys live to beta.thecoopledger.com automatically, with zero risk
 to the production Worker, since the two projects don't share a deploy
-identity at all.
+identity at all. A small gold "BETA" ribbon in the corner of both the app
+and the landing page confirms at a glance which channel you're looking
+at -- stamped in by the `sed` step above, and by the equivalent step in
+`docker-publish.yml` for the Docker image.
 
 The `stable` branch only moves when a version tag is pushed -- the
 `promote-stable-branch` job in `.github/workflows/docker-publish.yml`

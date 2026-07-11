@@ -283,3 +283,16 @@ a:focus-visible, .btn:focus-visible { outline: 2px solid var(--gold); outline-of
   .reveal { opacity: 1; transform: none; transition: none; }
   .sun-rays, .fog, .star { animation: none; }
 }
+
+/* ---------- beta build ribbon ---------- */
+
+.beta-ribbon {
+  position: fixed; top: 15px; right: -36px; width: 140px;
+  transform: rotate(45deg); transform-origin: center;
+  background: var(--gold); color: var(--bg);
+  font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 11px;
+  letter-spacing: 0.14em; text-align: center; padding: 3px 0;
+  z-index: 9999; box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  pointer-events: none;
+}
+.beta-ribbon.channel-stable { display: none; }

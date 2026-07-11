@@ -633,3 +633,15 @@ tr:hover td { background: var(--surface-raised); }
 @media (prefers-reduced-motion: reduce) {
   .modal-overlay, .modal-panel { transition: none; }
 }
+
+/* ---------- beta build ribbon ---------- */
+
+.beta-ribbon {
+  position: fixed; top: 15px; right: -36px; width: 140px;
+  transform: rotate(45deg); transform-origin: center;
+  background: var(--gold); color: var(--bg);
+  font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 11px;
+  letter-spacing: 0.14em; text-align: center; padding: 3px 0;
+  z-index: 9999; box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  pointer-events: none; /* purely informational -- never intercepts a tap on whatever's underneath */
+}

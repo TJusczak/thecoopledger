@@ -2,7 +2,19 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-131";
+const APP_VERSION = "2026.07.06-132";
+// Substituted at build time by each pipeline (see docker-publish.yml and
+// the "Choosing a release channel" section of the README) -- left as the
+// literal placeholder if something builds from source without going
+// through either pipeline, which intentionally falls through to the
+// "beta" case below rather than "stable": better to over-show the
+// caution badge than silently hide it on an unverified build.
+const BUILD_CHANNEL = "__BUILD_CHANNEL__";
+const IS_BETA_BUILD = BUILD_CHANNEL !== "stable";
+if (IS_BETA_BUILD) {
+  const ribbon = document.getElementById("betaRibbon");
+  if (ribbon) ribbon.style.display = "block";
+}
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], birdPhotos: [], activityLog: [], supplyProducts: [] };
