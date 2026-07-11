@@ -189,43 +189,40 @@ their own domain and wanting their own Android build to verify there.
 ### Beta channel for the website
 
 This project deploys through Cloudflare Workers Builds, not classic Pages,
-which changes how a beta channel actually needs to be set up -- the two
-platforms behave differently here. The **Production branch** setting
-(Worker → Settings → Build → Branch control) is already set to `stable`,
-and **Builds for non-production branches** should be checked so that
-`main` builds at all.
+which changes how a beta channel needs to be set up. The main project's
+**Production branch** (Worker → Settings → Build → Branch control) is set
+to `stable`, with **Builds for non-production branches** left unchecked --
+that project only builds `stable` now.
 
-`wrangler.jsonc` defines a named `beta` environment, which Wrangler
-deploys as a genuinely separate Worker (`thecoopledger-beta`) with its
-own custom domain -- not a second copy of the production Worker, so
-there's no risk of a beta deploy overwriting what's live on
-thecoopledger.com:
+Named Wrangler environments (a single project deploying `main` and
+`stable` to two different Workers via `wrangler.jsonc`) turned out not to
+work cleanly here: Workers Builds ties a connected project to one fixed
+Worker identity, and overrides whatever name a `wrangler.jsonc`
+environment specifies back to that identity -- which defeats the point,
+since it meant a beta deploy could land on the same Worker as
+production instead of a separate one.
 
-```jsonc
-"env": {
-  "beta": {
-    "name": "thecoopledger-beta",
-    "assets": { "directory": "./dist" },
-    "routes": [
-      { "pattern": "beta.thecoopledger.com/*", "custom_domain": true }
-    ]
-  }
-}
-```
+What actually works is a **second, separate Workers Builds project**,
+connected to the same GitHub repo:
 
-One dashboard change makes this active: under **Settings → Build**, the
-**non-production branch deploy command** needs to be
+1. Cloudflare dashboard → **Workers & Pages** → **Create** → connect this
+   repo again, as a new project named `thecoopledger-beta` at creation --
+   that becomes its real identity, so there's nothing for the CI to
+   override.
+2. Its **Production branch**: `main`.
+3. **Build command** and **Build output directory**: identical to the
+   main project (see Quick start above) -- a fresh project doesn't infer
+   these from the other one, and without a build command the deploy step
+   fails looking for a `dist/` that was never created.
+4. **Deploy command**: `npx wrangler deploy` (no `--env` needed here --
+   this project has its own identity now, not a borrowed environment).
+5. Add `beta.thecoopledger.com` as its custom domain -- a bare hostname,
+   no wildcard or path (Custom Domains reject both).
 
-```
-npx wrangler deploy --env beta
-```
-
-(not the default `npx wrangler versions upload`, which only uploads a
-version without publishing it live anywhere). Once that's set, `main`
-deploys live to `beta.thecoopledger.com` automatically on every push --
-the same zero-extra-habit behavior as the `:beta` Docker tag, just for
-the website. The **production** deploy command stays `npx wrangler
-deploy` exactly as it already is, untouched by any of this.
+From then on, this second project tracks `main` independently: every
+push deploys live to beta.thecoopledger.com automatically, with zero risk
+to the production Worker, since the two projects don't share a deploy
+identity at all.
 
 The `stable` branch only moves when a version tag is pushed -- the
 `promote-stable-branch` job in `.github/workflows/docker-publish.yml`
