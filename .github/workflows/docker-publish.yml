@@ -60,6 +60,15 @@ jobs:
         # form instead of assuming the account name happens to be lowercase.
         run: echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
+      - name: Stamp the build channel into app.js
+        # Same condition that decides the Docker tags below -- a tag push
+        # is "stable", anything else (a plain push to main) is "beta" --
+        # so the in-app ribbon and the image tag can never disagree about
+        # which channel this build actually is.
+        run: |
+          CHANNEL=${{ startsWith(github.ref, 'refs/tags/v') && 'stable' || 'beta' }}
+          sed -i "s/__BUILD_CHANNEL__/$CHANNEL/" static/app.js
+
       - name: Set up QEMU
         # Lets the amd64 runner below also emulate arm64 well enough to
         # build for it -- this is what makes the single job produce both
