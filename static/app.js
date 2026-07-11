@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-141";
+const APP_VERSION = "2026.07.06-142";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -3656,6 +3656,37 @@ function openNoteModal(editing, presetCategory) {
   const toolbar = document.getElementById("n_toolbar");
   const textarea = document.getElementById("n_body");
   const previewBox = document.getElementById("n_preview");
+
+  textarea.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || textarea.selectionStart !== textarea.selectionEnd) return; // only plain Enter, not Enter-with-a-selection
+    const val = textarea.value;
+    const pos = textarea.selectionStart;
+    const lineStart = val.lastIndexOf("\n", pos - 1) + 1;
+    const lineEnd = val.indexOf("\n", pos);
+    const lineEndPos = lineEnd === -1 ? val.length : lineEnd;
+    const textToCursor = val.slice(lineStart, pos);
+    const checkMatch = textToCursor.match(/^(\s*)-\s*\[([ xX])\]\s*/);
+    const bulletMatch = !checkMatch ? textToCursor.match(/^(\s*)-\s+/) : null;
+    const match = checkMatch || bulletMatch;
+    if (!match) return; // not on a list line -- let Enter behave normally
+    e.preventDefault();
+    const indent = match[1] || "";
+    const lineText = val.slice(lineStart, lineEndPos);
+    const hasContent = lineText.slice(match[0].length).trim() !== "";
+    if (!hasContent) {
+      // Empty list item -- exit the list instead of continuing it, or every
+      // attempt to stop typing a list would just add another empty item.
+      const rest = val.slice(lineStart + match[0].length, lineEndPos);
+      textarea.value = val.slice(0, lineStart) + rest + "\n" + val.slice(lineEndPos);
+      const newPos = lineStart + rest.length + 1;
+      textarea.selectionStart = textarea.selectionEnd = newPos;
+    } else {
+      const newPrefix = checkMatch ? `${indent}- [ ] ` : `${indent}- `;
+      textarea.value = val.slice(0, pos) + "\n" + newPrefix + val.slice(pos);
+      const newPos = pos + 1 + newPrefix.length;
+      textarea.selectionStart = textarea.selectionEnd = newPos;
+    }
+  });
 
   function wirePreviewChecklist() {
     previewBox.querySelectorAll("[data-line]").forEach(item => item.addEventListener("click", () => {
