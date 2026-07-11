@@ -35,7 +35,7 @@
 <div class="sticky-nav-group">
   <header class="topbar">
     <div class="topbar-inner">
-      <div class="brand">🐔 <span>The Coop Ledger</span></div>
+      <div class="brand"><img src="logo-inline.png" class="brand-logo" alt="" width="26" height="26" style="border-radius:6px"> <span>The Coop Ledger</span></div>
       <nav class="topnav">
         <a href="#what-it-tracks">What it tracks</a>
         <a href="#how-it-works">How it works</a>
@@ -256,7 +256,7 @@
 
 <footer class="site-footer">
   <div class="site-footer-inner">
-    <div>🐔 The Coop Ledger — free and open source.</div>
+    <div><img src="logo-inline.png" class="brand-logo" alt="" width="18" height="18" style="border-radius:4px;vertical-align:-3px"> The Coop Ledger — free and open source.</div>
     <div class="site-footer-links">
       <a href="https://github.com/TJusczak/thecoopledger">GitHub</a>
       <a href="/app/">Open the app</a>
@@ -439,6 +439,13 @@
     var nowOpen = panel.classList.toggle("open");
     btn.setAttribute("aria-expanded", String(nowOpen));
   });
+})();
+
+(function () {
+  var wrap = document.getElementById("betaTabWrap");
+  var isBeta = wrap && wrap.classList.contains("channel-beta");
+  if (!isBeta) return; // stable build -- the regular logo already in the markup is correct as-is
+  document.querySelectorAll(".brand-logo").forEach(function (img) { img.src = "logo-inline-beta.png"; });
 })();
 </script>
 

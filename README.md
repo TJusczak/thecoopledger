@@ -1,3 +1,5 @@
+<img src="static/icon-512.png" alt="" width="96" height="96">
+
 # The Coop Ledger
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/thecoopledger)
@@ -272,7 +274,8 @@ icon in the address bar, or the option in Settings → Connection) for its
 own window, icon, and Start Menu / home screen presence, with the app
 shell cached for offline use. There's also a wrapped Android APK (a
 Trusted Web Activity) for a proper Play-Store-style install without a
-browser wrapper at all.
+browser wrapper at all — see **[ANDROID_BUILD.md](ANDROID_BUILD.md)** for
+the full Bubblewrap setup, covering both the production and beta builds.
 
 ## Coops (profiles)
 

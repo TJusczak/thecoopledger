@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-142";
+const APP_VERSION = "2026.07.06-143";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -11,6 +11,11 @@ const APP_VERSION = "2026.07.06-142";
 // caution badge than silently hide it on an unverified build.
 const BUILD_CHANNEL = "__BUILD_CHANNEL__";
 const IS_BETA_BUILD = BUILD_CHANNEL !== "stable";
+const LOGO_INLINE = IS_BETA_BUILD ? "logo-inline-beta.png" : "logo-inline.png";
+// The sticky header's logo is static markup in index.html (not generated
+// by this script), so it needs its src swapped directly rather than
+// picking up LOGO_INLINE automatically the way freshly-rendered HTML does.
+document.querySelectorAll('.sticky-header-title img').forEach(img => { img.src = LOGO_INLINE; });
 renderBetaBadge();
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
@@ -8462,7 +8467,7 @@ function showOnboardingIfNeeded() {
   document.querySelector(".wrap").innerHTML = `
     <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px">
       <div class="card" style="max-width:420px;width:100%;border:2px solid var(--rust);box-shadow:0 0 0 1px rgba(193,80,46,0.15), 0 12px 32px rgba(0,0,0,0.35)">
-        <div class="eyebrow">🐔 The Coop Ledger</div>
+        <div class="eyebrow"><img src="${LOGO_INLINE}" alt="" width="16" height="16" style="border-radius:3px;vertical-align:-3px"> The Coop Ledger</div>
         <h1 style="font-size:24px;margin:2px 0 4px">Get started</h1>
         <div class="dim" style="font-size:12px;margin-bottom:18px">Track your flock, eggs, expenses, and supplies -- right on this device, no account needed.</div>
 
@@ -8581,7 +8586,7 @@ function showLoginScreen() {
   document.querySelector(".wrap").innerHTML = `
     <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px">
       <div class="card" style="max-width:380px;width:100%;border:2px solid var(--rust);box-shadow:0 0 0 1px rgba(193,80,46,0.15), 0 12px 32px rgba(0,0,0,0.35)">
-        <div class="eyebrow">🐔 The Coop Ledger</div>
+        <div class="eyebrow"><img src="${LOGO_INLINE}" alt="" width="16" height="16" style="border-radius:3px;vertical-align:-3px"> The Coop Ledger</div>
         <h1 style="font-size:24px;margin:2px 0 4px">Welcome back</h1>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px">
           <div class="dim" style="font-size:12px">Connecting to <strong style="color:var(--text)">${esc(getServerUrl() || window.location.origin)}</strong></div>
@@ -8832,7 +8837,7 @@ function showInstallBanner() {
   banner.id = "installBanner";
   banner.className = "install-banner";
   banner.innerHTML = `
-    <div>🐔 Install The Coop Ledger for the full app experience</div>
+    <div><img src="${LOGO_INLINE}" alt="" width="18" height="18" style="border-radius:4px;vertical-align:-4px"> Install The Coop Ledger for the full app experience</div>
     <div style="display:flex;gap:8px;flex-shrink:0">
       <button class="btn btn-confirm small" id="installBtn">Install</button>
       <button class="icon-btn" id="dismissInstallBtn">✕</button>
