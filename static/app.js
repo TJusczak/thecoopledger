@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-147";
+const APP_VERSION = "2026.07.06-148";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -2248,6 +2248,7 @@ async function loadCoopData() {
   }));
   await refreshPendingPhotoUrls();
   await refreshPendingProductPhotoUrls();
+  await refreshPendingBirdHistoryPhotoUrls();
 
   // Self-healing: before this session's fixes, the status slider and edit
   // form could leave a bag with date_emptied still set even after its
