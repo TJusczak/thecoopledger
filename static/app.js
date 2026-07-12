@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-146";
+const APP_VERSION = "2026.07.06-147";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -778,13 +778,15 @@ function birdHistoryPhotoUrl(photoRecord) {
 }
 /** Small square thumbnails for a bird's photo history, sorted oldest to
  * newest, each carrying its own stage label if one was set. */
-function birdPhotoHistoryThumbsHtml(birdId) {
+function birdPhotoHistoryThumbsHtml(birdId, selectMode = false, selectedIds = null) {
   const photos = STATE.birdPhotos.filter(p => p.bird_id === birdId).sort((a, b) => (a.date_taken || "").localeCompare(b.date_taken || ""));
   return photos.map(p => {
     const url = birdHistoryPhotoUrl(p);
-    return `<div class="thumb-clickable" data-history-photo="${p.id}" style="flex:0 0 auto;width:64px;height:64px;border-radius:8px;overflow:hidden;position:relative;cursor:pointer;border:1px solid var(--border)">
+    const isSelected = selectMode && selectedIds && selectedIds.has(p.id);
+    return `<div class="thumb-clickable${isSelected ? " history-thumb-selected" : ""}" data-history-photo="${p.id}" style="flex:0 0 auto;width:64px;height:64px;border-radius:8px;overflow:hidden;position:relative;cursor:pointer;border:1px solid ${isSelected ? "var(--gold)" : "var(--border)"};${isSelected ? "box-shadow:0 0 0 2px var(--gold)" : ""}">
       ${url ? `<img src="${url}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(p)};${photoTransformStyle(p)}">` : `<div style="width:100%;height:100%;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:20px">🐔</div>`}
-      ${p.stage ? `<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.62);color:#F2E9DC;font-size:8px;text-align:center;padding:1px 0;line-height:1.3">${esc(p.stage)}</div>` : ""}
+      ${p.stage && !selectMode ? `<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.62);color:#F2E9DC;font-size:8px;text-align:center;padding:1px 0;line-height:1.3">${esc(p.stage)}</div>` : ""}
+      ${selectMode ? `<div style="position:absolute;top:3px;right:3px;width:18px;height:18px;border-radius:50%;background:${isSelected ? "var(--gold)" : "rgba(20,16,13,0.65)"};border:1px solid ${isSelected ? "var(--gold)" : "rgba(255,255,255,0.5)"};display:flex;align-items:center;justify-content:center;font-size:11px;color:#1E1712">${isSelected ? "✓" : ""}</div>` : ""}
     </div>`;
   }).join("");
 }
@@ -6164,6 +6166,7 @@ function openHistoryPhotoOptionsModal(photo, bird, onDone) {
       );
       if (isLinked) {
         await localBirdUpdate(bird.id, { photo_pos_x: x, photo_pos_y: y, photo_zoom: zoom, main_bird_photo_id: photo.id });
+        STATE.birds = await localGetAll("birds", currentCoopId);
       }
       STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
       showToast("Photo position updated", "update");
@@ -6301,7 +6304,7 @@ function openBirdTimelineModal(bird, onBack) {
     ${yearSections.map((section, i) => {
       const isOpen = i === yearSections.length - 1; // only the most recent year starts expanded
       return `
-      <button type="button" class="flock-section-header timeline-year-toggle" data-year-toggle="${esc(section.year)}" style="margin:14px 0 8px;display:flex;align-items:center;gap:6px;width:100%;background:none;border:none;cursor:pointer;padding:0;text-align:left">
+      <button type="button" class="flock-section-header timeline-year-toggle" data-year-toggle="${esc(section.year)}" style="margin:14px 0 8px;display:flex;align-items:center;gap:6px;width:100%;background:none;border:none;cursor:pointer;padding:0;text-align:left;color:var(--text)">
         <span class="timeline-year-arrow" style="display:inline-block;transition:transform 0.15s ease;transform:rotate(${isOpen ? "90" : "0"}deg)">▸</span>
         <span>${esc(section.year)}</span>
         <span class="dim" style="font-weight:400;font-size:11px">${section.groups.reduce((n, g) => n + g.photos.length, 0)} photo${section.groups.reduce((n, g) => n + g.photos.length, 0) !== 1 ? "s" : ""}</span>
@@ -6341,6 +6344,8 @@ function showBirdForm(bird) {
   let pendingPhotoBlob = null;   // a newly-picked file, resized, waiting to be uploaded on save
   let photoRemoved = false;      // user asked to remove the existing photo
   let previewUrl = bird ? birdPhotoUrl(bird) : null;
+  let historySelectMode = false; // whether the photo history strip is in multi-select mode
+  let selectedHistoryIds = new Set();
 
   let formState = bird ? { ...bird } : {
     name: "", breed: "", type: "Layer", gender: "", hatch_date: "", acquired_date: "", status: "Active",
@@ -6417,13 +6422,21 @@ function showBirdForm(bird) {
       </div>
 
       <div class="form-block" style="margin-bottom:14px">
-        <div class="form-head" style="font-size:13px">📸 Photo history</div>
-        <div class="dim" style="font-size:11px;margin-bottom:8px">Every photo of ${esc(f.name) || "this bird"}, in one place — as a chick, a few months in, fully grown. Tap a photo to reposition it, edit its date or stage, set it as the main photo, or delete it.</div>
-        <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">
-          <button class="btn ghost small" id="addHistoryPhotoBtn" style="flex:0 0 auto;height:64px;width:64px;border-radius:8px;font-size:22px;padding:0">+</button>
-          ${birdPhotoHistoryThumbsHtml(bird.id)}
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+          <div class="form-head" style="font-size:13px;margin:0">📸 Photo history</div>
+          ${STATE.birdPhotos.filter(p => p.bird_id === bird.id).length > 0 ? (historySelectMode ? `
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-close small" id="deleteSelectedHistoryBtn"${selectedHistoryIds.size === 0 ? " disabled" : ""}>🗑 Delete${selectedHistoryIds.size > 0 ? ` (${selectedHistoryIds.size})` : ""}</button>
+              <button class="btn ghost small" id="cancelHistorySelectBtn">Cancel</button>
+            </div>
+          ` : `<button class="btn ghost small" id="startHistorySelectBtn">☑ Select</button>`) : ""}
         </div>
-        ${STATE.birdPhotos.filter(p => p.bird_id === bird.id).length > 1 ? `<button class="btn ghost small" id="viewTimelineBtn" style="margin-top:8px">🕐 View timeline</button>` : ""}
+        <div class="dim" style="font-size:11px;margin-bottom:8px">${historySelectMode ? "Tap photos to select them, then delete." : `Every photo of ${esc(f.name) || "this bird"}, in one place — as a chick, a few months in, fully grown. Tap a photo to reposition it, edit its date or stage, set it as the main photo, or delete it.`}</div>
+        <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">
+          ${!historySelectMode ? `<button class="btn ghost small" id="addHistoryPhotoBtn" style="flex:0 0 auto;height:64px;width:64px;border-radius:8px;font-size:22px;padding:0">+</button>` : ""}
+          ${birdPhotoHistoryThumbsHtml(bird.id, historySelectMode, selectedHistoryIds)}
+        </div>
+        ${!historySelectMode && STATE.birdPhotos.filter(p => p.bird_id === bird.id).length > 1 ? `<button class="btn ghost small" id="viewTimelineBtn" style="margin-top:8px">🕐 View timeline</button>` : ""}
       </div>
       `}
 
@@ -6515,7 +6528,56 @@ function showBirdForm(bird) {
       formState = readCurrentValues();
       openAddHistoryPhotoModal(formState, () => render(true));
     });
+    const startSelectBtn = document.getElementById("startHistorySelectBtn");
+    if (startSelectBtn) startSelectBtn.addEventListener("click", () => {
+      historySelectMode = true;
+      selectedHistoryIds = new Set();
+      formState = readCurrentValues();
+      render(false);
+    });
+    const cancelSelectBtn = document.getElementById("cancelHistorySelectBtn");
+    if (cancelSelectBtn) cancelSelectBtn.addEventListener("click", () => {
+      historySelectMode = false;
+      selectedHistoryIds = new Set();
+      formState = readCurrentValues();
+      render(false);
+    });
+    const deleteSelectedBtn = document.getElementById("deleteSelectedHistoryBtn");
+    if (deleteSelectedBtn) deleteSelectedBtn.addEventListener("click", async () => {
+      if (selectedHistoryIds.size === 0) return;
+      const n = selectedHistoryIds.size;
+      if (!(await showConfirmDialog(`Delete ${n} photo${n > 1 ? "s" : ""} from ${esc(formState.name) || "this bird"}'s history? This can't be undone.`))) return;
+      const idsToDelete = [...selectedHistoryIds];
+      await localBulkDelete("bird_photos", idsToDelete, currentCoopId);
+      // If the entry currently linked as the main photo is among the ones
+      // just deleted, clear that link too -- same reasoning as the
+      // single-photo delete: nothing left to point at.
+      const currentBird = STATE.birds.find(b => b.id === bird.id);
+      const linkedId = currentBird?.main_bird_photo_id;
+      const deletedPhotos = STATE.birdPhotos.filter(p => idsToDelete.includes(p.id));
+      const linkWasDeleted = currentBird && (
+        linkedId ? idsToDelete.includes(linkedId)
+        : deletedPhotos.some(p => p.photo && currentBird.photo && p.photo === currentBird.photo)
+      );
+      if (linkWasDeleted) {
+        await localBirdUpdate(bird.id, { photo: null, main_bird_photo_id: null });
+      }
+      STATE.birds = await localGetAll("birds", currentCoopId);
+      STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
+      showToast(`${n} photo${n > 1 ? "s" : ""} deleted`, "delete");
+      historySelectMode = false;
+      selectedHistoryIds = new Set();
+      render(true);
+    });
     document.querySelectorAll("[data-history-photo]").forEach(el => el.addEventListener("click", () => {
+      if (historySelectMode) {
+        const id = el.dataset.historyPhoto;
+        if (selectedHistoryIds.has(id)) selectedHistoryIds.delete(id);
+        else selectedHistoryIds.add(id);
+        formState = readCurrentValues();
+        render(false);
+        return;
+      }
       formState = readCurrentValues();
       const photo = STATE.birdPhotos.find(p => p.id === el.dataset.historyPhoto);
       openHistoryPhotoOptionsModal(photo, formState, () => render(true));
