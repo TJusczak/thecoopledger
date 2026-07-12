@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-154";
+const APP_VERSION = "2026.07.06-155";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -432,35 +432,7 @@ function getAuthToken() { return localStorage.getItem(AUTH_TOKEN_KEY) || ""; }
 function setAuthToken(token) { localStorage.setItem(AUTH_TOKEN_KEY, token || ""); }
 function getUserRole() { return localStorage.getItem(AUTH_ROLE_KEY) || "admin"; } // existing sessions from before roles existed are implicitly admin
 function setUserRole(role) { localStorage.setItem(AUTH_ROLE_KEY, role || "admin"); }
-/** Wipes the local cache if the role actually changed since the last
- * login on this device -- must be called with the OLD role (before
- * setUserRole overwrites it) and the NEW role from this login response.
- * Necessary because sync is incremental (fetches only what's changed
- * server-side since last sync), but demo-mode scrambling depends on who's
- * viewing, not on when data last changed -- without this, switching roles
- * on the same device could leave stale, unscrambled real values sitting
- * in the cache from a previous session, since nothing server-side
- * actually changed to trigger a re-fetch. */
-async function clearLocalCacheIfRoleChanged(oldRole, newRole) {
-  if (oldRole === newRole) return;
-  try {
-    // The cached connection (if any) must be closed first, or deleteDatabase
-    // gets silently blocked by it and never actually completes.
-    if (_localDbPromise) {
-      const db = await _localDbPromise;
-      db.close();
-      _localDbPromise = null;
-    }
-    await new Promise((resolve) => {
-      const req = indexedDB.deleteDatabase(LOCAL_DB_NAME);
-      req.onsuccess = resolve;
-      req.onerror = resolve; // best effort -- a fresh sync will still overwrite most stale values even if this fails
-      req.onblocked = resolve;
-    });
-    localStorage.removeItem(COOP_KEY); // no longer means anything meaningful once its backing cache is gone
-  } catch { /* best effort */ }
-}
-function isReadOnlyRole() { const r = getUserRole(); return r === "readonly" || r === "demo"; }
+function isReadOnlyRole() { return getUserRole() === "readonly"; }
 function clearAuthToken() { localStorage.removeItem(AUTH_TOKEN_KEY); localStorage.removeItem(AUTH_NAME_KEY); localStorage.removeItem(AUTH_ROLE_KEY); }
 
 let _handlingAuthFailure = false;
@@ -1003,7 +975,7 @@ async function updateSyncIndicator() {
 async function queueOutbox(entry) {
   if (isReadOnlyRole()) {
     showToast("Read-only access -- changes can't be saved", "delete");
-    throw new Error("Blocked: read-only/demo role cannot write");
+    throw new Error("Blocked: read-only role cannot write");
   }
   const db = await openLocalDb();
   const tx = db.transaction("_outbox", "readwrite");
@@ -2424,16 +2396,13 @@ function renderLocalOnlyBadge() {
  * enforce them). */
 function renderRoleBadge() {
   const role = getUserRole();
-  if (role === "admin" || localOnlyMode) return;
+  if (role !== "readonly" || localOnlyMode) return;
   if (document.getElementById("roleBadge")) return; // role never changes mid-session, nothing to update after first render
   const wrap = document.createElement("div");
   wrap.id = "roleBadge";
   wrap.className = "status-banner-inner";
-  const label = role === "demo" ? "🎭 Demo access" : "👁 Read-only access";
-  const title = role === "demo"
-    ? "You're viewing demo access -- everything here is real in structure, but financial figures are scrambled and nothing can be changed."
-    : "You're viewing with read-only access -- everything's real, but nothing can be added, edited, or deleted from here.";
-  wrap.innerHTML = `<div class="local-only-badge" style="grid-column:1" title="${esc(title)}">${label}</div>`;
+  const title = "You're viewing with read-only access -- everything's real, but nothing can be added, edited, or deleted from here.";
+  wrap.innerHTML = `<div class="local-only-badge" style="grid-column:1" title="${esc(title)}">👁 Read-only access</div>`;
   document.getElementById("statusBannerSlot").appendChild(wrap);
 }
 
@@ -2714,14 +2683,13 @@ function renderConnectionSection() {
     <div class="card" style="margin-top:16px">
       <div class="card-title">Invite codes</div>
       <div class="dim" style="font-size:12px;margin-bottom:10px">
-        <strong>Admin</strong> codes can do anything. <strong>Read-only</strong> codes can see everything but can't change anything. <strong>Demo</strong> codes are read-only too, but financial figures (expenses, egg and meat prices) are scrambled to plausible-looking fake numbers -- safe to hand out or post publicly without exposing your real numbers.
+        <strong>Admin</strong> codes can do anything. <strong>Read-only</strong> codes can see everything but can't change anything.
       </div>
       <div id="inviteCodesListArea" class="dim" style="font-size:12px;margin-bottom:14px">Loading...</div>
       <div class="grid-form">
         <label class="field"><span>New code's access level</span>
           <select id="newInviteRole">
             <option value="readonly">Read-only</option>
-            <option value="demo">Demo</option>
             <option value="admin">Admin</option>
           </select>
         </label>
@@ -2895,11 +2863,11 @@ function renderConnectionSection() {
         const res = await fetch(apiUrl("/api/auth/invite-codes"), { headers: authHeaders() });
         if (!res.ok) throw new Error("Failed to load invite codes");
         const codes = await res.json();
-        const roleLabel = { admin: "Admin", readonly: "Read-only", demo: "Demo" };
+        const roleLabel = { admin: "Admin", readonly: "Read-only" };
         area.innerHTML = codes.map(c => `
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
             <div style="${c.revoked_at ? "opacity:0.5" : ""}">
-              <div style="color:var(--text);font-size:13px"><span class="stamp tone-${c.role === "admin" ? "gold" : c.role === "demo" ? "slate" : "sage"}">${roleLabel[c.role] || c.role}</span> ${esc(c.label || "")}${c.revoked_at ? ` <span class="stamp tone-rust">Revoked</span>` : ""}</div>
+              <div style="color:var(--text);font-size:13px"><span class="stamp tone-${c.role === "admin" ? "gold" : "sage"}">${roleLabel[c.role] || c.role}</span> ${esc(c.label || "")}${c.revoked_at ? ` <span class="stamp tone-rust">Revoked</span>` : ""}</div>
               <div class="dim" style="font-size:11px;font-family:'JetBrains Mono',monospace">${esc(c.code)}</div>
             </div>
             ${!c.revoked_at
@@ -9008,14 +8976,6 @@ function showOnboardingIfNeeded() {
   return true;
 }
 
-/** Clears the local IndexedDB cache if this login's role differs from
- * whatever role was last stored on this device -- critical for demo/
- * read-only correctness. Incremental sync only re-fetches rows that
- * changed since the last sync, so a device that previously had a fuller-
- * access session (e.g. was just used to create this very demo code as
- * admin) would otherwise keep showing its old cached, unscrambled data
- * indefinitely -- nothing about those specific records changes just
- * because a different role logged in on the same device. */
 async function doGetStartedConnect() {
   const serverUrl = document.getElementById("gs_server").value.trim();
   const name = document.getElementById("gs_name").value.trim();
@@ -9043,7 +9003,6 @@ async function doGetStartedConnect() {
     const data = await res.json();
     setAuthToken(data.token);
     setUserName(data.name);
-    await clearLocalCacheIfRoleChanged(getUserRole(), data.role);
     setUserRole(data.role);
     setLocalOnlyMode(false);
     location.reload(); // cleanest way to restart the whole app now that everything's configured
@@ -9148,7 +9107,6 @@ async function doLogin() {
     const data = await res.json();
     setAuthToken(data.token);
     setUserName(data.name);
-    await clearLocalCacheIfRoleChanged(getUserRole(), data.role);
     setUserRole(data.role);
     location.reload(); // cleanest way to restart the whole app with the new auth state
   } catch (err) {

@@ -1,11 +1,9 @@
 import asyncio
 import base64
 import csv
-import hashlib
 import io
 import json
 import os
-import random
 import secrets
 import shutil
 import sqlite3
@@ -31,7 +29,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.06-154"
+SERVER_VERSION = "2026.07.06-155"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
@@ -229,12 +227,20 @@ def init_db():
             CREATE TABLE IF NOT EXISTS invite_codes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 code TEXT UNIQUE NOT NULL,
-                role TEXT NOT NULL CHECK (role IN ('admin', 'readonly', 'demo')),
+                role TEXT NOT NULL CHECK (role IN ('admin', 'readonly')),
                 label TEXT,
                 created_at TEXT NOT NULL,
                 revoked_at TEXT
             )
         ''')
+        # Demo role removed -- too much surface area (scrambling every
+        # financial field correctly, everywhere, forever) for what it was
+        # worth. Downgrade any already-existing demo codes/sessions to
+        # readonly rather than leaving them in a role the app no longer
+        # understands -- SQLite can't alter the CHECK constraint above in
+        # place on an existing table, so this handles the data side directly.
+        conn.execute("UPDATE invite_codes SET role = 'readonly' WHERE role = 'demo'")
+        conn.execute("UPDATE sessions SET role = 'readonly' WHERE role = 'demo'")
         # One-time migration: the original single invite_code becomes the
         # first admin-role entry here, so an already-deployed server's
         # existing code keeps working unchanged -- nobody who already has
@@ -517,8 +523,8 @@ app.add_middleware(NoCacheMiddleware)
 PUBLIC_API_PATHS = {"/api/auth/login", "/api/health"}
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # Technically a write (deleting your own session row), but blocking it for
-# read-only/demo roles would trap someone in a session they can't get out
-# of -- logging out is always allowed regardless of role.
+# a read-only role would trap someone in a session they can't get out of --
+# logging out is always allowed regardless of role.
 ALWAYS_ALLOWED_WRITE_PATHS = {"/api/auth/logout"}
 
 
@@ -538,8 +544,8 @@ class AuthMiddleware:
     the first place -- none of it is coop data.
 
     Also enforces role-based write access here, in this same central
-    place, rather than in each individual endpoint -- read-only and demo
-    sessions can authenticate and read everything, but any write method
+    place, rather than in each individual endpoint -- a read-only session
+    can authenticate and read everything, but any write method
     (POST/PUT/PATCH/DELETE) gets rejected with 403 before it ever reaches
     an endpoint handler. The actual security boundary for this shouldn't
     depend on every write endpoint separately remembering to check
@@ -582,7 +588,7 @@ class AuthMiddleware:
             await response(scope, receive, send)
             return
 
-        if role in ("readonly", "demo") and scope["method"] in WRITE_METHODS and path not in ALWAYS_ALLOWED_WRITE_PATHS:
+        if role == "readonly" and scope["method"] in WRITE_METHODS and path not in ALWAYS_ALLOWED_WRITE_PATHS:
             response = JSONResponse({"detail": "Read-only access -- this action isn't available"}, status_code=403)
             await response(scope, receive, send)
             return
@@ -1121,9 +1127,9 @@ def _require_auth(request: Request) -> str:
 def _require_admin(request: Request) -> str:
     """Like _require_auth, but for endpoints that must stay admin-only even
     for reads -- viewing or managing invite codes, for instance, where a
-    read-only or demo session simply reading the admin code would let it
-    escalate its own access. The middleware's write-blocking doesn't cover
-    this case since a GET is a read, not a write."""
+    read-only session simply reading the admin code would let it escalate
+    its own access. The middleware's write-blocking doesn't cover this
+    case since a GET is a read, not a write."""
     token = _extract_token(request)
     if token:
         with get_db() as conn:
@@ -1279,8 +1285,8 @@ def list_invite_codes(request: Request):
 def create_invite_code(payload: dict = Body(...), request: Request = None):
     _require_admin(request)
     role = payload.get("role")
-    if role not in ("admin", "readonly", "demo"):
-        raise HTTPException(400, "role must be one of: admin, readonly, demo")
+    if role not in ("admin", "readonly"):
+        raise HTTPException(400, "role must be one of: admin, readonly")
     label = (payload.get("label") or "").strip() or None
     code = generate_invite_code()
     with get_db() as conn:
@@ -1543,60 +1549,8 @@ async def sse_events(coop_id: str):
 
 # ---------- Generic CRUD for the siloed resources (birds, eggs, expenses, bedding) ----------
 
-def _get_session_role(request: Request) -> str | None:
-    """Like _require_auth, but returns None instead of raising when there's
-    no valid session -- for read endpoints that need to know the role to
-    decide whether to scramble data, not to gate access (the middleware
-    already handles actual access control)."""
-    token = _extract_token(request)
-    if not token:
-        return None
-    with get_db() as conn:
-        row = conn.execute("SELECT role FROM sessions WHERE token = ?", (token,)).fetchone()
-    return row["role"] if row else None
-
-
-# Which field(s) on each resource hold real financial figures, scrambled
-# for demo-role sessions so the app looks and behaves normally without
-# exposing anyone's actual numbers.
-DEMO_SCRAMBLED_FIELDS = {
-    "expenses": ["amount"],
-    "eggs": ["price_per_egg"],
-    "birds": ["price_per_lb"],
-}
-
-
-def _scramble_amount(real_value, seed_key):
-    """Deterministically scrambles a financial value -- the same record
-    always produces the same scrambled value within this server's
-    lifetime (so it doesn't flicker between views or page loads), but
-    never reveals the real number. Stays within a plausible range of the
-    original magnitude so demo data still looks realistic rather than
-    becoming either implausibly tiny or huge."""
-    if real_value is None:
-        return None
-    try:
-        real_value = float(real_value)
-    except (TypeError, ValueError):
-        return real_value
-    seed = int(hashlib.sha256(str(seed_key).encode()).hexdigest(), 16)
-    factor = random.Random(seed).uniform(0.4, 2.2)
-    return round(abs(real_value) * factor, 2)
-
-
-def _apply_demo_scrambling(resource: str, rows: list) -> list:
-    fields = DEMO_SCRAMBLED_FIELDS.get(resource)
-    if not fields:
-        return rows
-    for row in rows:
-        for field in fields:
-            if row.get(field) is not None:
-                row[field] = _scramble_amount(row[field], f"{resource}:{field}:{row.get('id')}")
-    return rows
-
-
 @app.get("/api/{resource}")
-def list_items(resource: str, coop_id: str | None = None, request: Request = None):
+def list_items(resource: str, coop_id: str | None = None):
     if resource not in SCHEMA:
         raise HTTPException(404, f"Unknown resource: {resource}")
     if resource in SCOPED and not coop_id:
@@ -1607,10 +1561,7 @@ def list_items(resource: str, coop_id: str | None = None, request: Request = Non
             rows = conn.execute(f"SELECT * FROM {resource} WHERE coop_id = ? AND deleted_at IS NULL {order}", (coop_id,)).fetchall()
         else:
             rows = conn.execute(f"SELECT * FROM {resource} WHERE deleted_at IS NULL").fetchall()
-        result = [dict(r) for r in rows]
-    if _get_session_role(request) == "demo":
-        result = _apply_demo_scrambling(resource, result)
-    return result
+        return [dict(r) for r in rows]
 
 
 @app.post("/api/{resource}/bulk-delete-items")
@@ -1829,7 +1780,7 @@ def delete_item(resource: str, item_id: str):
 
 
 @app.get("/api/sync/{resource}")
-def sync_resource(resource: str, coop_id: str | None = None, since: str | None = None, request: Request = None):
+def sync_resource(resource: str, coop_id: str | None = None, since: str | None = None):
     """Returns every row changed (created, updated, or soft-deleted) after
     `since` -- including deleted ones, which the generic list endpoint above
     hides. A local-first client uses this to reconcile its own copy: apply
@@ -1850,8 +1801,6 @@ def sync_resource(resource: str, coop_id: str | None = None, since: str | None =
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = conn.execute(f"SELECT * FROM {resource} {where} ORDER BY updated_at ASC", params).fetchall()
         result_rows = [dict(r) for r in rows]
-    if _get_session_role(request) == "demo":
-        result_rows = _apply_demo_scrambling(resource, result_rows)
     return {"server_time": _now_iso(), "rows": result_rows}
 
 
