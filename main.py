@@ -28,7 +28,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.06-143"
+SERVER_VERSION = "2026.07.06-145"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -389,6 +389,37 @@ def migrate_flat_photos_to_coop_folders():
                 conn.execute(f"UPDATE {table} SET photo = ? WHERE id = ?", (f"/photos/{coop_id}/{rel}", r["id"]))
 
 
+def migrate_repair_orphaned_photo_refs():
+    """One-time-per-startup repair: a couple of historical bugs (a
+    cross-connection transaction-visibility issue and a missing
+    bird-deletion cascade, both since fixed) could leave a live row
+    referencing a photo file that's genuinely gone from disk -- shows up
+    as a broken-image placeholder instead of the actual photo.
+
+    For bird_photos specifically, soft-deleting the broken entry (rather
+    than trying to fix the reference, since there's nothing left to point
+    it at) lets the existing "seed one entry from the bird's current
+    photo" logic on the frontend correctly repopulate a valid entry next
+    time that bird's timeline is opened -- same mechanism that already
+    handles a bird with zero history entries.
+
+    For birds/supply_products, clears the dangling reference so the UI
+    falls back to its normal empty-photo placeholder instead of a
+    permanently broken image icon."""
+    now = _now_iso()
+    with get_db() as conn:
+        for table in ("bird_photos", "birds", "supply_products"):
+            rows = conn.execute(f"SELECT id, photo FROM {table} WHERE photo LIKE '/photos/%' AND deleted_at IS NULL").fetchall()
+            for r in rows:
+                p = _photo_relpath(r["photo"])
+                if p is not None and p.exists():
+                    continue  # reference is fine
+                if table == "bird_photos":
+                    conn.execute(f"UPDATE {table} SET deleted_at = ?, updated_at = ? WHERE id = ?", (now, now, r["id"]))
+                else:
+                    conn.execute(f"UPDATE {table} SET photo = NULL, updated_at = ? WHERE id = ?", (now, r["id"]))
+
+
 app = FastAPI(title="Coop Ledger")
 
 
@@ -523,6 +554,7 @@ def on_startup():
     init_db()
     migrate_base64_photos_to_files()
     migrate_flat_photos_to_coop_folders()
+    migrate_repair_orphaned_photo_refs()
 
 
 @app.get("/api/health")

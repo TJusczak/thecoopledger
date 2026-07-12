@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-143";
+const APP_VERSION = "2026.07.06-145";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5998,6 +5998,10 @@ function openAddHistoryPhotoModal(bird, onDone) {
     const stage = document.getElementById("hp_stage").value || null;
     const saveBtn = document.getElementById("hp_save");
     const progressEl = document.getElementById("hp_progress");
+    // Checked before anything is created below -- this is genuinely this
+    // bird's first-ever photo (no current main, no existing library
+    // entries) only if both are true right now, before this upload adds any.
+    const isBirdsFirstEverPhoto = !bird.photo && STATE.birdPhotos.filter(p => p.bird_id === bird.id).length === 0;
     saveBtn.disabled = true;
     const validBlobs = [];
     for (let i = 0; i < files.length; i++) {
@@ -6018,6 +6022,7 @@ function openAddHistoryPhotoModal(bird, onDone) {
     const payloads = validBlobs.map(() => ({ coop_id: currentCoopId, bird_id: bird.id, photo: null, date_taken: dateTaken, stage, photo_pos_x: 50, photo_pos_y: 50, photo_zoom: 1 }));
     const created = await localBulkCreate("bird_photos", payloads);
     for (let i = 0; i < created.length; i++) await queuePendingBirdHistoryPhoto(created[i].id, validBlobs[i]);
+    if (isBirdsFirstEverPhoto && created.length > 0) await setBirdMainPhotoFromHistoryEntry(created[0], bird.id);
     await refreshPendingBirdHistoryPhotoUrls();
     STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
     saveBtn.disabled = false;
@@ -6030,6 +6035,52 @@ function openAddHistoryPhotoModal(bird, onDone) {
 /** Options for an existing timeline photo: view it with its age at that
  * date, edit date/stage, reposition its crop, delete it, or promote it to
  * be the bird's current photo (the one shown on cards everywhere). */
+/** Copies a history entry's photo (and crop) onto the bird as its current
+ * main photo -- handles both an already-uploaded entry (just copy the
+ * reference) and one still mid-upload (grabs the same local blob and
+ * queues it as the bird's own photo too, from the same source). Shared
+ * between the "set as current" button and auto-promoting a bird's very
+ * first-ever photo. Returns false only if the photo is still queued and
+ * its blob genuinely isn't available yet (caller should ask to retry). */
+async function setBirdMainPhotoFromHistoryEntry(photo, birdId) {
+  // Re-fetch the current state of this entry rather than trusting the
+  // caller's snapshot -- it may have already finished uploading in the
+  // background since that snapshot was taken, especially when called
+  // immediately after a fresh upload.
+  const current = STATE.birdPhotos.find(p => p.id === photo.id) || photo;
+  if (current.photo) {
+    // Already uploaded -- just copy the reference and its crop over.
+    await localBirdUpdate(birdId, { photo: current.photo, photo_pos_x: current.photo_pos_x, photo_pos_y: current.photo_pos_y, photo_zoom: current.photo_zoom });
+  } else {
+    // Still queued locally (added moments ago, hasn't synced yet) --
+    // grab that same local blob and queue it as the bird's own current
+    // photo too, rather than copying a reference that doesn't exist yet.
+    const db = await openLocalDb();
+    const tx = db.transaction(["pending_bird_history_photos"], "readonly");
+    const pending = await idbRequest(tx.objectStore("pending_bird_history_photos").get(current.id));
+    if (!pending || !pending.blob) {
+      // The upload may have finished in the very short window between
+      // the STATE check above and this one -- the pending-queue entry
+      // gets cleared right after a successful upload, so "not pending
+      // anymore" can mean "already done," not just "not ready." Check
+      // the database directly (bypassing potentially-stale in-memory
+      // STATE) before concluding there's genuinely nothing to use yet.
+      const fresh = await localGetOne("bird_photos", current.id);
+      if (fresh && fresh.photo) {
+        await localBirdUpdate(birdId, { photo: fresh.photo, photo_pos_x: fresh.photo_pos_x, photo_pos_y: fresh.photo_pos_y, photo_zoom: fresh.photo_zoom });
+        STATE.birds = await localGetAll("birds", currentCoopId);
+        return true;
+      }
+      return false;
+    }
+    await localBirdUpdate(birdId, { photo_pos_x: current.photo_pos_x, photo_pos_y: current.photo_pos_y, photo_zoom: current.photo_zoom });
+    await queuePendingPhoto(birdId, pending.blob);
+    await refreshPendingPhotoUrls();
+  }
+  STATE.birds = await localGetAll("birds", currentCoopId);
+  return true;
+}
+
 function openHistoryPhotoOptionsModal(photo, bird, onDone) {
   const ageLabel = photo.date_taken && bird.hatch_date ? ageAtDate(bird.hatch_date, photo.date_taken) : null;
   const html = `
@@ -6056,6 +6107,14 @@ function openHistoryPhotoOptionsModal(photo, bird, onDone) {
   document.getElementById("hpo_delete").addEventListener("click", async () => {
     if (!(await showConfirmDialog("Delete this timeline photo? This can't be undone."))) return;
     await localBulkDelete("bird_photos", [photo.id], currentCoopId);
+    const currentBird = STATE.birds.find(b => b.id === bird.id);
+    if (currentBird && currentBird.photo && photo.photo && currentBird.photo === photo.photo) {
+      // This was the entry currently linked as the main photo -- nothing
+      // left to point at, so clear it rather than leaving a reference to
+      // a photo that no longer exists anywhere.
+      await localBirdUpdate(bird.id, { photo: null });
+      STATE.birds = await localGetAll("birds", currentCoopId);
+    }
     STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
     showToast("Timeline photo deleted", "delete");
     onDone();
@@ -6071,29 +6130,28 @@ function openHistoryPhotoOptionsModal(photo, bird, onDone) {
   document.getElementById("hpo_reposition").addEventListener("click", () => {
     openPhotoRepositionModal(birdHistoryPhotoUrl(photo), photo.photo_pos_x ?? 50, photo.photo_pos_y ?? 50, photoZoom(photo), "1/1", async (x, y, zoom) => {
       await localBirdPhotoUpdate(photo.id, { photo_pos_x: x, photo_pos_y: y, photo_zoom: zoom });
+      // This entry might also be the one currently linked as the bird's
+      // main photo (same underlying file) -- if so, keep its crop in sync
+      // too, since there's no separate "reposition the main photo"
+      // control anymore. Matched by file reference, not by any explicit
+      // "this is the main one" flag, since the two have always been
+      // linked that way (the bird's own photo field is a copy of
+      // whichever library entry was last set as current).
+      const currentBird = STATE.birds.find(b => b.id === bird.id);
+      if (currentBird && currentBird.photo && photo.photo && currentBird.photo === photo.photo) {
+        await localBirdUpdate(bird.id, { photo_pos_x: x, photo_pos_y: y, photo_zoom: zoom });
+      }
       STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
       showToast("Photo position updated", "update");
       onDone();
     });
   });
+
   document.getElementById("hpo_set_current").addEventListener("click", async () => {
-    if (photo.photo) {
-      // Already uploaded -- just copy the reference and its crop over.
-      await localBirdUpdate(bird.id, { photo: photo.photo, photo_pos_x: photo.photo_pos_x, photo_pos_y: photo.photo_pos_y, photo_zoom: photo.photo_zoom });
-    } else {
-      // Still queued locally (added moments ago, hasn't synced yet) --
-      // grab that same local blob and queue it as the bird's own current
-      // photo too, rather than copying a reference that doesn't exist yet.
-      const db = await openLocalDb();
-      const tx = db.transaction(["pending_bird_history_photos"], "readonly");
-      const pending = await idbRequest(tx.objectStore("pending_bird_history_photos").get(photo.id));
-      if (!pending || !pending.blob) {
-        showToast("This photo hasn't finished saving yet -- try again in a moment", "delete");
-        return;
-      }
-      await localBirdUpdate(bird.id, { photo_pos_x: photo.photo_pos_x, photo_pos_y: photo.photo_pos_y, photo_zoom: photo.photo_zoom });
-      await queuePendingPhoto(bird.id, pending.blob);
-      await refreshPendingPhotoUrls();
+    const ok = await setBirdMainPhotoFromHistoryEntry(photo, bird.id);
+    if (!ok) {
+      showToast("This photo hasn't finished saving yet -- try again in a moment", "delete");
+      return;
     }
     STATE.birds = await localGetAll("birds", currentCoopId);
     showToast(`Set as ${esc(bird.name) || "the bird's"} current photo`, "update");
@@ -6281,6 +6339,20 @@ function showBirdForm(bird) {
   }
 
   function render(firstOpen) {
+    if (firstOpen && bird) {
+      // Pick up any changes made elsewhere while this form was open one
+      // level down (e.g. "set as current" or deleting a photo from the
+      // history modal) -- without this, the preview only ever refreshed
+      // on a genuine close+reopen, since formState/previewUrl otherwise
+      // keep using the snapshot captured when the form first opened.
+      const fresh = STATE.birds.find(b => b.id === bird.id);
+      if (fresh) {
+        formState = { ...fresh };
+        previewUrl = birdPhotoUrl(fresh);
+        pendingPhotoBlob = null;
+        photoRemoved = false;
+      }
+    }
     const f = formState;
     const showTarget = f.status === "Active" && (f.type === "Meat" || f.type === "Dual Purpose");
     const showProcessed = f.status === "Processed";
@@ -6289,15 +6361,33 @@ function showBirdForm(bird) {
     const html = `
       <div class="form-head">${isEdit ? "Edit bird" : "New bird"}</div>
       ${isEdit ? `<div class="dim" style="font-size:12px;margin:-8px 0 14px">${ageFromDate(f.hatch_date || f.acquired_date)}${f.hatch_date ? ` (hatched ${fmtDate(f.hatch_date)})` : f.acquired_date ? ` (acquired ${fmtDate(f.acquired_date)})` : ""}</div>` : ""}
-      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;align-items:flex-start">
+
+      ${!isEdit ? `
+      <div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:14px">
         <div id="photoPreview" style="width:84px;height:84px;border-radius:8px;overflow:hidden">${previewUrl ? `<img src="${previewUrl}" data-view-photo="${esc(previewUrl)}" class="thumb-clickable" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(formState)};${photoTransformStyle(formState)}border:1px solid var(--border);cursor:zoom-in" >` : `<div style="width:84px;height:84px;border-radius:8px;background:var(--bg);border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:28px">🐔</div>`}</div>
         <div>
-          <label class="field"><span>Photo</span><input type="file" id="f_photo" accept="image/*"></label>
-          <div style="display:flex;gap:6px;margin-top:6px">
-            ${previewUrl ? `<button class="btn ghost small" id="repositionPhoto">↔ Reposition</button>` : ""}
-            ${previewUrl ? `<button class="btn btn-close small" id="removePhoto">Remove photo</button>` : ""}
-          </div>
+          <label class="field"><span>Photo (optional)</span><input type="file" id="f_photo" accept="image/*"></label>
+          <div class="dim" style="font-size:11px;margin-top:4px">More photos, repositioning, and switching the main one can all be managed from Photo history once this bird is saved.</div>
         </div>
+      </div>
+      ` : `
+      <div style="display:flex;gap:16px;align-items:center;margin-bottom:14px">
+        <div id="photoPreview" style="width:84px;height:84px;border-radius:8px;overflow:hidden">${previewUrl ? `<img src="${previewUrl}" data-view-photo="${esc(previewUrl)}" class="thumb-clickable" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(formState)};${photoTransformStyle(formState)}border:1px solid var(--border);cursor:zoom-in" >` : `<div style="width:84px;height:84px;border-radius:8px;background:var(--bg);border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:28px">🐔</div>`}</div>
+        <div class="dim" style="font-size:12px">${previewUrl ? "This is the current main photo. Manage it, and add more, in Photo history below." : "No main photo yet — add one in Photo history below and it'll automatically become the main photo."}</div>
+      </div>
+
+      <div class="form-block" style="margin-bottom:14px">
+        <div class="form-head" style="font-size:13px">📸 Photo history</div>
+        <div class="dim" style="font-size:11px;margin-bottom:8px">Every photo of ${esc(f.name) || "this bird"}, in one place — as a chick, a few months in, fully grown. Tap a photo to reposition it, edit its date or stage, set it as the main photo, or delete it.</div>
+        <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">
+          ${birdPhotoHistoryThumbsHtml(bird.id)}
+          <button class="btn ghost small" id="addHistoryPhotoBtn" style="flex:0 0 auto;height:64px;width:64px;border-radius:8px;font-size:22px;padding:0">+</button>
+        </div>
+        ${STATE.birdPhotos.filter(p => p.bird_id === bird.id).length > 1 ? `<button class="btn ghost small" id="viewTimelineBtn" style="margin-top:8px">🕐 View timeline</button>` : ""}
+      </div>
+      `}
+
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px">
         <div>
           <label class="field"><span>Card color</span><input type="color" id="f_color" value="${esc(f.card_color || "#5A4B3C")}" style="width:60px;height:38px;padding:2px;cursor:pointer"></label>
           ${f.card_color ? `<button class="btn ghost small" id="clearColor" style="margin-top:6px">Clear color</button>` : ""}
@@ -6305,18 +6395,6 @@ function showBirdForm(bird) {
         <label class="field"><span>Border style</span><select id="f_border_style">${["solid", "dashed", "dotted"].map(s => `<option value="${s}" ${(f.border_style || "solid") === s ? "selected" : ""}>${s[0].toUpperCase() + s.slice(1)}</option>`).join("")}</select></label>
         <label class="field"><span>Background</span><select id="f_pattern">${[["solid", "Solid tint"], ["gradient", "Gradient"], ["dots", "Dots"], ["stripes", "Stripes"]].map(([v, l]) => `<option value="${v}" ${(f.card_pattern || "solid") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
       </div>
-
-      ${isEdit ? `
-      <div class="form-block" style="margin-bottom:14px">
-        <div class="form-head" style="font-size:13px">📸 Photo history</div>
-        <div class="dim" style="font-size:11px;margin-bottom:8px">Track how ${esc(f.name) || "this bird"} looks over time -- as a chick, a few months in, fully grown. Tap a photo to reposition it, edit its date or stage, or set it as the current photo above.</div>
-        <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">
-          ${birdPhotoHistoryThumbsHtml(bird.id)}
-          <button class="btn ghost small" id="addHistoryPhotoBtn" style="flex:0 0 auto;height:64px;width:64px;border-radius:8px;font-size:22px;padding:0">+</button>
-        </div>
-        ${STATE.birdPhotos.filter(p => p.bird_id === bird.id).length > 1 ? `<button class="btn ghost small" id="viewTimelineBtn" style="margin-top:8px">🕐 View timeline</button>` : ""}
-      </div>
-      ` : ""}
 
       <div class="grid-form">
         <label class="field"><span>Name</span><input id="f_name" value="${esc(f.name)}" placeholder="e.g. Nugget"></label>
@@ -6376,7 +6454,8 @@ function showBirdForm(bird) {
     });
     document.getElementById("f_status").addEventListener("change", (e) => { formState = readCurrentValues(); formState.status = e.target.value; render(false); });
 
-    document.getElementById("f_photo").addEventListener("change", async (e) => {
+    const photoInput = document.getElementById("f_photo");
+    if (photoInput) photoInput.addEventListener("change", async (e) => {
       const file = e.target.files[0];
       if (!file) return;
       try {
@@ -6390,23 +6469,6 @@ function showBirdForm(bird) {
       } catch (err) {
         alert("Couldn't read that image: " + err.message);
       }
-    });
-    const removeBtn = document.getElementById("removePhoto");
-    const repositionBtn = document.getElementById("repositionPhoto");
-    if (repositionBtn) repositionBtn.addEventListener("click", () => {
-      formState = readCurrentValues(); // capture every field now, before the crop modal replaces this form's DOM
-      openPhotoRepositionModal(previewUrl, formState.photo_pos_x ?? 50, formState.photo_pos_y ?? 50, photoZoom(formState), "1/1", async (x, y, zoom) => {
-        formState.photo_pos_x = x;
-        formState.photo_pos_y = y;
-        formState.photo_zoom = zoom;
-        render(false);
-      });
-    });
-    if (removeBtn) removeBtn.addEventListener("click", () => {
-      pendingPhotoBlob = null;
-      photoRemoved = true;
-      previewUrl = null;
-      document.getElementById("photoPreview").innerHTML = `<div style="width:84px;height:84px;border-radius:8px;background:var(--bg);border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:28px">🐔</div>`;
     });
     const addHistoryBtn = document.getElementById("addHistoryPhotoBtn");
     if (addHistoryBtn) addHistoryBtn.addEventListener("click", () => {
