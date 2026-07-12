@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-149";
+const APP_VERSION = "2026.07.06-152";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -427,9 +427,13 @@ function mediaUrl(path) {
 // with none of the CORS-credential complications cookies would introduce.
 const AUTH_TOKEN_KEY = "coopLedgerAuthToken";
 const AUTH_NAME_KEY = "coopLedgerAuthName";
+const AUTH_ROLE_KEY = "coopLedgerAuthRole";
 function getAuthToken() { return localStorage.getItem(AUTH_TOKEN_KEY) || ""; }
 function setAuthToken(token) { localStorage.setItem(AUTH_TOKEN_KEY, token || ""); }
-function clearAuthToken() { localStorage.removeItem(AUTH_TOKEN_KEY); localStorage.removeItem(AUTH_NAME_KEY); }
+function getUserRole() { return localStorage.getItem(AUTH_ROLE_KEY) || "admin"; } // existing sessions from before roles existed are implicitly admin
+function setUserRole(role) { localStorage.setItem(AUTH_ROLE_KEY, role || "admin"); }
+function isReadOnlyRole() { const r = getUserRole(); return r === "readonly" || r === "demo"; }
+function clearAuthToken() { localStorage.removeItem(AUTH_TOKEN_KEY); localStorage.removeItem(AUTH_NAME_KEY); localStorage.removeItem(AUTH_ROLE_KEY); }
 
 let _handlingAuthFailure = false;
 /** A 401 from anywhere in the sync engine means the same thing no matter
@@ -969,6 +973,10 @@ async function updateSyncIndicator() {
 }
 
 async function queueOutbox(entry) {
+  if (isReadOnlyRole()) {
+    showToast("Read-only access -- changes can't be saved", "delete");
+    throw new Error("Blocked: read-only/demo role cannot write");
+  }
   const db = await openLocalDb();
   const tx = db.transaction("_outbox", "readwrite");
   tx.objectStore("_outbox").add({ ...entry, queuedAt: new Date().toISOString() });
@@ -2339,6 +2347,7 @@ function updateHeader() {
   document.getElementById("eyebrowText").textContent = (coop && coop.created_date) ? `Est. ${fmtDate(coop.created_date)}` : "";
   renderLocalOnlyBadge();
   renderBetaBadge();
+  renderRoleBadge();
 }
 
 /** A persistent, always-visible corner tag while running local-only --
@@ -2378,6 +2387,26 @@ function renderLocalOnlyBadge() {
   inner.title = overdue
     ? "It's been a while since your last backup, and this coop's data lives only in this browser. Clearing this browser's site data, or uninstalling/removing the browser, will permanently delete it -- tap to back it up now."
     : "This coop's data lives only in this browser. Clearing this browser's site data, or uninstalling/removing the browser, will permanently delete it -- tap to export a backup or switch to a synced server.";
+}
+
+/** A clear, persistent indicator for anyone logged in with something other
+ * than full admin access -- shares the same left slot as the local-only
+ * badge above, since a session can only ever be one or the other (roles
+ * only exist for a synced session; local-only mode has no server to
+ * enforce them). */
+function renderRoleBadge() {
+  const role = getUserRole();
+  if (role === "admin" || localOnlyMode) return;
+  if (document.getElementById("roleBadge")) return; // role never changes mid-session, nothing to update after first render
+  const wrap = document.createElement("div");
+  wrap.id = "roleBadge";
+  wrap.className = "status-banner-inner";
+  const label = role === "demo" ? "🎭 Demo access" : "👁 Read-only access";
+  const title = role === "demo"
+    ? "You're viewing demo access -- everything here is real in structure, but financial figures are scrambled and nothing can be changed."
+    : "You're viewing with read-only access -- everything's real, but nothing can be added, edited, or deleted from here.";
+  wrap.innerHTML = `<div class="local-only-badge" style="grid-column:1" title="${esc(title)}">${label}</div>`;
+  document.getElementById("statusBannerSlot").appendChild(wrap);
 }
 
 /** A loud, hard-to-miss badge for anyone who's ended up on the beta
@@ -2648,6 +2677,33 @@ function renderConnectionSection() {
     </div>
 
     <div class="card" style="margin-top:16px">
+      <div class="card-title">Server backups</div>
+      <div class="dim" style="font-size:12px;margin-bottom:10px">The server automatically keeps a rolling set of daily backups (everything, plus every photo), no action needed. Download any of them below as an extra copy of your own.</div>
+      <div id="backupsListArea" class="dim" style="font-size:12px">Loading...</div>
+    </div>
+
+    ${getUserRole() === "admin" ? `
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">Invite codes</div>
+      <div class="dim" style="font-size:12px;margin-bottom:10px">
+        <strong>Admin</strong> codes can do anything. <strong>Read-only</strong> codes can see everything but can't change anything. <strong>Demo</strong> codes are read-only too, but financial figures (expenses, egg and meat prices) are scrambled to plausible-looking fake numbers -- safe to hand out or post publicly without exposing your real numbers.
+      </div>
+      <div id="inviteCodesListArea" class="dim" style="font-size:12px;margin-bottom:14px">Loading...</div>
+      <div class="grid-form">
+        <label class="field"><span>New code's access level</span>
+          <select id="newInviteRole">
+            <option value="readonly">Read-only</option>
+            <option value="demo">Demo</option>
+            <option value="admin">Admin</option>
+          </select>
+        </label>
+        <label class="field"><span>Label (optional)</span><input id="newInviteLabel" placeholder="e.g. Grandma's viewer link"></label>
+      </div>
+      <div style="margin-top:10px"><button class="btn btn-confirm" id="createInviteBtn">+ Create invite code</button></div>
+    </div>
+    ` : ""}
+
+    <div class="card" style="margin-top:16px">
       <div class="card-title">Sync status</div>
       <div class="dim" style="font-size:12px;margin-bottom:12px">
         Everything is stored on this device first and syncs with the server in the background -- birds, eggs, expenses, supplies, bedding, notes, health/medical logs, and coop management (creating, renaming, deleting a coop, and settings like defaults and bedding areas). Photos queue separately (they're files, not data rows) and upload as soon as a connection is available. Exporting a full backup works with or without a connection.
@@ -2776,6 +2832,87 @@ function renderConnectionSection() {
   });
 
   if (localOnlyMode) return; // nothing else on this page applies in local-only mode
+
+  (async () => {
+    const area = document.getElementById("backupsListArea");
+    if (!area) return;
+    try {
+      const res = await fetch(apiUrl("/api/backups"), { headers: authHeaders() });
+      if (!res.ok) throw new Error("Failed to load backups");
+      const { backups } = await res.json();
+      if (backups.length === 0) {
+        area.innerHTML = `<div class="dim">No backups yet -- the first one is created automatically within a day of the server starting up.</div>`;
+        return;
+      }
+      const fmtSize = (bytes) => bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+      area.innerHTML = backups.map(b => `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">
+          <div>
+            <div style="color:var(--text);font-size:13px">${esc(new Date(b.created_at).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }))}</div>
+            <div class="dim" style="font-size:11px">${fmtSize(b.size_bytes)}</div>
+          </div>
+          <a class="btn ghost small" href="${apiUrl(`/api/backups/${encodeURIComponent(b.filename)}`)}?token=${encodeURIComponent(getAuthToken())}" download>⬇ Download</a>
+        </div>
+      `).join("");
+    } catch (err) {
+      area.innerHTML = `<div class="dim">Couldn't load the backup list right now.</div>`;
+    }
+  })();
+
+  if (getUserRole() === "admin") {
+    async function loadInviteCodesList() {
+      const area = document.getElementById("inviteCodesListArea");
+      if (!area) return;
+      try {
+        const res = await fetch(apiUrl("/api/auth/invite-codes"), { headers: authHeaders() });
+        if (!res.ok) throw new Error("Failed to load invite codes");
+        const codes = await res.json();
+        const roleLabel = { admin: "Admin", readonly: "Read-only", demo: "Demo" };
+        area.innerHTML = codes.map(c => `
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)${c.revoked_at ? ";opacity:0.5" : ""}">
+            <div>
+              <div style="color:var(--text);font-size:13px"><span class="stamp tone-${c.role === "admin" ? "gold" : c.role === "demo" ? "slate" : "sage"}">${roleLabel[c.role] || c.role}</span> ${esc(c.label || "")}</div>
+              <div class="dim" style="font-size:11px;font-family:'JetBrains Mono',monospace">${esc(c.code)}${c.revoked_at ? " -- revoked" : ""}</div>
+            </div>
+            ${!c.revoked_at ? `<button class="btn btn-close small" data-revoke-code="${c.id}">Revoke</button>` : ""}
+          </div>
+        `).join("") || `<div class="dim">No invite codes yet.</div>`;
+        area.querySelectorAll("[data-revoke-code]").forEach(btn => btn.addEventListener("click", async () => {
+          if (!(await showConfirmDialog("Revoke this invite code? Anyone currently logged in with it will be signed out immediately."))) return;
+          const res2 = await fetch(apiUrl(`/api/auth/invite-codes/${btn.dataset.revokeCode}`), { method: "DELETE", headers: authHeaders() });
+          if (!res2.ok) {
+            const err = await res2.json().catch(() => ({}));
+            showToast(err.detail || "Couldn't revoke that code", "delete");
+            return;
+          }
+          showToast("Invite code revoked", "delete");
+          loadInviteCodesList();
+        }));
+      } catch (err) {
+        area.innerHTML = `<div class="dim">Couldn't load invite codes right now.</div>`;
+      }
+    }
+    loadInviteCodesList();
+
+    document.getElementById("createInviteBtn").addEventListener("click", async () => {
+      const role = document.getElementById("newInviteRole").value;
+      const label = document.getElementById("newInviteLabel").value.trim();
+      const res = await fetch(apiUrl("/api/auth/invite-codes"), {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ role, label }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.detail || "Couldn't create that invite code", "delete");
+        return;
+      }
+      const data = await res.json();
+      showToast(`New ${role} code created: ${data.code}`, "create");
+      document.getElementById("newInviteLabel").value = "";
+      loadInviteCodesList();
+    });
+  }
 
   document.getElementById("saveConnBtn").addEventListener("click", async () => {
     if (!getUserName()) {
@@ -2994,8 +3131,18 @@ function renderDefaultsSection() {
   const el = document.getElementById("settingsContent");
   if (!currentCoopId) { el.innerHTML = noCoopMessage(); return; }
   const d = getCoopDefaults();
+  const weightUnit = getWeightUnit();
   el.innerHTML = `
     <div class="card">
+      <div class="card-title">Units</div>
+      <div class="dim" style="font-size:12px;margin-bottom:14px">Applies to bird weights throughout the app. Existing weights aren't changed or converted in storage -- only how they're shown and entered.</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn ${weightUnit === "lb" ? "btn-confirm" : "ghost"}" id="unitLbBtn">lb</button>
+        <button class="btn ${weightUnit === "kg" ? "btn-confirm" : "ghost"}" id="unitKgBtn">kg</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
       <div class="card-title">Default values</div>
       <div class="dim" style="font-size:12px;margin-bottom:14px">Auto-filled into new egg and bird entries so you don't have to re-type them each time. Leave blank for no default. Editing an existing entry never overwrites its own saved value.</div>
       <div class="grid-form">
@@ -3005,6 +3152,20 @@ function renderDefaultsSection() {
       <div style="margin-top:14px"><button class="btn btn-confirm" id="saveDefaults">✓ Save defaults</button></div>
     </div>
   `;
+  document.getElementById("unitLbBtn").addEventListener("click", async () => {
+    const settings = getCoopSettings();
+    settings.weight_unit = "lb";
+    await localCoopUpdate(currentCoopId, { settings: JSON.stringify(settings) });
+    await loadCoops();
+    renderDefaultsSection();
+  });
+  document.getElementById("unitKgBtn").addEventListener("click", async () => {
+    const settings = getCoopSettings();
+    settings.weight_unit = "kg";
+    await localCoopUpdate(currentCoopId, { settings: JSON.stringify(settings) });
+    await loadCoops();
+    renderDefaultsSection();
+  });
   document.getElementById("saveDefaults").addEventListener("click", async () => {
     const settings = getCoopSettings();
     const eggPrice = document.getElementById("def_egg_price").value;
@@ -3029,7 +3190,7 @@ function valueBreakdownHtml(estimateAfterWashout, actualSold) {
 
 function meatProcessedValue(count, weight, value) {
   if (count === 0) return "No birds processed";
-  if (weight > 0) return `${weight.toFixed(1)} lb · ${fmtMoney(value)}`;
+  if (weight > 0) return `${displayWeight(weight)} ${getWeightUnit()} · ${fmtMoney(value)}`;
   return `${count} bird${count !== 1 ? "s" : ""}`;
 }
 
@@ -4425,6 +4586,28 @@ function getCoopSettings() {
   if (!coop || !coop.settings) return {};
   try { return JSON.parse(coop.settings); } catch { return {}; }
 }
+const LB_TO_KG = 0.45359237;
+function getWeightUnit() {
+  return getCoopSettings().weight_unit === "kg" ? "kg" : "lb"; // lb is the default/canonical storage unit
+}
+/** Converts a weight stored internally in lb to the user's preferred
+ * display unit, rounded sensibly for display. Returns "" for empty input
+ * so it's safe to drop straight into a form field's value. */
+function displayWeight(lbValue) {
+  if (lbValue == null || lbValue === "") return "";
+  const n = Number(lbValue);
+  if (isNaN(n)) return "";
+  return getWeightUnit() === "kg" ? String(+(n * LB_TO_KG).toFixed(2)) : String(+n.toFixed(2));
+}
+/** Converts a value the user typed (in their preferred unit) back to lb
+ * for storage -- the inverse of displayWeight. Returns null for empty
+ * input so it's safe to drop straight into a payload's numeric field. */
+function parseWeightInput(displayValue) {
+  if (displayValue === "" || displayValue == null) return null;
+  const n = Number(displayValue);
+  if (isNaN(n)) return null;
+  return getWeightUnit() === "kg" ? n / LB_TO_KG : n;
+}
 function getBeddingAreas() {
   const s = getCoopSettings();
   return (s.bedding_areas && s.bedding_areas.length) ? s.bedding_areas : Object.keys(DEFAULT_BEDDING_THRESHOLDS);
@@ -4471,7 +4654,7 @@ function renderCoopOverview() {
         <div class="stat tone-sage"><div class="stat-label">Active Birds</div><div class="stat-value">${s.active}</div><div class="stat-sub">${s.layers} layer · ${s.meatActive} meat</div></div>
         <div class="stat tone-gold"><div class="stat-label">Value produced this month</div><div class="stat-value">${fmtMoney(s.incomeMonth)}</div><div class="stat-sub">${fmtMoney(ys.income)} this year</div></div>
         <div class="stat tone-gold"><div class="stat-label">Eggs this month</div><div class="stat-value">${s.eggsThisMonth} · ${fmtMoney(s.eggTotalValueMonth)}</div><div class="stat-sub">${valueBreakdownHtml(s.eggIncomeMonth, s.eggActualIncomeMonth)} · ${ys.eggCount} eggs this year</div></div>
-        <div class="stat tone-sage"><div class="stat-label">Meat processed this month</div><div class="stat-value">${meatProcessedValue(s.processedThisMonth, s.weightThisMonth, s.meatTotalValueMonth)}</div><div class="stat-sub">${s.processedThisMonth > 0 ? valueBreakdownHtml(s.meatIncomeMonth, s.meatActualIncomeMonth) + " · " : ""}${ys.processedWeight.toFixed(1)} lb this year</div></div>
+        <div class="stat tone-sage"><div class="stat-label">Meat processed this month</div><div class="stat-value">${meatProcessedValue(s.processedThisMonth, s.weightThisMonth, s.meatTotalValueMonth)}</div><div class="stat-sub">${s.processedThisMonth > 0 ? valueBreakdownHtml(s.meatIncomeMonth, s.meatActualIncomeMonth) + " · " : ""}${displayWeight(ys.processedWeight)} ${getWeightUnit()} this year</div></div>
         <div class="stat tone-slate"><div class="stat-label">Spent this month</div><div class="stat-value">${fmtMoney(s.thisMonth)}</div><div class="stat-sub">${fmtMoney(ys.totalExpenses)} this year</div></div>
         <div class="stat ${s.netMonth >= 0 ? "tone-sage" : ""}" style="${s.netMonth < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net savings this month</div><div class="stat-value">${fmtMoney(s.netMonth)}</div><div class="stat-sub">${fmtMoney(ys.net)} net this year</div></div>
       </div>
@@ -4954,6 +5137,95 @@ let modalOnBack = null;
  * entirely. Each screen in the chain passes the one below it as onBack. */
 let modalContentClearTimeout = null;
 
+/** Searches across the main text-bearing resources for the current coop --
+ * birds (name/breed/type), notes (title/body/category), supplies
+ * (brand/description/category), and products (brand/category). Case-
+ * insensitive substring match, kept deliberately simple (no fuzzy
+ * matching or ranking) so results are predictable. */
+function performGlobalSearch(query) {
+  const q = query.trim().toLowerCase();
+  const empty = { birds: [], notes: [], supplies: [], products: [] };
+  if (!q) return empty;
+  const has = (...fields) => fields.some(f => (f || "").toLowerCase().includes(q));
+  return {
+    birds: STATE.birds.filter(b => has(b.name, b.breed, b.type)),
+    notes: STATE.notes.filter(n => has(n.title, n.body, n.category)),
+    supplies: STATE.supplies.filter(s => has(s.brand, s.description, s.category)),
+    products: STATE.supplyProducts.filter(p => has(p.brand, p.category, p.description)),
+  };
+}
+
+function openGlobalSearchModal() {
+  if (!currentCoopId) { showToast("Pick a coop first", "delete"); return; }
+  const html = `
+    <div class="form-head">🔍 Search</div>
+    <input type="text" id="globalSearchInput" placeholder="Search birds, notes, supplies, products..." autocomplete="off"
+      style="width:100%;padding:11px 12px;font-size:16px;border-radius:8px;border:1px solid var(--border);background:var(--surface-raised);color:var(--text);margin-bottom:14px;box-sizing:border-box">
+    <div id="globalSearchResults"></div>
+  `;
+  openModal(html, null);
+  const input = document.getElementById("globalSearchInput");
+  input.focus();
+  const resultsEl = document.getElementById("globalSearchResults");
+  let debounceTimer;
+  input.addEventListener("input", () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => renderGlobalSearchResults(input.value, resultsEl), 120);
+  });
+  renderGlobalSearchResults("", resultsEl);
+}
+
+function renderGlobalSearchResults(query, resultsEl) {
+  const q = query.trim();
+  if (!q) {
+    resultsEl.innerHTML = `<div class="dim" style="font-size:12px;text-align:center;padding:24px 0">Start typing to search birds, notes, supplies, and products.</div>`;
+    return;
+  }
+  const { birds, notes, supplies, products } = performGlobalSearch(q);
+  const total = birds.length + notes.length + supplies.length + products.length;
+  if (total === 0) {
+    resultsEl.innerHTML = `<div class="dim" style="font-size:12px;text-align:center;padding:24px 0">No results for "${esc(q)}".</div>`;
+    return;
+  }
+  const MAX_PER_SECTION = 8;
+  const section = (label, items, renderItem) => !items.length ? "" : `
+    <div class="flock-section-header" style="margin-top:14px">${label} (${items.length})</div>
+    <div class="list-stack">${items.slice(0, MAX_PER_SECTION).map(renderItem).join("")}</div>
+    ${items.length > MAX_PER_SECTION ? `<div class="dim" style="font-size:11px;margin-top:4px">+ ${items.length - MAX_PER_SECTION} more -- keep typing to narrow it down</div>` : ""}
+  `;
+  resultsEl.innerHTML = [
+    section("🐔 Birds", birds, b => `<div class="list-card" data-search-bird="${b.id}" style="cursor:pointer"><div class="list-card-main"><div style="font-weight:700">${esc(b.name || "Unnamed")}</div><div class="list-card-desc dim">${esc(b.breed || "")}${b.type ? ` · ${esc(b.type)}` : ""}</div></div></div>`),
+    section("📝 Notes", notes, n => `<div class="list-card" data-search-note="${n.id}" style="cursor:pointer"><div class="list-card-main"><div style="font-weight:700">${esc(n.title || "Untitled")}</div><div class="list-card-desc dim">${esc(n.category || "")}</div></div></div>`),
+    section("📦 Supplies", supplies, s => `<div class="list-card" data-search-supply="${s.id}" style="cursor:pointer"><div class="list-card-main"><div style="font-weight:700">${esc(s.brand || s.description || s.category)}</div><div class="list-card-desc dim">${esc(s.category || "")}</div></div></div>`),
+    section("🏷️ Products", products, p => `<div class="list-card" data-search-product="${p.id}" style="cursor:pointer"><div class="list-card-main"><div style="font-weight:700">${esc(p.brand || p.category)}</div><div class="list-card-desc dim">${esc(p.category || "")}</div></div></div>`),
+  ].join("");
+
+  resultsEl.querySelectorAll("[data-search-bird]").forEach(el => el.addEventListener("click", () => {
+    const bird = STATE.birds.find(b => b.id === el.dataset.searchBird);
+    if (!bird) return;
+    closeModal();
+    setTimeout(() => { switchTab("flock"); showBirdForm(bird); }, 80);
+  }));
+  resultsEl.querySelectorAll("[data-search-note]").forEach(el => el.addEventListener("click", () => {
+    const note = STATE.notes.find(n => n.id === el.dataset.searchNote);
+    if (!note) return;
+    closeModal();
+    setTimeout(() => { switchTab("flock"); flockSubTab = "notes"; renderActiveTab(); openNoteModal(note); }, 80);
+  }));
+  resultsEl.querySelectorAll("[data-search-supply]").forEach(el => el.addEventListener("click", () => {
+    const supply = STATE.supplies.find(s => s.id === el.dataset.searchSupply);
+    if (!supply) return;
+    closeModal();
+    setTimeout(() => { switchTab("bedding"); openSupplyModal(supply); }, 80);
+  }));
+  resultsEl.querySelectorAll("[data-search-product]").forEach(el => el.addEventListener("click", () => {
+    const product = STATE.supplyProducts.find(p => p.id === el.dataset.searchProduct);
+    if (!product) return;
+    closeModal();
+    setTimeout(() => { switchTab("bedding"); supplySubTab = "products"; renderActiveTab(); openProductModal(product, product.category); }, 80);
+  }));
+}
+
 function openModal(html, onClose = null, onDelete = null, onBack = null, extraClass = null) {
   ensureModalDom();
   if (modalContentClearTimeout) { clearTimeout(modalContentClearTimeout); modalContentClearTimeout = null; } // cancel any pending clear from a just-closed modal -- we're about to overwrite the content anyway, but the stale timer must not fire later and wipe out THIS modal's content
@@ -5356,7 +5628,7 @@ function birdCardHtml(b) {
   const displayName = esc(b.name);
   const age = ageFromDate(b.hatch_date || b.acquired_date);
   const statusDetail = b.status === "Processed"
-    ? (b.harvest_weight ? `${b.harvest_weight} lb` : "")
+    ? (b.harvest_weight ? `${displayWeight(b.harvest_weight)} ${getWeightUnit()}` : "")
     : b.status === "Deceased"
     ? `${fmtDate(b.death_date)}`
     : "";
@@ -5875,7 +6147,7 @@ function showBulkEditForm() {
     <div class="dim" style="font-size:11px;margin:12px 0 4px">If setting Status to Processed, these fill in the harvest record:</div>
     <div class="grid-form">
       <label class="field"><span>Harvest date</span><input type="date" id="be_harvest_date"></label>
-      <label class="field"><span>Harvest weight (lb, each)</span><input type="number" step="0.01" id="be_harvest_weight" placeholder="(no change)"></label>
+      <label class="field"><span>Harvest weight (${getWeightUnit()}, each)</span><input type="number" step="0.01" id="be_harvest_weight" placeholder="(no change)"></label>
       <label class="field"><span>Store-equivalent value per lb ($)</span><input type="number" step="0.01" id="be_price" placeholder="(no change)"></label>
     </div>
     <div class="dim" style="font-size:11px;margin:12px 0 4px">If setting Status to Deceased, these fill in the loss record:</div>
@@ -5924,7 +6196,7 @@ function showBulkEditForm() {
     // bulk edit is also explicitly setting a new one.
     if (type === "Layer" && !target) updates.target_harvest_date = null;
     if (harvestDate) updates.harvest_date = harvestDate;
-    if (harvestWeight) updates.harvest_weight = Number(harvestWeight);
+    if (harvestWeight) updates.harvest_weight = parseWeightInput(harvestWeight);
     if (price) updates.price_per_lb = Number(price);
     if (deathDate) updates.death_date = deathDate;
     if (deathCause) updates.death_cause = deathCause;
@@ -6382,7 +6654,7 @@ function showBirdForm(bird) {
       acquired_date: val("f_acquired") ?? formState.acquired_date,
       target_harvest_date: val("f_target") ?? formState.target_harvest_date,
       harvest_date: val("f_hdate") ?? formState.harvest_date,
-      harvest_weight: val("f_weight") ?? formState.harvest_weight,
+      harvest_weight: val("f_weight") != null ? parseWeightInput(val("f_weight")) : formState.harvest_weight,
       price_per_lb: val("f_price") ?? formState.price_per_lb,
       death_date: val("f_death_date") ?? formState.death_date,
       death_cause: val("f_death_cause") ?? formState.death_cause,
@@ -6468,7 +6740,7 @@ function showBirdForm(bird) {
         <label class="field"><span>Status</span><select id="f_status">${BIRD_STATUSES.map(s => `<option ${f.status === s ? "selected" : ""}>${s}</option>`).join("")}</select></label>
         <label class="field"><span>Batch</span><input id="f_batch" value="${esc(f.batch_name || "")}" placeholder="(not in a batch)"></label>
         ${showProcessed ? `<label class="field"><span>Value per LB</span><input type="number" step="0.01" id="f_price" value="${f.price_per_lb ?? ""}" placeholder="e.g. 5.00"></label>` : ""}
-        ${showProcessed ? `<label class="field"><span>Dressed Weight (lb)</span><input type="number" step="0.1" id="f_weight" value="${f.harvest_weight ?? ""}"></label>` : ""}
+        ${showProcessed ? `<label class="field"><span>Dressed Weight (${getWeightUnit()})</span><input type="number" step="0.1" id="f_weight" value="${displayWeight(f.harvest_weight)}"></label>` : ""}
       </div>
 
       <div class="grid-form" style="margin-top:10px">
@@ -8722,6 +8994,7 @@ async function doGetStartedConnect() {
     const data = await res.json();
     setAuthToken(data.token);
     setUserName(data.name);
+    setUserRole(data.role);
     setLocalOnlyMode(false);
     location.reload(); // cleanest way to restart the whole app now that everything's configured
   } catch (err) {
@@ -8825,6 +9098,7 @@ async function doLogin() {
     const data = await res.json();
     setAuthToken(data.token);
     setUserName(data.name);
+    setUserRole(data.role);
     location.reload(); // cleanest way to restart the whole app with the new auth state
   } catch (err) {
     errEl.textContent = "Couldn't reach the server -- check your connection.";
@@ -8835,6 +9109,7 @@ async function doLogin() {
 
 async function init() {
   document.getElementById("todayDate").textContent = fmtDate(todayStr());
+  document.getElementById("globalSearchBtn").addEventListener("click", openGlobalSearchModal);
   if (showOnboardingIfNeeded()) return; // get-started screen is showing; a choice there reloads the page and restarts init() cleanly
   const authOk = await checkAuthAndShowLoginIfNeeded();
   if (!authOk) return; // login screen is showing; a successful login reloads the page and restarts init() cleanly

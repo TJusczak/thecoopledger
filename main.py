@@ -1,9 +1,11 @@
 import asyncio
 import base64
 import csv
+import hashlib
 import io
 import json
 import os
+import random
 import secrets
 import sqlite3
 import time
@@ -28,9 +30,14 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.06-149"
+SERVER_VERSION = "2026.07.06-152"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+# The frontend already resizes images before upload, so a normal photo is
+# well under this -- this is a backstop against something huge slipping
+# through, whether picked by mistake or from a client that bypasses the
+# frontend's resize step and hits the API directly.
+MAX_PHOTO_UPLOAD_BYTES = 25 * 1024 * 1024
 
 DEFAULT_SETTINGS = {
     "bedding_thresholds": {
@@ -112,8 +119,10 @@ SCOPED = {"birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplie
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     try:
         yield conn
         conn.commit()
@@ -210,6 +219,31 @@ def init_db():
         existing_session_cols = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
         if "last_activity" not in existing_session_cols:
             conn.execute('ALTER TABLE sessions ADD COLUMN "last_activity" TEXT')
+        if "role" not in existing_session_cols:
+            conn.execute('ALTER TABLE sessions ADD COLUMN "role" TEXT NOT NULL DEFAULT \'admin\'')
+        if "invite_code_id" not in existing_session_cols:
+            conn.execute('ALTER TABLE sessions ADD COLUMN "invite_code_id" INTEGER')
+
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS invite_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('admin', 'readonly', 'demo')),
+                label TEXT,
+                created_at TEXT NOT NULL,
+                revoked_at TEXT
+            )
+        ''')
+        # One-time migration: the original single invite_code becomes the
+        # first admin-role entry here, so an already-deployed server's
+        # existing code keeps working unchanged -- nobody who already has
+        # it gets locked out just because roles now exist.
+        existing_code = conn.execute("SELECT invite_code FROM auth_settings WHERE id = 1").fetchone()
+        if existing_code and not conn.execute("SELECT 1 FROM invite_codes WHERE code = ?", (existing_code["invite_code"],)).fetchone():
+            conn.execute(
+                "INSERT INTO invite_codes (code, role, label, created_at) VALUES (?, 'admin', 'Original admin code', ?)",
+                (existing_code["invite_code"], _now_iso()),
+            )
 
         conn.execute('''
             CREATE TABLE IF NOT EXISTS failed_logins (
@@ -480,6 +514,11 @@ app.add_middleware(NoCacheMiddleware)
 # itself (chicken-and-egg otherwise), and the plain reachability check used
 # by the "Test connection" button and the online/offline indicator.
 PUBLIC_API_PATHS = {"/api/auth/login", "/api/health"}
+WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+# Technically a write (deleting your own session row), but blocking it for
+# read-only/demo roles would trap someone in a session they can't get out
+# of -- logging out is always allowed regardless of role.
+ALWAYS_ALLOWED_WRITE_PATHS = {"/api/auth/logout"}
 
 
 class AuthMiddleware:
@@ -496,6 +535,16 @@ class AuthMiddleware:
     manifest, service worker, Digital Asset Links) stays unauthenticated,
     since that much has to be reachable just to render a login screen in
     the first place -- none of it is coop data.
+
+    Also enforces role-based write access here, in this same central
+    place, rather than in each individual endpoint -- read-only and demo
+    sessions can authenticate and read everything, but any write method
+    (POST/PUT/PATCH/DELETE) gets rejected with 403 before it ever reaches
+    an endpoint handler. The actual security boundary for this shouldn't
+    depend on every write endpoint separately remembering to check
+    permissions; one shared gate that's already proven itself (the login
+    check right below) is far harder to accidentally bypass by adding a
+    new endpoint later and forgetting the check.
     """
 
     def __init__(self, app):
@@ -520,13 +569,20 @@ class AuthMiddleware:
             query_params = parse_qs(scope.get("query_string", b"").decode())
             token = query_params.get("token", [None])[0]
 
-        valid = False
+        role = None
         if token:
             with get_db() as conn:
-                valid = conn.execute("SELECT 1 FROM sessions WHERE token = ?", (token,)).fetchone() is not None
+                row = conn.execute("SELECT role FROM sessions WHERE token = ?", (token,)).fetchone()
+                if row:
+                    role = row["role"]
 
-        if not valid:
+        if role is None:
             response = JSONResponse({"detail": "Not logged in"}, status_code=401)
+            await response(scope, receive, send)
+            return
+
+        if role in ("readonly", "demo") and scope["method"] in WRITE_METHODS and path not in ALWAYS_ALLOWED_WRITE_PATHS:
+            response = JSONResponse({"detail": "Read-only access -- this action isn't available"}, status_code=403)
             await response(scope, receive, send)
             return
 
@@ -831,6 +887,33 @@ def export_coop_csv(coop_id: str):
         )
 
 
+@app.get("/api/backups")
+def list_backups():
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    backups = []
+    for p in sorted(BACKUP_DIR.glob("backup-*.zip"), key=lambda p: p.name, reverse=True):
+        stat = p.stat()
+        backups.append({"filename": p.name, "size_bytes": stat.st_size, "created_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()})
+    return {"backups": backups}
+
+
+@app.get("/api/backups/{filename}")
+def download_backup(filename: str):
+    # Guard against a path-traversal filename (e.g. "../../etc/passwd") --
+    # only ever serve something that's actually a plain file directly
+    # inside BACKUP_DIR, matching the naming this endpoint itself creates.
+    if "/" in filename or "\\" in filename or not filename.startswith("backup-") or not filename.endswith(".zip"):
+        raise HTTPException(400, "Invalid backup filename")
+    path = BACKUP_DIR / filename
+    if not path.is_file():
+        raise HTTPException(404, "Backup not found")
+    return StreamingResponse(
+        open(path, "rb"),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.delete("/api/coops/{coop_id}")
 def delete_coop(coop_id: str):
     with get_db() as conn:
@@ -861,10 +944,19 @@ async def _upload_photo_for(table: str, item_id: str, file: UploadFile):
         row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (item_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Not found")
-        content = await file.read()
-        ext = ".png" if (file.content_type or "").endswith("png") else ".jpg"
-        new_ref = _save_photo_bytes(row["coop_id"], item_id, content, ext)
-        old_photo = row["photo"]
+        coop_id, old_photo = row["coop_id"], row["photo"]
+
+    # No database connection held during the read -- this can be a slow
+    # network operation for a large file, and doing it without a lock held
+    # means it can't block every other request against this database file
+    # for however long it takes.
+    content = await file.read()
+    if len(content) > MAX_PHOTO_UPLOAD_BYTES:
+        raise HTTPException(413, f"That photo is too large ({len(content) // (1024*1024)}MB) -- please use one under {MAX_PHOTO_UPLOAD_BYTES // (1024*1024)}MB")
+    ext = ".png" if (file.content_type or "").endswith("png") else ".jpg"
+    new_ref = _save_photo_bytes(coop_id, item_id, content, ext)
+
+    with get_db() as conn:
         conn.execute(f'UPDATE {table} SET photo = ?, updated_at = ? WHERE id = ?', (new_ref, _now_iso(), item_id))
         _delete_photo_file(conn, old_photo)  # after the update, so a shared old photo isn't wrongly seen as still used by this row
         return {"photo": new_ref}
@@ -1013,6 +1105,24 @@ def _require_auth(request: Request) -> str:
     raise HTTPException(401, "Not logged in")
 
 
+def _require_admin(request: Request) -> str:
+    """Like _require_auth, but for endpoints that must stay admin-only even
+    for reads -- viewing or managing invite codes, for instance, where a
+    read-only or demo session simply reading the admin code would let it
+    escalate its own access. The middleware's write-blocking doesn't cover
+    this case since a GET is a read, not a write."""
+    token = _extract_token(request)
+    if token:
+        with get_db() as conn:
+            row = conn.execute("SELECT name, role FROM sessions WHERE token = ?", (token,)).fetchone()
+            if row:
+                if row["role"] != "admin":
+                    raise HTTPException(403, "Admin access required")
+                conn.execute("UPDATE sessions SET last_activity = ? WHERE token = ?", (_now_iso(), token))
+                return row["name"]
+    raise HTTPException(401, "Not logged in")
+
+
 # Rate limiting on login specifically: an 8-character invite code has a lot
 # of possible values, but that only matters if guessing it is actually slow.
 # Unthrottled, a bot could try thousands of codes a second: this is what
@@ -1071,19 +1181,30 @@ def login(payload: dict = Body(...), request: Request = None):
     if not name:
         raise HTTPException(400, "Name is required")
     with get_db() as conn:
-        row = conn.execute("SELECT invite_code FROM auth_settings WHERE id = 1").fetchone()
-        if not row or code.upper() != row["invite_code"].upper():
+        row = conn.execute(
+            "SELECT id, role FROM invite_codes WHERE UPPER(code) = UPPER(?) AND revoked_at IS NULL",
+            (code,),
+        ).fetchone()
+        if not row:
             _record_failed_login(ip, name, code)
             raise HTTPException(401, "Invalid invite code")
+        role = row["role"]
         token = secrets.token_urlsafe(32)
-        conn.execute("INSERT INTO sessions (token, name, created_at) VALUES (?, ?, ?)", (token, name, _now_iso()))
-        return {"token": token, "name": name}
+        conn.execute(
+            "INSERT INTO sessions (token, name, created_at, role, invite_code_id) VALUES (?, ?, ?, ?, ?)",
+            (token, name, _now_iso(), role, row["id"]),
+        )
+        return {"token": token, "name": name, "role": role}
 
 
 @app.get("/api/auth/me")
 def auth_me(request: Request):
-    name = _require_auth(request)
-    return {"name": name}
+    token = _extract_token(request)
+    with get_db() as conn:
+        row = conn.execute("SELECT name, role FROM sessions WHERE token = ?", (token,)).fetchone()
+    if not row:
+        raise HTTPException(401, "Not logged in")
+    return {"name": row["name"], "role": row["role"]}
 
 
 @app.post("/api/auth/logout")
@@ -1097,7 +1218,7 @@ def logout(request: Request):
 
 @app.get("/api/auth/invite-code")
 def get_invite_code(request: Request):
-    _require_auth(request)
+    _require_admin(request)
     with get_db() as conn:
         row = conn.execute("SELECT invite_code, auto_rotate_days FROM auth_settings WHERE id = 1").fetchone()
         return {"invite_code": row["invite_code"], "auto_rotate_days": row["auto_rotate_days"]}
@@ -1105,16 +1226,20 @@ def get_invite_code(request: Request):
 
 @app.post("/api/auth/invite-code/rotate")
 def rotate_invite_code(request: Request):
-    _require_auth(request)
+    _require_admin(request)
     new_code = generate_invite_code()
     with get_db() as conn:
+        old_code = conn.execute("SELECT invite_code FROM auth_settings WHERE id = 1").fetchone()["invite_code"]
         conn.execute("UPDATE auth_settings SET invite_code = ?, rotated_at = ? WHERE id = 1", (new_code, _now_iso()))
+        # Keep the invite_codes table in sync -- this IS the same primary
+        # admin code tracked there, just rotated to a new value.
+        conn.execute("UPDATE invite_codes SET code = ? WHERE code = ?", (new_code, old_code))
     return {"invite_code": new_code}
 
 
 @app.post("/api/auth/invite-code/auto-rotate")
 def set_auto_rotate(payload: dict = Body(...), request: Request = None):
-    _require_auth(request)
+    _require_admin(request)
     days = payload.get("days")  # null/None disables it
     with get_db() as conn:
         conn.execute("UPDATE auth_settings SET auto_rotate_days = ? WHERE id = 1", (days,))
@@ -1123,10 +1248,58 @@ def set_auto_rotate(payload: dict = Body(...), request: Request = None):
 
 @app.get("/api/auth/sessions")
 def list_sessions(request: Request):
-    _require_auth(request)
+    _require_admin(request)
     with get_db() as conn:
-        rows = conn.execute("SELECT id, name, created_at, last_activity FROM sessions ORDER BY created_at DESC").fetchall()
+        rows = conn.execute("SELECT id, name, created_at, last_activity, role FROM sessions ORDER BY created_at DESC").fetchall()
         return [dict(r) for r in rows]
+
+
+@app.get("/api/auth/invite-codes")
+def list_invite_codes(request: Request):
+    _require_admin(request)
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, code, role, label, created_at, revoked_at FROM invite_codes ORDER BY created_at DESC").fetchall()
+        return [dict(r) for r in rows]
+
+
+@app.post("/api/auth/invite-codes")
+def create_invite_code(payload: dict = Body(...), request: Request = None):
+    _require_admin(request)
+    role = payload.get("role")
+    if role not in ("admin", "readonly", "demo"):
+        raise HTTPException(400, "role must be one of: admin, readonly, demo")
+    label = (payload.get("label") or "").strip() or None
+    code = generate_invite_code()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO invite_codes (code, role, label, created_at) VALUES (?, ?, ?, ?)",
+            (code, role, label, _now_iso()),
+        )
+    return {"code": code, "role": role, "label": label}
+
+
+@app.delete("/api/auth/invite-codes/{code_id}")
+def revoke_invite_code(code_id: int, request: Request):
+    _require_admin(request)
+    with get_db() as conn:
+        row = conn.execute("SELECT code, role FROM invite_codes WHERE id = ?", (code_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Invite code not found")
+        admin_count = conn.execute(
+            "SELECT COUNT(*) as n FROM invite_codes WHERE role = 'admin' AND revoked_at IS NULL"
+        ).fetchone()["n"]
+        if row["role"] == "admin" and admin_count <= 1:
+            # Never allow revoking the last admin code -- that would
+            # permanently lock everyone out with no way back in short of
+            # editing the database directly.
+            raise HTTPException(400, "Can't revoke the last remaining admin code")
+        conn.execute("UPDATE invite_codes SET revoked_at = ? WHERE id = ?", (_now_iso(), code_id))
+        # Any sessions already logged in under this specific code are cut
+        # off immediately too, not just future login attempts -- but only
+        # those, not sessions from any other still-valid code (including
+        # the admin's own session doing this revoke).
+        conn.execute("DELETE FROM sessions WHERE invite_code_id = ?", (code_id,))
+    return {"revoked": True}
 
 
 @app.get("/api/auth/failed-logins")
@@ -1198,6 +1371,66 @@ def _prune_old_failed_logins():
         ''')
 
 
+BACKUP_DIR = DATA_DIR / "backups"
+BACKUP_INTERVAL_HOURS = 24
+MAX_BACKUPS_TO_KEEP = 14  # two weeks of daily backups
+
+
+def _create_full_backup():
+    """Creates a timestamped zip of the full database (via SQLite's online
+    backup API -- safe to run against a live database, correctly captures
+    WAL-mode state without needing to pause anything) plus every photo on
+    disk, then rotates out anything past MAX_BACKUPS_TO_KEEP."""
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    tmp_db_path = BACKUP_DIR / f".tmp-{timestamp}.db"
+    zip_path = BACKUP_DIR / f"backup-{timestamp}.zip"
+
+    source = sqlite3.connect(DB_PATH)
+    dest = sqlite3.connect(str(tmp_db_path))
+    try:
+        source.backup(dest)
+    finally:
+        dest.close()
+        source.close()
+
+    try:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(tmp_db_path, "coop.db")
+            if PHOTOS_DIR.exists():
+                for photo_file in PHOTOS_DIR.rglob("*"):
+                    if photo_file.is_file():
+                        zf.write(photo_file, f"photos/{photo_file.relative_to(PHOTOS_DIR)}")
+    finally:
+        tmp_db_path.unlink(missing_ok=True)
+
+    existing = sorted(BACKUP_DIR.glob("backup-*.zip"), key=lambda p: p.name, reverse=True)
+    for old in existing[MAX_BACKUPS_TO_KEEP:]:
+        old.unlink(missing_ok=True)
+    print(f"Automatic backup created: {zip_path.name}")
+
+
+def _maybe_run_scheduled_backup():
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    existing = sorted(BACKUP_DIR.glob("backup-*.zip"), key=lambda p: p.name, reverse=True)
+    if existing:
+        # Filenames are backup-YYYYMMDD-HHMMSS.zip -- the timestamp is
+        # parsed directly out of the most recent one rather than tracked
+        # in a separate database column, since the files already record
+        # exactly when they were made.
+        try:
+            ts_str = existing[0].stem.replace("backup-", "")
+            last_backup_time = datetime.strptime(ts_str, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_backup_time).total_seconds() < BACKUP_INTERVAL_HOURS * 3600:
+                return
+        except ValueError:
+            pass  # malformed filename somehow -- just proceed with a fresh backup
+    try:
+        _create_full_backup()
+    except Exception as e:
+        print(f"Scheduled backup failed: {e}")
+
+
 async def _periodic_maintenance_loop():
     while True:
         await asyncio.sleep(3600)  # once an hour is plenty for both of these
@@ -1205,6 +1438,7 @@ async def _periodic_maintenance_loop():
             _maybe_auto_rotate_invite_code()
             _prune_old_activity_log()
             _prune_old_failed_logins()
+            _maybe_run_scheduled_backup()
         except Exception as e:
             print(f"Periodic maintenance error: {e}")
 
@@ -1216,6 +1450,7 @@ async def _capture_event_loop():
     _maybe_auto_rotate_invite_code()  # catch anything overdue from while the server was down
     _prune_old_activity_log()
     _prune_old_failed_logins()
+    _maybe_run_scheduled_backup()
     asyncio.create_task(_periodic_maintenance_loop())
 
 
@@ -1275,8 +1510,60 @@ async def sse_events(coop_id: str):
 
 # ---------- Generic CRUD for the siloed resources (birds, eggs, expenses, bedding) ----------
 
+def _get_session_role(request: Request) -> str | None:
+    """Like _require_auth, but returns None instead of raising when there's
+    no valid session -- for read endpoints that need to know the role to
+    decide whether to scramble data, not to gate access (the middleware
+    already handles actual access control)."""
+    token = _extract_token(request)
+    if not token:
+        return None
+    with get_db() as conn:
+        row = conn.execute("SELECT role FROM sessions WHERE token = ?", (token,)).fetchone()
+    return row["role"] if row else None
+
+
+# Which field(s) on each resource hold real financial figures, scrambled
+# for demo-role sessions so the app looks and behaves normally without
+# exposing anyone's actual numbers.
+DEMO_SCRAMBLED_FIELDS = {
+    "expenses": ["amount"],
+    "eggs": ["price_per_egg"],
+    "birds": ["price_per_lb"],
+}
+
+
+def _scramble_amount(real_value, seed_key):
+    """Deterministically scrambles a financial value -- the same record
+    always produces the same scrambled value within this server's
+    lifetime (so it doesn't flicker between views or page loads), but
+    never reveals the real number. Stays within a plausible range of the
+    original magnitude so demo data still looks realistic rather than
+    becoming either implausibly tiny or huge."""
+    if real_value is None:
+        return None
+    try:
+        real_value = float(real_value)
+    except (TypeError, ValueError):
+        return real_value
+    seed = int(hashlib.sha256(str(seed_key).encode()).hexdigest(), 16)
+    factor = random.Random(seed).uniform(0.4, 2.2)
+    return round(abs(real_value) * factor, 2)
+
+
+def _apply_demo_scrambling(resource: str, rows: list) -> list:
+    fields = DEMO_SCRAMBLED_FIELDS.get(resource)
+    if not fields:
+        return rows
+    for row in rows:
+        for field in fields:
+            if row.get(field) is not None:
+                row[field] = _scramble_amount(row[field], f"{resource}:{field}:{row.get('id')}")
+    return rows
+
+
 @app.get("/api/{resource}")
-def list_items(resource: str, coop_id: str | None = None):
+def list_items(resource: str, coop_id: str | None = None, request: Request = None):
     if resource not in SCHEMA:
         raise HTTPException(404, f"Unknown resource: {resource}")
     if resource in SCOPED and not coop_id:
@@ -1287,7 +1574,10 @@ def list_items(resource: str, coop_id: str | None = None):
             rows = conn.execute(f"SELECT * FROM {resource} WHERE coop_id = ? AND deleted_at IS NULL {order}", (coop_id,)).fetchall()
         else:
             rows = conn.execute(f"SELECT * FROM {resource} WHERE deleted_at IS NULL").fetchall()
-        return [dict(r) for r in rows]
+        result = [dict(r) for r in rows]
+    if _get_session_role(request) == "demo":
+        result = _apply_demo_scrambling(resource, result)
+    return result
 
 
 @app.post("/api/{resource}/bulk-delete-items")
