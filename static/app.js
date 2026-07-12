@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-148";
+const APP_VERSION = "2026.07.06-149";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -6125,19 +6125,28 @@ function openHistoryPhotoOptionsModal(photo, bird, onDone) {
   document.getElementById("hpo_delete").addEventListener("click", async () => {
     if (!(await showConfirmDialog("Delete this timeline photo? This can't be undone."))) return;
     await localBulkDelete("bird_photos", [photo.id], currentCoopId);
+    STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
     const currentBird = STATE.birds.find(b => b.id === bird.id);
+    const noEntriesLeft = !STATE.birdPhotos.some(p => p.bird_id === bird.id);
     const wasLinked = currentBird && (
       currentBird.main_bird_photo_id ? currentBird.main_bird_photo_id === photo.id
       : (currentBird.photo && photo.photo && currentBird.photo === photo.photo)
     );
-    if (wasLinked) {
-      // This was the entry currently linked as the main photo -- nothing
-      // left to point at, so clear it rather than leaving a reference to
-      // a photo that no longer exists anywhere.
+    if (wasLinked || noEntriesLeft) {
+      // Either this was the specifically-linked entry, or the history is
+      // now completely empty -- an empty library can't have a main photo,
+      // regardless of whether the ID/file-path match above succeeded, so
+      // this is a direct safety net against the two ever drifting apart.
+      // Also clear any queued local upload for the bird's own photo and
+      // refresh the cached blob-URL map -- birdPhotoUrl() checks that
+      // cache before the (now-null) photo field, so without this the old
+      // image would keep displaying despite the data being correctly
+      // cleared.
       await localBirdUpdate(bird.id, { photo: null, main_bird_photo_id: null });
+      await clearPendingPhoto(bird.id);
+      await refreshPendingPhotoUrls();
       STATE.birds = await localGetAll("birds", currentCoopId);
     }
-    STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
     showToast("Timeline photo deleted", "delete");
     onDone();
   });
@@ -6549,22 +6558,28 @@ function showBirdForm(bird) {
       const n = selectedHistoryIds.size;
       if (!(await showConfirmDialog(`Delete ${n} photo${n > 1 ? "s" : ""} from ${esc(formState.name) || "this bird"}'s history? This can't be undone.`))) return;
       const idsToDelete = [...selectedHistoryIds];
+      const deletedPhotos = STATE.birdPhotos.filter(p => idsToDelete.includes(p.id));
       await localBulkDelete("bird_photos", idsToDelete, currentCoopId);
+      STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
       // If the entry currently linked as the main photo is among the ones
       // just deleted, clear that link too -- same reasoning as the
-      // single-photo delete: nothing left to point at.
+      // single-photo delete: nothing left to point at. Also a direct
+      // safety net for an empty history in general: however the two might
+      // have gotten out of sync, a bird with zero live history entries
+      // shouldn't be left with a main photo still pointing at something.
       const currentBird = STATE.birds.find(b => b.id === bird.id);
       const linkedId = currentBird?.main_bird_photo_id;
-      const deletedPhotos = STATE.birdPhotos.filter(p => idsToDelete.includes(p.id));
+      const noEntriesLeft = !STATE.birdPhotos.some(p => p.bird_id === bird.id);
       const linkWasDeleted = currentBird && (
         linkedId ? idsToDelete.includes(linkedId)
         : deletedPhotos.some(p => p.photo && currentBird.photo && p.photo === currentBird.photo)
       );
-      if (linkWasDeleted) {
+      if (linkWasDeleted || noEntriesLeft) {
         await localBirdUpdate(bird.id, { photo: null, main_bird_photo_id: null });
+        await clearPendingPhoto(bird.id);
+        await refreshPendingPhotoUrls();
       }
       STATE.birds = await localGetAll("birds", currentCoopId);
-      STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
       showToast(`${n} photo${n > 1 ? "s" : ""} deleted`, "delete");
       historySelectMode = false;
       selectedHistoryIds = new Set();
