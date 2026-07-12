@@ -7,6 +7,7 @@ import json
 import os
 import random
 import secrets
+import shutil
 import sqlite3
 import time
 import uuid
@@ -30,7 +31,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.06-152"
+SERVER_VERSION = "2026.07.06-154"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
@@ -891,26 +892,38 @@ def export_coop_csv(coop_id: str):
 def list_backups():
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     backups = []
-    for p in sorted(BACKUP_DIR.glob("backup-*.zip"), key=lambda p: p.name, reverse=True):
+    for p in sorted([d for d in BACKUP_DIR.glob("backup-*") if d.is_dir()], key=lambda p: p.name, reverse=True):
+        size_bytes = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
         stat = p.stat()
-        backups.append({"filename": p.name, "size_bytes": stat.st_size, "created_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()})
+        backups.append({"filename": p.name, "size_bytes": size_bytes, "created_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()})
     return {"backups": backups}
 
 
 @app.get("/api/backups/{filename}")
 def download_backup(filename: str):
     # Guard against a path-traversal filename (e.g. "../../etc/passwd") --
-    # only ever serve something that's actually a plain file directly
-    # inside BACKUP_DIR, matching the naming this endpoint itself creates.
-    if "/" in filename or "\\" in filename or not filename.startswith("backup-") or not filename.endswith(".zip"):
+    # only ever serve something that's actually a folder directly inside
+    # BACKUP_DIR, matching the naming this endpoint itself creates.
+    if "/" in filename or "\\" in filename or not filename.startswith("backup-"):
         raise HTTPException(400, "Invalid backup filename")
-    path = BACKUP_DIR / filename
-    if not path.is_file():
+    folder = BACKUP_DIR / filename
+    if not folder.is_dir():
         raise HTTPException(404, "Backup not found")
+    # Built on demand rather than stored as a zip at rest -- backups live
+    # as a database file plus hard-linked photos, specifically so many
+    # backups can share the same on-disk photo data without each one
+    # duplicating it. Zipping only happens here, at the point someone
+    # actually wants a single downloadable file.
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in folder.rglob("*"):
+            if f.is_file():
+                zf.write(f, f.relative_to(folder).as_posix())
+    zip_buf.seek(0)
     return StreamingResponse(
-        open(path, "rb"),
+        zip_buf,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}.zip"'},
     )
 
 
@@ -1302,6 +1315,22 @@ def revoke_invite_code(code_id: int, request: Request):
     return {"revoked": True}
 
 
+@app.delete("/api/auth/invite-codes/{code_id}/permanent")
+def delete_invite_code_permanently(code_id: int, request: Request):
+    _require_admin(request)
+    with get_db() as conn:
+        row = conn.execute("SELECT revoked_at FROM invite_codes WHERE id = ?", (code_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Invite code not found")
+        if row["revoked_at"] is None:
+            # Requires revoking first -- a deliberate two-step process for
+            # something this sensitive, so an active code can't be
+            # permanently removed by a single misclick.
+            raise HTTPException(400, "Revoke this code before deleting it permanently")
+        conn.execute("DELETE FROM invite_codes WHERE id = ?", (code_id,))
+    return {"deleted": True}
+
+
 @app.get("/api/auth/failed-logins")
 def list_failed_logins(request: Request):
     _require_auth(request)
@@ -1377,54 +1406,58 @@ MAX_BACKUPS_TO_KEEP = 14  # two weeks of daily backups
 
 
 def _create_full_backup():
-    """Creates a timestamped zip of the full database (via SQLite's online
-    backup API -- safe to run against a live database, correctly captures
-    WAL-mode state without needing to pause anything) plus every photo on
-    disk, then rotates out anything past MAX_BACKUPS_TO_KEEP."""
+    """Creates a timestamped backup folder: a fresh database snapshot (via
+    SQLite's online backup API -- safe against a live database, correctly
+    captures WAL-mode state with nothing paused) plus every photo on disk,
+    hard-linked rather than copied since photos are effectively immutable
+    once uploaded. Rotates out anything past MAX_BACKUPS_TO_KEEP."""
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    tmp_db_path = BACKUP_DIR / f".tmp-{timestamp}.db"
-    zip_path = BACKUP_DIR / f"backup-{timestamp}.zip"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    backup_folder = BACKUP_DIR / f"backup-{timestamp}"
+    backup_folder.mkdir()
 
     source = sqlite3.connect(DB_PATH)
-    dest = sqlite3.connect(str(tmp_db_path))
+    dest = sqlite3.connect(str(backup_folder / "coop.db"))
     try:
         source.backup(dest)
     finally:
         dest.close()
         source.close()
 
-    try:
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.write(tmp_db_path, "coop.db")
-            if PHOTOS_DIR.exists():
-                for photo_file in PHOTOS_DIR.rglob("*"):
-                    if photo_file.is_file():
-                        zf.write(photo_file, f"photos/{photo_file.relative_to(PHOTOS_DIR)}")
-    finally:
-        tmp_db_path.unlink(missing_ok=True)
+    if PHOTOS_DIR.exists():
+        backup_photos_dir = backup_folder / "photos"
+        for photo_file in PHOTOS_DIR.rglob("*"):
+            if not photo_file.is_file():
+                continue
+            rel = photo_file.relative_to(PHOTOS_DIR)
+            dest_path = backup_photos_dir / rel
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(photo_file, dest_path)  # hard link -- same disk blocks, no extra space used
+            except OSError:
+                shutil.copy2(photo_file, dest_path)  # different filesystem or link limit hit -- fall back to a real copy
 
-    existing = sorted(BACKUP_DIR.glob("backup-*.zip"), key=lambda p: p.name, reverse=True)
+    existing = sorted([p for p in BACKUP_DIR.glob("backup-*") if p.is_dir()], key=lambda p: p.name, reverse=True)
     for old in existing[MAX_BACKUPS_TO_KEEP:]:
-        old.unlink(missing_ok=True)
-    print(f"Automatic backup created: {zip_path.name}")
+        shutil.rmtree(old, ignore_errors=True)  # removes this backup's links; each photo's actual data survives as long as the live copy or any other backup still references it
+    print(f"Automatic backup created: {backup_folder.name}")
 
 
 def _maybe_run_scheduled_backup():
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    existing = sorted(BACKUP_DIR.glob("backup-*.zip"), key=lambda p: p.name, reverse=True)
+    existing = sorted([p for p in BACKUP_DIR.glob("backup-*") if p.is_dir()], key=lambda p: p.name, reverse=True)
     if existing:
-        # Filenames are backup-YYYYMMDD-HHMMSS.zip -- the timestamp is
+        # Folder names are backup-YYYYMMDD-HHMMSS -- the timestamp is
         # parsed directly out of the most recent one rather than tracked
-        # in a separate database column, since the files already record
+        # in a separate database column, since the folders already record
         # exactly when they were made.
         try:
-            ts_str = existing[0].stem.replace("backup-", "")
-            last_backup_time = datetime.strptime(ts_str, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+            ts_str = existing[0].name.replace("backup-", "")
+            last_backup_time = datetime.strptime(ts_str, "%Y%m%d-%H%M%S-%f").replace(tzinfo=timezone.utc)
             if (datetime.now(timezone.utc) - last_backup_time).total_seconds() < BACKUP_INTERVAL_HOURS * 3600:
                 return
         except ValueError:
-            pass  # malformed filename somehow -- just proceed with a fresh backup
+            pass  # malformed folder name somehow -- just proceed with a fresh backup
     try:
         _create_full_backup()
     except Exception as e:
@@ -1796,7 +1829,7 @@ def delete_item(resource: str, item_id: str):
 
 
 @app.get("/api/sync/{resource}")
-def sync_resource(resource: str, coop_id: str | None = None, since: str | None = None):
+def sync_resource(resource: str, coop_id: str | None = None, since: str | None = None, request: Request = None):
     """Returns every row changed (created, updated, or soft-deleted) after
     `since` -- including deleted ones, which the generic list endpoint above
     hides. A local-first client uses this to reconcile its own copy: apply
@@ -1816,7 +1849,10 @@ def sync_resource(resource: str, coop_id: str | None = None, since: str | None =
             params.append(since)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = conn.execute(f"SELECT * FROM {resource} {where} ORDER BY updated_at ASC", params).fetchall()
-        return {"server_time": _now_iso(), "rows": [dict(r) for r in rows]}
+        result_rows = [dict(r) for r in rows]
+    if _get_session_role(request) == "demo":
+        result_rows = _apply_demo_scrambling(resource, result_rows)
+    return {"server_time": _now_iso(), "rows": result_rows}
 
 
 # Bird photo files live under DATA_DIR (outside the app's static/ dir), served at /photos

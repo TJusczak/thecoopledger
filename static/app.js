@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-152";
+const APP_VERSION = "2026.07.06-154";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -432,6 +432,34 @@ function getAuthToken() { return localStorage.getItem(AUTH_TOKEN_KEY) || ""; }
 function setAuthToken(token) { localStorage.setItem(AUTH_TOKEN_KEY, token || ""); }
 function getUserRole() { return localStorage.getItem(AUTH_ROLE_KEY) || "admin"; } // existing sessions from before roles existed are implicitly admin
 function setUserRole(role) { localStorage.setItem(AUTH_ROLE_KEY, role || "admin"); }
+/** Wipes the local cache if the role actually changed since the last
+ * login on this device -- must be called with the OLD role (before
+ * setUserRole overwrites it) and the NEW role from this login response.
+ * Necessary because sync is incremental (fetches only what's changed
+ * server-side since last sync), but demo-mode scrambling depends on who's
+ * viewing, not on when data last changed -- without this, switching roles
+ * on the same device could leave stale, unscrambled real values sitting
+ * in the cache from a previous session, since nothing server-side
+ * actually changed to trigger a re-fetch. */
+async function clearLocalCacheIfRoleChanged(oldRole, newRole) {
+  if (oldRole === newRole) return;
+  try {
+    // The cached connection (if any) must be closed first, or deleteDatabase
+    // gets silently blocked by it and never actually completes.
+    if (_localDbPromise) {
+      const db = await _localDbPromise;
+      db.close();
+      _localDbPromise = null;
+    }
+    await new Promise((resolve) => {
+      const req = indexedDB.deleteDatabase(LOCAL_DB_NAME);
+      req.onsuccess = resolve;
+      req.onerror = resolve; // best effort -- a fresh sync will still overwrite most stale values even if this fails
+      req.onblocked = resolve;
+    });
+    localStorage.removeItem(COOP_KEY); // no longer means anything meaningful once its backing cache is gone
+  } catch { /* best effort */ }
+}
 function isReadOnlyRole() { const r = getUserRole(); return r === "readonly" || r === "demo"; }
 function clearAuthToken() { localStorage.removeItem(AUTH_TOKEN_KEY); localStorage.removeItem(AUTH_NAME_KEY); localStorage.removeItem(AUTH_ROLE_KEY); }
 
@@ -2869,12 +2897,14 @@ function renderConnectionSection() {
         const codes = await res.json();
         const roleLabel = { admin: "Admin", readonly: "Read-only", demo: "Demo" };
         area.innerHTML = codes.map(c => `
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)${c.revoked_at ? ";opacity:0.5" : ""}">
-            <div>
-              <div style="color:var(--text);font-size:13px"><span class="stamp tone-${c.role === "admin" ? "gold" : c.role === "demo" ? "slate" : "sage"}">${roleLabel[c.role] || c.role}</span> ${esc(c.label || "")}</div>
-              <div class="dim" style="font-size:11px;font-family:'JetBrains Mono',monospace">${esc(c.code)}${c.revoked_at ? " -- revoked" : ""}</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+            <div style="${c.revoked_at ? "opacity:0.5" : ""}">
+              <div style="color:var(--text);font-size:13px"><span class="stamp tone-${c.role === "admin" ? "gold" : c.role === "demo" ? "slate" : "sage"}">${roleLabel[c.role] || c.role}</span> ${esc(c.label || "")}${c.revoked_at ? ` <span class="stamp tone-rust">Revoked</span>` : ""}</div>
+              <div class="dim" style="font-size:11px;font-family:'JetBrains Mono',monospace">${esc(c.code)}</div>
             </div>
-            ${!c.revoked_at ? `<button class="btn btn-close small" data-revoke-code="${c.id}">Revoke</button>` : ""}
+            ${!c.revoked_at
+              ? `<button class="btn btn-close small" data-revoke-code="${c.id}" style="flex:0 0 auto">Revoke</button>`
+              : `<button class="btn btn-close small" data-delete-code="${c.id}" style="flex:0 0 auto">🗑 Delete permanently</button>`}
           </div>
         `).join("") || `<div class="dim">No invite codes yet.</div>`;
         area.querySelectorAll("[data-revoke-code]").forEach(btn => btn.addEventListener("click", async () => {
@@ -2886,6 +2916,17 @@ function renderConnectionSection() {
             return;
           }
           showToast("Invite code revoked", "delete");
+          loadInviteCodesList();
+        }));
+        area.querySelectorAll("[data-delete-code]").forEach(btn => btn.addEventListener("click", async () => {
+          if (!(await showConfirmDialog("Permanently delete this revoked invite code from the list? This can't be undone."))) return;
+          const res2 = await fetch(apiUrl(`/api/auth/invite-codes/${btn.dataset.deleteCode}/permanent`), { method: "DELETE", headers: authHeaders() });
+          if (!res2.ok) {
+            const err = await res2.json().catch(() => ({}));
+            showToast(err.detail || "Couldn't delete that code", "delete");
+            return;
+          }
+          showToast("Invite code deleted", "delete");
           loadInviteCodesList();
         }));
       } catch (err) {
@@ -8967,6 +9008,14 @@ function showOnboardingIfNeeded() {
   return true;
 }
 
+/** Clears the local IndexedDB cache if this login's role differs from
+ * whatever role was last stored on this device -- critical for demo/
+ * read-only correctness. Incremental sync only re-fetches rows that
+ * changed since the last sync, so a device that previously had a fuller-
+ * access session (e.g. was just used to create this very demo code as
+ * admin) would otherwise keep showing its old cached, unscrambled data
+ * indefinitely -- nothing about those specific records changes just
+ * because a different role logged in on the same device. */
 async function doGetStartedConnect() {
   const serverUrl = document.getElementById("gs_server").value.trim();
   const name = document.getElementById("gs_name").value.trim();
@@ -8994,6 +9043,7 @@ async function doGetStartedConnect() {
     const data = await res.json();
     setAuthToken(data.token);
     setUserName(data.name);
+    await clearLocalCacheIfRoleChanged(getUserRole(), data.role);
     setUserRole(data.role);
     setLocalOnlyMode(false);
     location.reload(); // cleanest way to restart the whole app now that everything's configured
@@ -9098,6 +9148,7 @@ async function doLogin() {
     const data = await res.json();
     setAuthToken(data.token);
     setUserName(data.name);
+    await clearLocalCacheIfRoleChanged(getUserRole(), data.role);
     setUserRole(data.role);
     location.reload(); // cleanest way to restart the whole app with the new auth state
   } catch (err) {
