@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-145";
+const APP_VERSION = "2026.07.06-146";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -2272,6 +2272,17 @@ async function loadCoopData() {
   const birdsNeedingPhotoHistory = STATE.birds.filter(b => b.photo && !STATE.birdPhotos.some(p => p.bird_id === b.id));
   if (birdsNeedingPhotoHistory.length) {
     for (const b of birdsNeedingPhotoHistory) await ensureBirdPhotoHistorySeeded(b);
+  }
+
+  // Backfill main_bird_photo_id for birds linked the old way (by matching
+  // file path, from before this field existed) -- reposition/delete sync
+  // already falls back to a file-path match for these, so this isn't
+  // needed for correctness, just to settle everything onto one consistent
+  // linking mechanism instead of leaning on that fallback indefinitely.
+  const birdsNeedingLinkBackfill = STATE.birds.filter(b => b.photo && !b.main_bird_photo_id);
+  for (const b of birdsNeedingLinkBackfill) {
+    const match = STATE.birdPhotos.find(p => p.bird_id === b.id && p.photo === b.photo);
+    if (match) await localBirdUpdate(b.id, { main_bird_photo_id: match.id });
   }
 
   return newActivityRows;
@@ -6050,11 +6061,15 @@ async function setBirdMainPhotoFromHistoryEntry(photo, birdId) {
   const current = STATE.birdPhotos.find(p => p.id === photo.id) || photo;
   if (current.photo) {
     // Already uploaded -- just copy the reference and its crop over.
-    await localBirdUpdate(birdId, { photo: current.photo, photo_pos_x: current.photo_pos_x, photo_pos_y: current.photo_pos_y, photo_zoom: current.photo_zoom });
+    await localBirdUpdate(birdId, { photo: current.photo, photo_pos_x: current.photo_pos_x, photo_pos_y: current.photo_pos_y, photo_zoom: current.photo_zoom, main_bird_photo_id: current.id });
   } else {
     // Still queued locally (added moments ago, hasn't synced yet) --
     // grab that same local blob and queue it as the bird's own current
     // photo too, rather than copying a reference that doesn't exist yet.
+    // This ends up as a genuinely separate upload of the same image data
+    // (the two will get different filenames once both finish syncing),
+    // which is exactly why main_bird_photo_id -- not a file-path match --
+    // is what keeps this entry linked as main afterward.
     const db = await openLocalDb();
     const tx = db.transaction(["pending_bird_history_photos"], "readonly");
     const pending = await idbRequest(tx.objectStore("pending_bird_history_photos").get(current.id));
@@ -6067,13 +6082,13 @@ async function setBirdMainPhotoFromHistoryEntry(photo, birdId) {
       // STATE) before concluding there's genuinely nothing to use yet.
       const fresh = await localGetOne("bird_photos", current.id);
       if (fresh && fresh.photo) {
-        await localBirdUpdate(birdId, { photo: fresh.photo, photo_pos_x: fresh.photo_pos_x, photo_pos_y: fresh.photo_pos_y, photo_zoom: fresh.photo_zoom });
+        await localBirdUpdate(birdId, { photo: fresh.photo, photo_pos_x: fresh.photo_pos_x, photo_pos_y: fresh.photo_pos_y, photo_zoom: fresh.photo_zoom, main_bird_photo_id: fresh.id });
         STATE.birds = await localGetAll("birds", currentCoopId);
         return true;
       }
       return false;
     }
-    await localBirdUpdate(birdId, { photo_pos_x: current.photo_pos_x, photo_pos_y: current.photo_pos_y, photo_zoom: current.photo_zoom });
+    await localBirdUpdate(birdId, { photo_pos_x: current.photo_pos_x, photo_pos_y: current.photo_pos_y, photo_zoom: current.photo_zoom, main_bird_photo_id: current.id });
     await queuePendingPhoto(birdId, pending.blob);
     await refreshPendingPhotoUrls();
   }
@@ -6108,11 +6123,15 @@ function openHistoryPhotoOptionsModal(photo, bird, onDone) {
     if (!(await showConfirmDialog("Delete this timeline photo? This can't be undone."))) return;
     await localBulkDelete("bird_photos", [photo.id], currentCoopId);
     const currentBird = STATE.birds.find(b => b.id === bird.id);
-    if (currentBird && currentBird.photo && photo.photo && currentBird.photo === photo.photo) {
+    const wasLinked = currentBird && (
+      currentBird.main_bird_photo_id ? currentBird.main_bird_photo_id === photo.id
+      : (currentBird.photo && photo.photo && currentBird.photo === photo.photo)
+    );
+    if (wasLinked) {
       // This was the entry currently linked as the main photo -- nothing
       // left to point at, so clear it rather than leaving a reference to
       // a photo that no longer exists anywhere.
-      await localBirdUpdate(bird.id, { photo: null });
+      await localBirdUpdate(bird.id, { photo: null, main_bird_photo_id: null });
       STATE.birds = await localGetAll("birds", currentCoopId);
     }
     STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
@@ -6131,15 +6150,20 @@ function openHistoryPhotoOptionsModal(photo, bird, onDone) {
     openPhotoRepositionModal(birdHistoryPhotoUrl(photo), photo.photo_pos_x ?? 50, photo.photo_pos_y ?? 50, photoZoom(photo), "1/1", async (x, y, zoom) => {
       await localBirdPhotoUpdate(photo.id, { photo_pos_x: x, photo_pos_y: y, photo_zoom: zoom });
       // This entry might also be the one currently linked as the bird's
-      // main photo (same underlying file) -- if so, keep its crop in sync
-      // too, since there's no separate "reposition the main photo"
-      // control anymore. Matched by file reference, not by any explicit
-      // "this is the main one" flag, since the two have always been
-      // linked that way (the bird's own photo field is a copy of
-      // whichever library entry was last set as current).
+      // main photo -- if so, keep its crop in sync too, since there's no
+      // separate "reposition the main photo" control anymore. Matched by
+      // main_bird_photo_id, not file path -- a photo that was still
+      // uploading when it got set as current ends up as a genuinely
+      // different file than the bird's own copy, so file-path matching
+      // can't be relied on there. Falls back to the old file-path check
+      // only for a bird that hasn't been backfilled to the new field yet.
       const currentBird = STATE.birds.find(b => b.id === bird.id);
-      if (currentBird && currentBird.photo && photo.photo && currentBird.photo === photo.photo) {
-        await localBirdUpdate(bird.id, { photo_pos_x: x, photo_pos_y: y, photo_zoom: zoom });
+      const isLinked = currentBird && (
+        currentBird.main_bird_photo_id ? currentBird.main_bird_photo_id === photo.id
+        : (currentBird.photo && photo.photo && currentBird.photo === photo.photo)
+      );
+      if (isLinked) {
+        await localBirdUpdate(bird.id, { photo_pos_x: x, photo_pos_y: y, photo_zoom: zoom, main_bird_photo_id: photo.id });
       }
       STATE.birdPhotos = await localGetAll("bird_photos", currentCoopId);
       showToast("Photo position updated", "update");
@@ -6245,9 +6269,10 @@ function dayGroupThumbHtml(dateTaken, photosOnDay, bird) {
         <div style="position:absolute;inset:0;border-radius:10px;overflow:hidden;border:1px solid var(--border)">${topImgHtml}</div>
         ${isStack ? `<div style="position:absolute;top:6px;right:6px;background:rgba(20,16,13,0.75);color:#F2E9DC;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">📷 ${photosOnDay.length}</div>` : ""}
       </div>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
-        <div style="font-size:13px">${dateTaken ? esc(fmtDate(dateTaken)) : "No date"}${ageLabel ? ` · ${esc(ageLabel)}` : ""}</div>
-        ${top.stage ? `<span class="stamp tone-slate">${esc(top.stage)}</span>` : ""}
+      <div style="margin-top:6px">
+        <div style="font-size:13px">${dateTaken ? esc(fmtDate(dateTaken)) : "No date"}</div>
+        ${ageLabel ? `<div style="font-size:11px;color:var(--text-dim);margin-top:1px">${esc(ageLabel)}</div>` : ""}
+        ${top.stage ? `<div style="margin-top:4px"><span class="stamp tone-slate">${esc(top.stage)}</span></div>` : ""}
       </div>
     </div>`;
 }
@@ -6273,18 +6298,33 @@ function openBirdTimelineModal(bird, onBack) {
   const html = `
     <div class="form-head">${esc(bird.name) || "Bird"}'s timeline</div>
     <div class="dim" style="font-size:12px;margin:-8px 0 14px">${photos.length} photo${photos.length !== 1 ? "s" : ""} so far. Tap a photo (or a stack) to look closer.</div>
-    ${yearSections.map(section => `
-      <div class="flock-section-header" style="margin:14px 0 8px">${esc(section.year)}</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(120px, 1fr));gap:14px">
+    ${yearSections.map((section, i) => {
+      const isOpen = i === yearSections.length - 1; // only the most recent year starts expanded
+      return `
+      <button type="button" class="flock-section-header timeline-year-toggle" data-year-toggle="${esc(section.year)}" style="margin:14px 0 8px;display:flex;align-items:center;gap:6px;width:100%;background:none;border:none;cursor:pointer;padding:0;text-align:left">
+        <span class="timeline-year-arrow" style="display:inline-block;transition:transform 0.15s ease;transform:rotate(${isOpen ? "90" : "0"}deg)">▸</span>
+        <span>${esc(section.year)}</span>
+        <span class="dim" style="font-weight:400;font-size:11px">${section.groups.reduce((n, g) => n + g.photos.length, 0)} photo${section.groups.reduce((n, g) => n + g.photos.length, 0) !== 1 ? "s" : ""}</span>
+      </button>
+      <div class="timeline-year-body" data-year-body="${esc(section.year)}" style="display:${isOpen ? "grid" : "none"};grid-template-columns:repeat(auto-fill, minmax(120px, 1fr));gap:14px">
         ${section.groups.map(g => dayGroupThumbHtml(g.date, g.photos, bird)).join("")}
       </div>
-    `).join("")}
+    `;
+    }).join("")}
   `;
   // onBack (the normal path, opened from the bird form) keeps the overlay
   // open on Escape/X, swapping straight back to the form -- only the
   // standalone fallback with no parent to return to is a true close.
   if (onBack) openModal(html, null, null, onBack);
   else openModal(html, () => { if (activeTab === "flock") renderFlockHub(); });
+  document.querySelectorAll("[data-year-toggle]").forEach(btn => btn.addEventListener("click", () => {
+    const year = btn.dataset.yearToggle;
+    const body = document.querySelector(`[data-year-body="${CSS.escape(year)}"]`);
+    const arrow = btn.querySelector(".timeline-year-arrow");
+    const nowOpen = body.style.display === "none";
+    body.style.display = nowOpen ? "grid" : "none";
+    arrow.style.transform = `rotate(${nowOpen ? "90" : "0"}deg)`;
+  }));
   document.querySelectorAll("[data-day-group]").forEach(el => el.addEventListener("click", () => {
     const dateTaken = el.dataset.dayGroup || null;
     const photosOnDay = STATE.birdPhotos.filter(p => p.bird_id === bird.id && (p.date_taken || null) === dateTaken);
@@ -6380,8 +6420,8 @@ function showBirdForm(bird) {
         <div class="form-head" style="font-size:13px">📸 Photo history</div>
         <div class="dim" style="font-size:11px;margin-bottom:8px">Every photo of ${esc(f.name) || "this bird"}, in one place — as a chick, a few months in, fully grown. Tap a photo to reposition it, edit its date or stage, set it as the main photo, or delete it.</div>
         <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">
-          ${birdPhotoHistoryThumbsHtml(bird.id)}
           <button class="btn ghost small" id="addHistoryPhotoBtn" style="flex:0 0 auto;height:64px;width:64px;border-radius:8px;font-size:22px;padding:0">+</button>
+          ${birdPhotoHistoryThumbsHtml(bird.id)}
         </div>
         ${STATE.birdPhotos.filter(p => p.bird_id === bird.id).length > 1 ? `<button class="btn ghost small" id="viewTimelineBtn" style="margin-top:8px">🕐 View timeline</button>` : ""}
       </div>
