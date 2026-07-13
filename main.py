@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import os
+import platform
 import secrets
 import shutil
 import sqlite3
@@ -29,7 +30,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.06-155"
+SERVER_VERSION = "2026.07.06-156"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
@@ -892,6 +893,69 @@ def export_coop_csv(coop_id: str):
             media_type="application/zip",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+
+def _dir_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
+@app.get("/api/admin/server-info")
+def get_server_info(request: Request):
+    _require_admin(request)
+
+    with get_db() as conn:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        row_counts = {}
+        for table in sorted(SCHEMA.keys()):
+            try:
+                n = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE deleted_at IS NULL").fetchone()[0]
+            except sqlite3.OperationalError:
+                n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # table has no deleted_at column
+            row_counts[table] = n
+        coop_count = conn.execute("SELECT COUNT(*) FROM coops").fetchone()[0]
+        active_session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        invite_code_count = conn.execute("SELECT COUNT(*) FROM invite_codes WHERE revoked_at IS NULL").fetchone()[0]
+
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    backups = sorted([p for p in BACKUP_DIR.glob("backup-*") if p.is_dir()], key=lambda p: p.name, reverse=True)
+    most_recent_backup = None
+    if backups:
+        ts_str = backups[0].name.replace("backup-", "")
+        try:
+            most_recent_backup = datetime.strptime(ts_str, "%Y%m%d-%H%M%S-%f").replace(tzinfo=timezone.utc).isoformat()
+        except ValueError:
+            most_recent_backup = None
+
+    return {
+        "server_version": SERVER_VERSION,
+        "python_version": platform.python_version(),
+        "sqlite_version": sqlite3.sqlite_version,
+        "database": {
+            "journal_mode": journal_mode,
+            "size_bytes": page_count * page_size,
+            "row_counts": row_counts,
+            "coop_count": coop_count,
+        },
+        "disk": {
+            "photos_bytes": _dir_size(PHOTOS_DIR),
+            "backups_bytes": _dir_size(BACKUP_DIR),
+            "data_dir_bytes": _dir_size(DATA_DIR),
+        },
+        "backups": {
+            "count": len(backups),
+            "most_recent": most_recent_backup,
+            "max_kept": MAX_BACKUPS_TO_KEEP,
+            "interval_hours": BACKUP_INTERVAL_HOURS,
+        },
+        "auth": {
+            "active_sessions": active_session_count,
+            "active_invite_codes": invite_code_count,
+        },
+    }
 
 
 @app.get("/api/backups")

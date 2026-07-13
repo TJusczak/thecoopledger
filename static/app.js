@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-155";
+const APP_VERSION = "2026.07.06-156";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -288,6 +288,12 @@ function localDateStr(d) {
 const todayStr = () => localDateStr(new Date());
 const esc = (s) => (s === undefined || s === null) ? "" : String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmtDate = (d) => !d ? "—" : new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+function fmtBytes(bytes) {
+  if (bytes == null) return "—";
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
 const fmtMoney = (n) => `$${(Number(n) || 0).toFixed(2)}`;
 
 function ageFromDate(dateStr) {
@@ -2518,10 +2524,11 @@ let settingsSubTab = "coops";
 function renderSettingsHub() {
   const el = document.getElementById("panel-settings");
   const subNav = document.getElementById("settingsSubNav");
-  if (!currentCoopId) settingsSubTab = (settingsSubTab === "connection") ? "connection" : "coops"; // the other sections need an active coop to mean anything
+  if (!currentCoopId) settingsSubTab = (settingsSubTab === "connection" || settingsSubTab === "server") ? settingsSubTab : "coops"; // the other sections need an active coop to mean anything
+  const showServerTab = !localOnlyMode && getUserRole() === "admin";
   const subs = currentCoopId
-    ? [{ id: "coops", label: "Coops" }, { id: "connection", label: "Connection" }, { id: "activity", label: "Activity" }, { id: "defaults", label: "Defaults" }]
-    : [{ id: "coops", label: "Coops" }, { id: "connection", label: "Connection" }];
+    ? [{ id: "coops", label: "Coops" }, { id: "connection", label: "Connection" }, { id: "activity", label: "Activity" }, { id: "defaults", label: "Defaults" }, ...(showServerTab ? [{ id: "server", label: "Server" }] : [])]
+    : [{ id: "coops", label: "Coops" }, { id: "connection", label: "Connection" }, ...(showServerTab ? [{ id: "server", label: "Server" }] : [])];
   subNav.innerHTML = subs.map(s => `<button class="range-btn ${settingsSubTab === s.id ? "active" : ""}" data-sub="${s.id}">${s.label}</button>`).join("");
   el.innerHTML = `<div id="settingsContent"></div>`;
   subNav.querySelectorAll("[data-sub]").forEach(b => b.addEventListener("click", () => { settingsSubTab = b.dataset.sub; renderSettingsHub(); }));
@@ -2529,6 +2536,7 @@ function renderSettingsHub() {
   else if (settingsSubTab === "connection") renderConnectionSection();
   else if (settingsSubTab === "activity") renderActivityLogSection();
   else if (settingsSubTab === "defaults") renderDefaultsSection();
+  else if (settingsSubTab === "server" && showServerTab) renderServerSection();
   else renderCoopsSection(); // thresholds used to live here; if a stale settingsSubTab still says so, land somewhere real instead of an empty panel
 }
 
@@ -2542,6 +2550,82 @@ function buildDiagnosticsText() {
   lines.push(`Server URL setting: ${getServerUrl() || "(default/same-origin)"}`);
   if (!localOnlyMode) lines.push(`Page origin: ${window.location.origin}`);
   return lines.join("\n");
+}
+
+function renderServerSection() {
+  const el = document.getElementById("settingsContent");
+  el.innerHTML = `
+    <div class="card-title" style="margin-bottom:4px">Server</div>
+    <div class="dim" style="font-size:12px;margin-bottom:14px">Admin-only technical info about the server this coop is synced to -- disk usage, database stats, and backup status, alongside this device's own connection diagnostics.</div>
+    <div id="serverInfoArea" class="dim" style="font-size:12px">Loading...</div>
+  `;
+  loadServerInfo();
+}
+
+async function loadServerInfo() {
+  const area = document.getElementById("serverInfoArea");
+  if (!area) return;
+  try {
+    const res = await fetch(apiUrl("/api/admin/server-info"), { headers: authHeaders() });
+    if (!res.ok) throw new Error("Failed to load server info");
+    const info = await res.json();
+
+    const statRow = (label, value) => `
+      <div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0">
+        <span class="dim">${esc(label)}</span><span style="color:var(--text)">${value}</span>
+      </div>
+    `;
+    const rowCountRows = Object.entries(info.database.row_counts)
+      .filter(([, n]) => n > 0)
+      .sort((a, b) => b[1] - a[1])
+      .map(([table, n]) => statRow(table, n.toLocaleString()))
+      .join("");
+
+    area.innerHTML = `
+      <div class="card">
+        <div class="card-title" style="font-size:14px">Server</div>
+        ${statRow("App version", esc(info.server_version))}
+        ${statRow("Python", esc(info.python_version))}
+        ${statRow("SQLite", `${esc(info.sqlite_version)} (${esc(info.database.journal_mode)} mode)`)}
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <div class="card-title" style="font-size:14px">Disk usage</div>
+        ${statRow("Photos", fmtBytes(info.disk.photos_bytes))}
+        ${statRow("Backups", fmtBytes(info.disk.backups_bytes))}
+        <div style="border-top:1px solid var(--border);margin-top:4px;padding-top:4px">
+          ${statRow("Total (data directory)", fmtBytes(info.disk.data_dir_bytes))}
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <div class="card-title" style="font-size:14px">Database</div>
+        ${statRow("Database file size", fmtBytes(info.database.size_bytes))}
+        ${statRow("Coops", info.database.coop_count)}
+        ${rowCountRows ? `<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px">${rowCountRows}</div>` : ""}
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <div class="card-title" style="font-size:14px">Backups</div>
+        ${statRow("Currently kept", `${info.backups.count} of ${info.backups.max_kept}`)}
+        ${statRow("Most recent", info.backups.most_recent ? relativeTime(info.backups.most_recent) : "none yet")}
+        ${statRow("Runs every", `${info.backups.interval_hours}h`)}
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <div class="card-title" style="font-size:14px">Access</div>
+        ${statRow("Active invite codes", info.auth.active_invite_codes)}
+        ${statRow("Active sessions", info.auth.active_sessions)}
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <div class="card-title" style="font-size:14px">This device</div>
+        <div id="diagText" class="dim" style="font-size:11px;font-family:'JetBrains Mono',monospace;line-height:1.8;white-space:pre-wrap;margin-top:6px">${esc(buildDiagnosticsText())}</div>
+      </div>
+    `;
+  } catch (err) {
+    area.innerHTML = `<div class="dim">Couldn't load server info right now.</div>`;
+  }
 }
 
 let activityLogVisibleCount = PAGE_SIZE;
@@ -2758,11 +2842,6 @@ function renderConnectionSection() {
       </div>
       <button class="btn btn-close" id="clearLocalDataBtn">🗑 Clear local data and start fresh</button>
     </div>
-
-    <div class="card" style="margin-top:16px">
-      <div class="card-title">Diagnostics</div>
-      <div id="diagText" class="dim" style="font-size:11px;font-family:'JetBrains Mono',monospace;line-height:1.8;white-space:pre-wrap">${esc(buildDiagnosticsText())}</div>
-    </div>
   `;
   const checkUpdateBtn = document.getElementById("checkUpdateBtn");
   if (checkUpdateBtn) checkUpdateBtn.addEventListener("click", () => checkForAppUpdate({ manual: true }));
@@ -2840,12 +2919,11 @@ function renderConnectionSection() {
         area.innerHTML = `<div class="dim">No backups yet -- the first one is created automatically within a day of the server starting up.</div>`;
         return;
       }
-      const fmtSize = (bytes) => bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
       area.innerHTML = backups.map(b => `
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">
           <div>
             <div style="color:var(--text);font-size:13px">${esc(new Date(b.created_at).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }))}</div>
-            <div class="dim" style="font-size:11px">${fmtSize(b.size_bytes)}</div>
+            <div class="dim" style="font-size:11px">${fmtBytes(b.size_bytes)}</div>
           </div>
           <a class="btn ghost small" href="${apiUrl(`/api/backups/${encodeURIComponent(b.filename)}`)}?token=${encodeURIComponent(getAuthToken())}" download>⬇ Download</a>
         </div>

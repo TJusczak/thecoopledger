@@ -287,13 +287,21 @@ move them elsewhere.
 
 ## Backup
 
-**The database (self-hosted / synced mode):** everything lives in one
-SQLite file, `data/coop.db`. Back it up however you already back up other
-files on your server — rsync, a TrueNAS snapshot/replication task, a cron
-`cp` to another dataset, whatever you're already doing for Immich/
-Paperless. Stopping the container first isn't strictly necessary (SQLite
-is crash-safe), but for a guaranteed-consistent snapshot: `docker compose
-stop`, copy the file, `docker compose start`.
+**Automatic (self-hosted / synced mode):** the server keeps a rolling two
+weeks of full backups (database + every photo) on its own, created daily,
+no setup needed. Photos are hard-linked rather than copied into each one,
+so the whole two weeks costs barely more disk space than a single day's
+data. Download any of them from Settings → Connection, or find them
+directly on disk under `data/backups/`.
+
+**The database directly (self-hosted / synced mode):** everything also
+lives in one SQLite file, `data/coop.db`, if you'd rather back it up
+yourself the way you already back up other files on your server — rsync,
+a TrueNAS snapshot/replication task, a cron `cp` to another dataset,
+whatever you're already doing for Immich/Paperless. Stopping the
+container first isn't strictly necessary (SQLite is crash-safe), but for
+a guaranteed-consistent snapshot: `docker compose stop`, copy the file,
+`docker compose start`.
 
 **Per-coop exports (either mode):** from Settings → Coops, "Export (.zip)"
 is a full backup of a single coop — all its data plus real photo files —
@@ -302,14 +310,25 @@ viewing/analyzing in a spreadsheet, not a backup (no photos, can't be
 re-imported).
 
 To restore the whole database, drop a `coop.db` back into `data/` before
-starting the container. To restore a single coop from a `.zip` export, use
-Import on the Coops page.
+starting the container (an automatic backup's `coop.db` works here too).
+To restore a single coop from a `.zip` export, use Import on the Coops
+page.
 
 ## Security notes
 
-- Auth is a single, server-wide invite code (not per-coop) — rate-limited,
-  with a lockout after repeated failed attempts. Rotate it from Settings →
-  Connection; sessions can be reviewed/revoked from there too.
+- Auth is invite-code based (server-wide, not per-coop), rate-limited with
+  a lockout after repeated failed attempts. An admin can generate any
+  number of codes from Settings → Connection, each tagged **admin** (full
+  access) or **read-only** (can see everything, can't add/edit/delete
+  anything) — give each person their own code rather than sharing one, so
+  any single code can be revoked without affecting anyone else. The
+  original code from first setup keeps working as an admin code
+  unchanged. Sessions can be reviewed and individually revoked from
+  Settings too.
+- Read-only enforcement lives on the server, not just hidden in the UI —
+  every write request is checked centrally before it ever reaches an
+  endpoint, so it doesn't depend on every screen correctly disabling its
+  own buttons.
 - If you're exposing this beyond your home network, set the
   `TRUST_PROXY_HEADERS=1` environment variable **only if** you're actually
   behind a trusted reverse proxy (e.g. Cloudflare Tunnel) that sets
