@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-160";
+const APP_VERSION = "2026.07.13-161";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -1545,6 +1545,8 @@ async function localHatchDelete(id, coopId) {
   const existing = await localGetOne("hatches", id);
   const now = new Date().toISOString();
   await localPutMany("hatches", [{ ...(existing || { id }), deleted_at: now, updated_at: now }]);
+  const clutchEggs = (await localGetAll("hatch_eggs", coopId)).filter(e => e.hatch_id === id && !e.deleted_at);
+  if (clutchEggs.length) await localPutMany("hatch_eggs", clutchEggs.map(e => ({ ...e, deleted_at: now, updated_at: now })));
   await queueOutbox({ resource: "hatches", op: "delete", id, payload: null });
   trySyncSoon("hatches", coopId);
   if (existing) pushUndoAction(`Deleted clutch (${existing.egg_count} eggs, started ${fmtDate(existing.date_started)})`, [{ resource: "hatches", id, before: existing, after: null }]);
@@ -2581,11 +2583,19 @@ async function loadServerInfo() {
         <span class="dim">${esc(label)}</span><span style="color:var(--text)">${value}</span>
       </div>
     `;
+    const tombs = info.database.tombstone_counts || {};
     const rowCountRows = Object.entries(info.database.row_counts)
-      .filter(([, n]) => n > 0)
+      .filter(([table, n]) => n > 0 || tombs[table] > 0)
       .sort((a, b) => b[1] - a[1])
-      .map(([table, n]) => statRow(table, n.toLocaleString()))
+      .map(([table, n]) => statRow(table, `${n.toLocaleString()}${tombs[table] ? ` <span class="dim" style="font-size:11px">+ ${tombs[table].toLocaleString()} deleted</span>` : ""}`))
       .join("");
+    // Per-coop breakdown -- the flat totals sum every live coop, so this is
+    // what answers "why is birds bigger than my flock" at a glance.
+    const perCoopHtml = (info.database.per_coop && info.database.per_coop.length > 1) ? info.database.per_coop.map(c => `
+      <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px">
+        <div style="font-size:12px;color:var(--text);font-weight:600;margin-bottom:2px">${esc(c.name)}</div>
+        ${Object.entries(c.counts).filter(([, n]) => n > 0).map(([table, n]) => statRow(table, n.toLocaleString())).join("") || `<div class="dim" style="font-size:12px;padding:3px 0">empty</div>`}
+      </div>`).join("") : "";
 
     area.innerHTML = `
       <div class="card">
@@ -2607,9 +2617,16 @@ async function loadServerInfo() {
       <div class="card" style="margin-top:14px">
         <div class="card-title" style="font-size:14px">Database</div>
         ${statRow("Database file size", fmtBytes(info.database.size_bytes))}
-        ${statRow("Coops", info.database.coop_count)}
+        ${statRow("Coops", `${info.database.coop_count}${info.database.deleted_coop_count ? ` <span class="dim" style="font-size:11px">+ ${info.database.deleted_coop_count} deleted</span>` : ""}`)}
         ${rowCountRows ? `<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px">${rowCountRows}</div>` : ""}
+        ${(info.database.tombstone_counts && Object.keys(info.database.tombstone_counts).length) ? `<div class="dim" style="font-size:11px;margin-top:8px">"Deleted" rows are sync markers, not clutter -- they're how other devices learn something was removed. They're excluded from every count and total in the app itself.</div>` : ""}
       </div>
+
+      ${perCoopHtml ? `
+      <div class="card" style="margin-top:14px">
+        <div class="card-title" style="font-size:14px">Per coop</div>
+        <div style="margin-top:-6px">${perCoopHtml}</div>
+      </div>` : ""}
 
       <div class="card" style="margin-top:14px">
         <div class="card-title" style="font-size:14px">Backups</div>
@@ -2719,6 +2736,25 @@ function renderConnectionSection() {
       </div>
     </div>
 
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">Sync status</div>
+      <div class="dim" style="font-size:12px;margin-bottom:12px">
+        Everything is stored on this device first and syncs with the server in the background -- birds, eggs, expenses, supplies, bedding, notes, health/medical logs, and coop management (creating, renaming, deleting a coop, and settings like defaults and bedding areas). Photos queue separately (they're files, not data rows) and upload as soon as a connection is available. Exporting a full backup works with or without a connection.
+      </div>
+      <div id="syncStatus" class="dim" style="font-size:12px;margin-bottom:10px">Checking...</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+        <button class="btn btn-confirm" id="syncNowBtn">↻ Sync now</button>
+        <label class="field" style="margin:0"><span style="font-size:11px">Auto-sync</span>
+          <select id="syncIntervalSelect">
+            <option value="30" ${getSyncIntervalSec() === 30 ? "selected" : ""}>Every 30 seconds</option>
+            <option value="60" ${getSyncIntervalSec() === 60 ? "selected" : ""}>Every minute</option>
+            <option value="300" ${getSyncIntervalSec() === 300 ? "selected" : ""}>Every 5 minutes</option>
+            <option value="0" ${getSyncIntervalSec() === 0 ? "selected" : ""}>Manual only</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
     ${getUserRole() === "admin" ? `
     <div class="card" style="margin-top:16px">
       <div class="card-title">Invite codes</div>
@@ -2738,25 +2774,6 @@ function renderConnectionSection() {
       <div style="margin-top:10px"><button class="btn btn-confirm" id="createInviteBtn">+ Create invite code</button></div>
     </div>
     ` : ""}
-
-    <div class="card" style="margin-top:16px">
-      <div class="card-title">Sync status</div>
-      <div class="dim" style="font-size:12px;margin-bottom:12px">
-        Everything is stored on this device first and syncs with the server in the background -- birds, eggs, expenses, supplies, bedding, notes, health/medical logs, and coop management (creating, renaming, deleting a coop, and settings like defaults and bedding areas). Photos queue separately (they're files, not data rows) and upload as soon as a connection is available. Exporting a full backup works with or without a connection.
-      </div>
-      <div id="syncStatus" class="dim" style="font-size:12px;margin-bottom:10px">Checking...</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
-        <button class="btn btn-confirm" id="syncNowBtn">↻ Sync now</button>
-        <label class="field" style="margin:0"><span style="font-size:11px">Auto-sync</span>
-          <select id="syncIntervalSelect">
-            <option value="30" ${getSyncIntervalSec() === 30 ? "selected" : ""}>Every 30 seconds</option>
-            <option value="60" ${getSyncIntervalSec() === 60 ? "selected" : ""}>Every minute</option>
-            <option value="300" ${getSyncIntervalSec() === 300 ? "selected" : ""}>Every 5 minutes</option>
-            <option value="0" ${getSyncIntervalSec() === 0 ? "selected" : ""}>Manual only</option>
-          </select>
-        </label>
-      </div>
-    </div>
 
     <div class="card" style="margin-top:16px">
       <div class="card-title">Account</div>
@@ -5275,6 +5292,10 @@ function chartOpts(yFormatter) {
   return {
     responsive: true,
     maintainAspectRatio: false,
+    // Tap/hover anywhere on a chart column to read that point's values --
+    // the default (intersect: true) needs a direct hit on a 2px point,
+    // which effectively means tooltips never appear on a touchscreen.
+    interaction: { mode: "index", intersect: false },
     plugins: { legend: { display: false }, tooltip: { callbacks: yFormatter ? { label: (ctx) => yFormatter(ctx.parsed.y) } : undefined } },
     scales: {
       x: { ticks: { color: "#C7B9A6", font: { size: 10 } }, grid: { color: "#5A4B3C40" } },

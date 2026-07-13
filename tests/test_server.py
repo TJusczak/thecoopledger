@@ -389,3 +389,38 @@ def test_idle_pruning_off_by_default(client, admin_code):
     assert main.SESSION_MAX_IDLE_DAYS == 0
     main._prune_idle_sessions()
     assert client.get("/api/coops", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+
+# ------------------------------------------------- hatch cascade & server-info
+
+def test_hatch_delete_cascades_to_hatch_eggs(client, admin, coop):
+    h = client.post("/api/hatches", json={"coop_id": coop, "date_started": "2026-07-01", "egg_count": 3}, headers=admin).json()
+    eggs = [client.post("/api/hatch_eggs", json={"coop_id": coop, "hatch_id": h["id"], "position": i}, headers=admin).json() for i in range(3)]
+    client.delete(f"/api/hatches/{h['id']}", headers=admin)
+    rows = client.get(f"/api/sync/hatch_eggs?coop_id={coop}", headers=admin).json()["rows"]
+    for egg in eggs:
+        tomb = next(r for r in rows if r["id"] == egg["id"])
+        assert tomb["deleted_at"] is not None, "hatch_eggs must be tombstoned with their clutch"
+
+
+def test_orphan_repair_migration(client, admin, coop):
+    # Manufacture a pre-fix orphan: live egg row under an already-deleted hatch.
+    with sqlite3.connect(main.DB_PATH) as conn:
+        conn.execute("INSERT INTO hatches (id, coop_id, date_started, deleted_at, updated_at) VALUES ('orph-h', ?, '2026-01-01', '2026-01-02T00:00:00+00:00', '2026-01-02T00:00:00+00:00')", (coop,))
+        conn.execute("INSERT INTO hatch_eggs (id, coop_id, hatch_id, updated_at) VALUES ('orph-e', ?, 'orph-h', '2026-01-01T00:00:00+00:00')", (coop,))
+    main.migrate_repair_orphaned_hatch_eggs()
+    with sqlite3.connect(main.DB_PATH) as conn:
+        deleted_at, updated_at = conn.execute("SELECT deleted_at, updated_at FROM hatch_eggs WHERE id='orph-e'").fetchone()
+    assert deleted_at is not None
+    assert updated_at > "2026-01-01T00:00:00+00:00"  # bumped, so the fix syncs out to devices
+
+
+def test_server_info_counts_are_active_and_broken_down(client, admin, coop):
+    bird = client.post("/api/birds", json={"coop_id": coop, "name": "Counted"}, headers=admin).json()
+    client.delete(f"/api/birds/{bird['id']}", headers=admin)
+    info = client.get("/api/admin/server-info", headers=admin).json()
+    db = info["database"]
+    assert db["tombstone_counts"].get("birds", 0) >= 1
+    assert db["coop_count"] == len(db["per_coop"])  # active coops only, matching the breakdown
+    total_birds_across_coops = sum(c["counts"]["birds"] for c in db["per_coop"])
+    assert db["row_counts"]["birds"] == total_birds_across_coops  # flat total == sum of per-coop

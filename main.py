@@ -58,7 +58,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.13-160"
+SERVER_VERSION = "2026.07.13-161"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
@@ -1002,13 +1002,31 @@ def get_server_info(request: Request):
         page_count = conn.execute("PRAGMA page_count").fetchone()[0]
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
         row_counts = {}
+        tombstone_counts = {}
         for table in sorted(SCHEMA.keys()):
             try:
                 n = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE deleted_at IS NULL").fetchone()[0]
+                t = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE deleted_at IS NOT NULL").fetchone()[0]
             except sqlite3.OperationalError:
                 n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # table has no deleted_at column
+                t = 0
             row_counts[table] = n
-        coop_count = conn.execute("SELECT COUNT(*) FROM coops").fetchone()[0]
+            if t:
+                tombstone_counts[table] = t
+        coop_count = conn.execute("SELECT COUNT(*) FROM coops WHERE deleted_at IS NULL").fetchone()[0]
+        deleted_coop_count = conn.execute("SELECT COUNT(*) FROM coops WHERE deleted_at IS NOT NULL").fetchone()[0]
+        # Per-coop breakdown of the tables people actually think in terms of.
+        # The flat totals above sum across every live coop, so anyone with a
+        # leftover test coop sees inflated numbers with no visible reason --
+        # this makes the reason visible.
+        per_coop = []
+        for coop in conn.execute("SELECT id, name FROM coops WHERE deleted_at IS NULL ORDER BY name").fetchall():
+            counts = {}
+            for table in ("birds", "eggs", "expenses", "supplies", "supply_products", "hatches", "notes", "bird_photos"):
+                counts[table] = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE deleted_at IS NULL AND coop_id = ?", (coop["id"],)
+                ).fetchone()[0]
+            per_coop.append({"id": coop["id"], "name": coop["name"], "counts": counts})
         active_session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         invite_code_count = conn.execute("SELECT COUNT(*) FROM invite_codes WHERE revoked_at IS NULL").fetchone()[0]
 
@@ -1030,7 +1048,10 @@ def get_server_info(request: Request):
             "journal_mode": journal_mode,
             "size_bytes": page_count * page_size,
             "row_counts": row_counts,
+            "tombstone_counts": tombstone_counts,
             "coop_count": coop_count,
+            "deleted_coop_count": deleted_coop_count,
+            "per_coop": per_coop,
         },
         "disk": {
             "photos_bytes": _dir_size(PHOTOS_DIR),
@@ -1696,6 +1717,24 @@ async def _periodic_maintenance_loop():
             print(f"Periodic maintenance error: {e}")
 
 
+def migrate_repair_orphaned_hatch_eggs():
+    """Tombstones hatch_eggs whose parent hatch was already deleted -- these
+    are orphans from before hatch deletion cascaded to its egg rows. They
+    were invisible in the app (nothing renders eggs for a deleted clutch)
+    but still counted, synced to every device, and carried in every backup.
+    Setting updated_at makes the fix itself sync outward, so every device's
+    local copy gets the same cleanup on its next pull."""
+    now = _now_iso()
+    with get_db() as conn:
+        cur = conn.execute(
+            """UPDATE hatch_eggs SET deleted_at = ?, updated_at = ?
+               WHERE deleted_at IS NULL AND hatch_id IN (SELECT id FROM hatches WHERE deleted_at IS NOT NULL)""",
+            (now, now),
+        )
+        if cur.rowcount:
+            print(f"Repair: tombstoned {cur.rowcount} orphaned hatch_eggs row(s) whose clutch was already deleted")
+
+
 async def _on_startup():
     """All startup work in one place (modern lifespan handler, replacing the
     two deprecated @app.on_event hooks this grew out of). Order matters:
@@ -1707,6 +1746,7 @@ async def _on_startup():
     migrate_base64_photos_to_files()
     migrate_flat_photos_to_coop_folders()
     migrate_repair_orphaned_photo_refs()
+    migrate_repair_orphaned_hatch_eggs()
     _maybe_auto_rotate_invite_code()  # catch anything overdue from while the server was down
     _prune_old_activity_log()
     _prune_old_failed_logins()
@@ -1982,6 +2022,11 @@ def delete_item(resource: str, item_id: str):
                 photo_to_clean = row["photo"]
             # Soft-delete cascaded logs too, so a syncing client learns those are gone as well.
             conn.execute('UPDATE bird_logs SET deleted_at = ?, updated_at = ? WHERE bird_id = ?', (now, now, item_id))
+        elif resource == "hatches":
+            # A clutch's per-egg tracking rows go with it. Without this they
+            # linger as live orphans forever -- invisible in the app (their
+            # parent is gone) but still counted, synced, and backed up.
+            conn.execute('UPDATE hatch_eggs SET deleted_at = ?, updated_at = ? WHERE hatch_id = ? AND deleted_at IS NULL', (now, now, item_id))
         elif resource in ("bird_photos", "supply_products"):
             row = conn.execute(f"SELECT photo FROM {resource} WHERE id = ?", (item_id,)).fetchone()
             if row:
