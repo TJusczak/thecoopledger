@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-159";
+const APP_VERSION = "2026.07.13-160";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -4711,6 +4711,124 @@ function cleanoutTone(days, area) {
   return { tone: "sage", label: `${days}d since clean-out` };
 }
 
+/** Tiny inline trend line for a stat card -- last 8 weeks, weekly buckets.
+ * Deliberately axis-less and label-less: it's an at-a-glance shape ("rising,
+ * falling, steady"), not a chart -- the real charts with the range toggle
+ * live further down the same page. A flat baseline renders when everything
+ * is zero so the card doesn't jump in height for a brand-new coop. */
+function sparklineSvg(values) {
+  const w = 100, h = 24, pad = 2;
+  const max = Math.max(...values), min = Math.min(...values);
+  const span = (max - min) || 1;
+  const step = (w - pad * 2) / Math.max(values.length - 1, 1);
+  const pts = values.map((v, i) => {
+    const x = pad + i * step;
+    const y = max === min ? h - pad : pad + (1 - (v - min) / span) * (h - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const last = pts[pts.length - 1].split(",");
+  return `<svg class="stat-spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+    <polyline points="${pts.join(" ")}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="2" fill="currentColor"/>
+  </svg>`;
+}
+
+/** "▲ 12% vs last month" chip. Compares month-to-date against the SAME
+ * number of days into last month -- comparing 13 days of July against all
+ * 31 of June would make every month look like a collapse until the 20th.
+ * goodUp flips the coloring for numbers where rising is bad (spending). */
+function deltaChipHtml(current, previous, { goodUp = true } = {}) {
+  if (!(previous > 0)) return ""; // nothing meaningful to compare against yet
+  const pct = Math.round(((current - previous) / previous) * 100);
+  if (Math.abs(pct) < 1) return `<span class="delta-chip tone-slate">≈ last month</span>`;
+  const up = pct > 0;
+  const tone = up === goodUp ? "sage" : "rust";
+  return `<span class="delta-chip tone-${tone}">${up ? "▲" : "▼"} ${Math.abs(pct)}% vs last month</span>`;
+}
+
+/** Weekly trend series (oldest -> newest, 8 buckets) and month-over-month
+ * deltas for the overview cards. Trend values use the raw per-entry
+ * estimates (count x price, weight x price) on BOTH sides of every
+ * comparison -- skipping the sale-washout machinery on purpose, since a
+ * consistent estimator is what makes a trend/delta honest, and the exact
+ * washed-out accounting already lives in the card's main number. */
+function computeCardTrends() {
+  const WEEKS = 8;
+  const today = new Date(todayStr() + "T00:00:00");
+  const bucketOf = (dateStr) => {
+    if (!dateStr) return -1;
+    const days = Math.floor((today - new Date(dateStr.slice(0, 10) + "T00:00:00")) / 86400000);
+    if (days < 0 || days >= WEEKS * 7) return -1;
+    return WEEKS - 1 - Math.floor(days / 7); // oldest bucket first
+  };
+  const zeros = () => Array(WEEKS).fill(0);
+  const d = getCoopDefaults();
+  const eggPriceFallback = Number(d.eggPrice) || 0;
+  const meatPriceFallback = Number(d.pricePerLb) || 0;
+
+  const eggsW = zeros(), valueW = zeros(), spentW = zeros(), meatLbW = zeros();
+  STATE.eggs.forEach(e => {
+    const b = bucketOf(e.date);
+    if (b < 0) return;
+    const count = Number(e.count) || 0;
+    eggsW[b] += count;
+    valueW[b] += count * (Number(e.price_per_egg) || eggPriceFallback);
+  });
+  STATE.birds.forEach(bird => {
+    if (bird.status !== "Processed" || !bird.harvest_date) return;
+    const b = bucketOf(bird.harvest_date);
+    if (b < 0) return;
+    const wt = Number(bird.harvest_weight) || 0;
+    meatLbW[b] += wt;
+    valueW[b] += wt * (Number(bird.price_per_lb) || meatPriceFallback);
+  });
+  STATE.expenses.forEach(x => {
+    if (x.entry_type === "income") return;
+    const b = bucketOf(x.date);
+    if (b >= 0) spentW[b] += Number(x.amount) || 0;
+  });
+  const netW = valueW.map((v, i) => v - spentW[i]);
+
+  // Flock size at the end of each weekly bucket.
+  const flockW = zeros();
+  for (let i = 0; i < WEEKS; i++) {
+    const end = new Date(today); end.setDate(end.getDate() - (WEEKS - 1 - i) * 7);
+    const endStr = end.toISOString().slice(0, 10);
+    flockW[i] = STATE.birds.filter(bird => {
+      const acq = bird.acquired_date || bird.hatch_date;
+      if (!acq || acq > endStr) return false;
+      const left = bird.status === "Processed" ? bird.harvest_date : bird.status === "Deceased" ? bird.death_date : null;
+      return !(left && left <= endStr);
+    }).length;
+  }
+
+  // Month-to-date vs the same day-count into last month.
+  const now = new Date();
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const curStart = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-01`;
+  const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const prevDaysInMonth = new Date(prevMonthDate.getFullYear(), prevMonthDate.getMonth() + 1, 0).getDate();
+  const cmpDay = Math.min(now.getDate(), prevDaysInMonth);
+  const prevStart = `${prevMonthDate.getFullYear()}-${pad2(prevMonthDate.getMonth() + 1)}-01`;
+  const prevEnd = `${prevMonthDate.getFullYear()}-${pad2(prevMonthDate.getMonth() + 1)}-${pad2(cmpDay)}`;
+  const todayS = todayStr();
+  const inCur = (ds) => ds && ds >= curStart && ds <= todayS;
+  const inPrev = (ds) => ds && ds >= prevStart && ds <= prevEnd;
+
+  const sumEggs = (test) => STATE.eggs.filter(e => test(e.date)).reduce((s, e) => s + (Number(e.count) || 0), 0);
+  const sumEggValue = (test) => STATE.eggs.filter(e => test(e.date)).reduce((s, e) => s + (Number(e.count) || 0) * (Number(e.price_per_egg) || eggPriceFallback), 0);
+  const sumMeatValue = (test) => STATE.birds.filter(b => b.status === "Processed" && test(b.harvest_date)).reduce((s, b) => s + (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || meatPriceFallback), 0);
+  const sumMeatLb = (test) => STATE.birds.filter(b => b.status === "Processed" && test(b.harvest_date)).reduce((s, b) => s + (Number(b.harvest_weight) || 0), 0);
+  const sumSpent = (test) => STATE.expenses.filter(x => x.entry_type !== "income" && test(x.date)).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+
+  const cur = { eggs: sumEggs(inCur), value: sumEggValue(inCur) + sumMeatValue(inCur), meatLb: sumMeatLb(inCur), spent: sumSpent(inCur) };
+  const prev = { eggs: sumEggs(inPrev), value: sumEggValue(inPrev) + sumMeatValue(inPrev), meatLb: sumMeatLb(inPrev), spent: sumSpent(inPrev) };
+  cur.net = cur.value - cur.spent;
+  prev.net = prev.value - prev.spent;
+
+  return { eggsW, valueW, spentW, netW, meatLbW, flockW, cur, prev };
+}
+
 let coopSubTab = "overview";
 function renderCoopHub() {
   const el = document.getElementById("panel-dashboard");
@@ -4733,15 +4851,47 @@ function renderCoopOverview() {
   const s = computeStats();
   const currentYear = String(new Date().getFullYear());
   const ys = computeYearStats(currentYear);
+  const tr = computeCardTrends();
+  // Each card is a tap-through to the tab where its data lives -- the
+  // dashboard doubles as navigation. Sparkline = last 8 weeks, weekly;
+  // delta chip = month-to-date vs the same point last month. The cards
+  // themselves stay on calendar-month numbers deliberately (they pair with
+  // the "this year" subline as bookkeeping); the range toggle below keeps
+  // driving the usage figures and charts, as it always has.
+  const statCard = ({ tone, styleAttr = "", goto, label, value, sub, spark, chip }) => `
+    <div class="stat stat-tappable tone-${tone}" ${styleAttr} data-goto-tab="${goto}" role="button" tabindex="0" title="Open ${goto === "dashboard" ? "details" : goto}">
+      <div class="stat-label">${label}</div>
+      <div class="stat-value-row"><div class="stat-value">${value}</div>${chip || ""}</div>
+      <div class="stat-sub">${sub}</div>
+      ${spark ? `<div class="stat-spark-wrap">${spark}</div>` : ""}
+    </div>`;
   el.innerHTML = `
     <div class="section-gap">
       <div class="grid-stats-2">
-        <div class="stat tone-sage"><div class="stat-label">Active Birds</div><div class="stat-value">${s.active}</div><div class="stat-sub">${s.layers} layer · ${s.meatActive} meat</div></div>
-        <div class="stat tone-gold"><div class="stat-label">Value produced this month</div><div class="stat-value">${fmtMoney(s.incomeMonth)}</div><div class="stat-sub">${fmtMoney(ys.income)} this year</div></div>
-        <div class="stat tone-gold"><div class="stat-label">Eggs this month</div><div class="stat-value">${s.eggsThisMonth} · ${fmtMoney(s.eggTotalValueMonth)}</div><div class="stat-sub">${valueBreakdownHtml(s.eggIncomeMonth, s.eggActualIncomeMonth)} · ${ys.eggCount} eggs this year</div></div>
-        <div class="stat tone-sage"><div class="stat-label">Meat processed this month</div><div class="stat-value">${meatProcessedValue(s.processedThisMonth, s.weightThisMonth, s.meatTotalValueMonth)}</div><div class="stat-sub">${s.processedThisMonth > 0 ? valueBreakdownHtml(s.meatIncomeMonth, s.meatActualIncomeMonth) + " · " : ""}${displayWeight(ys.processedWeight)} ${getWeightUnit()} this year</div></div>
-        <div class="stat tone-slate"><div class="stat-label">Spent this month</div><div class="stat-value">${fmtMoney(s.thisMonth)}</div><div class="stat-sub">${fmtMoney(ys.totalExpenses)} this year</div></div>
-        <div class="stat ${s.netMonth >= 0 ? "tone-sage" : ""}" style="${s.netMonth < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net savings this month</div><div class="stat-value">${fmtMoney(s.netMonth)}</div><div class="stat-sub">${fmtMoney(ys.net)} net this year</div></div>
+        ${statCard({ tone: "sage", goto: "flock", label: "Active Birds", value: s.active,
+          sub: `${s.layers} layer · ${s.meatActive} meat`,
+          spark: sparklineSvg(tr.flockW),
+          chip: deltaChipHtml(tr.flockW[tr.flockW.length - 1], tr.flockW[tr.flockW.length - 5]) })}
+        ${statCard({ tone: "gold", goto: "expenses", label: "Value produced this month", value: fmtMoney(s.incomeMonth),
+          sub: `${fmtMoney(ys.income)} this year`,
+          spark: sparklineSvg(tr.valueW),
+          chip: deltaChipHtml(tr.cur.value, tr.prev.value) })}
+        ${statCard({ tone: "gold", goto: "eggs", label: "Eggs this month", value: `${s.eggsThisMonth} · ${fmtMoney(s.eggTotalValueMonth)}`,
+          sub: `${valueBreakdownHtml(s.eggIncomeMonth, s.eggActualIncomeMonth)} · ${ys.eggCount} eggs this year`,
+          spark: sparklineSvg(tr.eggsW),
+          chip: deltaChipHtml(tr.cur.eggs, tr.prev.eggs) })}
+        ${statCard({ tone: "sage", goto: "flock", label: "Meat processed this month", value: meatProcessedValue(s.processedThisMonth, s.weightThisMonth, s.meatTotalValueMonth),
+          sub: `${s.processedThisMonth > 0 ? valueBreakdownHtml(s.meatIncomeMonth, s.meatActualIncomeMonth) + " · " : ""}${displayWeight(ys.processedWeight)} ${getWeightUnit()} this year`,
+          spark: sparklineSvg(tr.meatLbW),
+          chip: deltaChipHtml(tr.cur.meatLb, tr.prev.meatLb) })}
+        ${statCard({ tone: "slate", goto: "expenses", label: "Spent this month", value: fmtMoney(s.thisMonth),
+          sub: `${fmtMoney(ys.totalExpenses)} this year`,
+          spark: sparklineSvg(tr.spentW),
+          chip: deltaChipHtml(tr.cur.spent, tr.prev.spent, { goodUp: false }) })}
+        ${statCard({ tone: s.netMonth >= 0 ? "sage" : "rust", styleAttr: s.netMonth < 0 ? 'style="border-left-color:var(--danger)"' : "", goto: "expenses", label: "Net savings this month", value: fmtMoney(s.netMonth),
+          sub: `${fmtMoney(ys.net)} net this year`,
+          spark: sparklineSvg(tr.netW),
+          chip: deltaChipHtml(tr.cur.net, tr.prev.net) })}
       </div>
 
       ${(() => {
@@ -4866,6 +5016,14 @@ function renderCoopOverview() {
     eggsSubTab = "hatching";
     renderEggsHub();
   }));
+  // Stat card tap-through: each card opens the tab its number lives on
+  // (switchTab lands on that tab's first sub-tab and renders it). Enter/
+  // Space too, since the cards carry role="button".
+  el.querySelectorAll("[data-goto-tab]").forEach(card => {
+    const go = () => switchTab(card.dataset.gotoTab);
+    card.addEventListener("click", go);
+    card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
+  });
   drawCharts();
 }
 

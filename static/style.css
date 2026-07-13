@@ -162,6 +162,34 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 .stat-label { color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
 .stat-value { font-family: 'Roboto Slab', serif; font-size: 26px; font-weight: 700; color: var(--text); line-height: 1; }
 .stat-sub { font-size: 12px; color: var(--text-dim); }
+.stat-value-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+
+/* Tap-through stat cards -- the whole card is a button into its tab. The
+   hover lift + border hint only appears on devices that actually hover,
+   so touch scrolling never triggers a phantom "pressed" look. */
+.stat-tappable { cursor: pointer; transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease; -webkit-tap-highlight-color: transparent; }
+@media (hover: hover) {
+  .stat-tappable:hover { transform: translateY(-2px); border-color: var(--text-dim); box-shadow: 0 4px 12px rgba(0,0,0,0.18); }
+}
+.stat-tappable:active { transform: scale(0.985); }
+.stat-tappable:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+/* Sparkline: hugs the bottom of the card, colored by the card's tone via
+   currentColor so it always matches the accent stripe. */
+.stat-spark-wrap { margin-top: 2px; }
+.stat-spark { display: block; width: 100%; height: 24px; color: var(--slate); }
+.stat.tone-sage .stat-spark { color: var(--sage); }
+.stat.tone-gold .stat-spark { color: var(--gold); }
+.stat.tone-slate .stat-spark { color: var(--slate); }
+.stat.tone-rust .stat-spark { color: var(--rust); }
+
+.delta-chip {
+  font-size: 10px; font-family: 'JetBrains Mono', monospace; font-weight: 700;
+  padding: 1px 6px; border-radius: 999px; white-space: nowrap; letter-spacing: 0.02em;
+}
+.delta-chip.tone-sage { color: var(--sage); background: color-mix(in srgb, var(--sage) 14%, transparent); }
+.delta-chip.tone-rust { color: var(--rust); background: color-mix(in srgb, var(--rust) 14%, transparent); }
+.delta-chip.tone-slate { color: var(--text-dim); background: color-mix(in srgb, var(--slate) 14%, transparent); }
 
 .stamp {
   display: inline-block; border: 2px solid var(--sage); color: var(--sage); border-radius: 4px;
