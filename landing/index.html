@@ -444,8 +444,9 @@
 (function () {
   var wrap = document.getElementById("betaTabWrap");
   var isBeta = wrap && wrap.classList.contains("channel-beta");
-  if (!isBeta) return; // stable build -- the regular logo already in the markup is correct as-is
+  if (!isBeta) return; // stable build -- the regular logo and APK link already in the markup are correct as-is
   document.querySelectorAll(".brand-logo").forEach(function (img) { img.src = "logo-inline-beta.png"; });
+  document.querySelectorAll(".android-download").forEach(function (a) { a.href = "TheCoopLedgerBeta.apk"; });
 })();
 </script>
 
