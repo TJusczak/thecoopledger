@@ -311,7 +311,7 @@ into a Dropbox/Drive/OneDrive-watched folder automatically, and a manual
 ## Installable app (PWA + Android)
 
 The app is a full PWA — install it from the browser (look for an install
-icon in the address bar, or the option in Settings → Connection) for its
+icon in the address bar, or the option in Settings → App) for its
 own window, icon, and Start Menu / home screen presence, with the app
 shell cached for offline use. There's also a wrapped Android APK (a
 Trusted Web Activity) for a proper Play-Store-style install without a
@@ -332,7 +332,7 @@ move them elsewhere.
 weeks of full backups (database + every photo) on its own, created daily,
 no setup needed. Photos are hard-linked rather than copied into each one,
 so the whole two weeks costs barely more disk space than a single day's
-data. Download any of them from Settings → Connection, or find them
+data. Download any of them from Settings → Server (admin only), or find them
 directly on disk under `data/backups/`.
 
 **The database directly (self-hosted / synced mode):** everything also

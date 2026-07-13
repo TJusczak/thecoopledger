@@ -454,8 +454,8 @@ tr:hover td { background: var(--surface-raised); }
 .supply-status-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 2px; }
 .fullness-pills { display: flex; gap: 4px; }
 .fullness-pill {
-  width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--border);
-  background: var(--surface-raised); color: var(--text-dim); font-size: 14px; line-height: 1;
+  width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border);
+  background: var(--surface-raised); color: var(--text-dim); font-size: 19px; line-height: 1;
   display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0;
   transition: transform 0.12s ease, background-color 0.12s ease, color 0.12s ease;
 }
@@ -649,6 +649,23 @@ tr:hover td { background: var(--surface-raised); }
 }
 @media (prefers-reduced-motion: reduce) {
   .modal-overlay, .modal-panel { transition: none; }
+}
+
+/* Search opens as a top sheet on mobile: the keyboard claims the bottom half
+   of the screen the moment the input focuses, so a bottom sheet's results
+   list ends up hidden directly behind it. Anchoring to the top keeps the
+   input and as many results as fit visible above the keyboard; JS in
+   openGlobalSearchModal additionally caps the panel's height to the visual
+   viewport (the part not covered by the keyboard) as it opens/closes.
+   Desktop keeps its normal centered dialog -- no keyboard to dodge there. */
+@media (max-width: 719px) {
+  .modal-overlay:has(.modal-search) { align-items: flex-start; }
+  .modal-panel.modal-search {
+    border-radius: 0 0 16px 16px; border-bottom: 1px solid var(--border); border-top: none;
+    transform: translateY(-100%);
+    padding-top: calc(16px + env(safe-area-inset-top));
+  }
+  .modal-panel.modal-search::before { display: none; }
 }
 
 /* ---------- beta channel badge ---------- */

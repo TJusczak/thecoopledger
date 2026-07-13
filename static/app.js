@@ -1,8 +1,8 @@
 // ---------- State ----------
-// Bump this with any meaningful change and check it in Settings -> Connection
+// Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-158";
+const APP_VERSION = "2026.07.13-159";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -2475,18 +2475,18 @@ let settingsSubTab = "coops";
 function renderSettingsHub() {
   const el = document.getElementById("panel-settings");
   const subNav = document.getElementById("settingsSubNav");
-  if (!currentCoopId) settingsSubTab = (settingsSubTab === "connection" || settingsSubTab === "server") ? settingsSubTab : "coops"; // the other sections need an active coop to mean anything
+  if (!currentCoopId) settingsSubTab = (settingsSubTab === "connection" || settingsSubTab === "server" || settingsSubTab === "app") ? settingsSubTab : "coops"; // activity needs an active coop to mean anything
   const showServerTab = !localOnlyMode && getUserRole() === "admin";
   const subs = currentCoopId
-    ? [{ id: "coops", label: "Coops" }, { id: "connection", label: "Connection" }, { id: "activity", label: "Activity" }, { id: "defaults", label: "Defaults" }, ...(showServerTab ? [{ id: "server", label: "Server" }] : [])]
-    : [{ id: "coops", label: "Coops" }, { id: "connection", label: "Connection" }, ...(showServerTab ? [{ id: "server", label: "Server" }] : [])];
+    ? [{ id: "coops", label: "Coops" }, { id: "connection", label: "Connection" }, { id: "activity", label: "Activity" }, { id: "app", label: "App" }, ...(showServerTab ? [{ id: "server", label: "Server" }] : [])]
+    : [{ id: "coops", label: "Coops" }, { id: "connection", label: "Connection" }, { id: "app", label: "App" }, ...(showServerTab ? [{ id: "server", label: "Server" }] : [])];
   subNav.innerHTML = subs.map(s => `<button class="range-btn ${settingsSubTab === s.id ? "active" : ""}" data-sub="${s.id}">${s.label}</button>`).join("");
   el.innerHTML = `<div id="settingsContent"></div>`;
   subNav.querySelectorAll("[data-sub]").forEach(b => b.addEventListener("click", () => { settingsSubTab = b.dataset.sub; renderSettingsHub(); }));
   if (settingsSubTab === "coops") renderCoopsSection();
   else if (settingsSubTab === "connection") renderConnectionSection();
   else if (settingsSubTab === "activity") renderActivityLogSection();
-  else if (settingsSubTab === "defaults") renderDefaultsSection();
+  else if (settingsSubTab === "app" || settingsSubTab === "defaults") renderAppSection(); // "defaults" kept as an alias -- this tab used to carry that name
   else if (settingsSubTab === "server" && showServerTab) renderServerSection();
   else renderCoopsSection(); // thresholds used to live here; if a stale settingsSubTab still says so, land somewhere real instead of an empty panel
 }
@@ -2507,10 +2507,65 @@ function renderServerSection() {
   const el = document.getElementById("settingsContent");
   el.innerHTML = `
     <div class="card-title" style="margin-bottom:4px">Server</div>
-    <div class="dim" style="font-size:12px;margin-bottom:14px">Admin-only technical info about the server this coop is synced to -- disk usage, database stats, and backup status, alongside this device's own connection diagnostics.</div>
+    <div class="dim" style="font-size:12px;margin-bottom:14px">Admin-only: everything about the server this coop is synced to -- backups, security, disk usage, and database stats, alongside this device's own connection diagnostics.</div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-title" style="font-size:14px">Server backups</div>
+      <div class="dim" style="font-size:12px;margin-bottom:10px">The server automatically keeps a rolling set of daily backups (everything, plus every photo), no action needed. Download any of them below as an extra copy of your own.</div>
+      <div id="backupsListArea" class="dim" style="font-size:12px">Loading...</div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-title" style="font-size:14px">Failed login attempts</div>
+      <div class="dim" style="font-size:12px;margin-bottom:8px">Most recent 100 -- name and code as typed, not confirmed to belong to anyone.</div>
+      <div id="failedLoginsList" class="dim" style="font-size:12px">Loading...</div>
+    </div>
+
     <div id="serverInfoArea" class="dim" style="font-size:12px">Loading...</div>
   `;
+  loadServerBackupsList();
+  loadFailedLoginsList();
   loadServerInfo();
+}
+
+async function loadServerBackupsList() {
+  const area = document.getElementById("backupsListArea");
+  if (!area) return;
+  try {
+    const res = await fetch(apiUrl("/api/backups"), { headers: authHeaders() });
+    if (!res.ok) throw new Error("Failed to load backups");
+    const { backups } = await res.json();
+    if (backups.length === 0) {
+      area.innerHTML = `<div class="dim">No backups yet -- the first one is created automatically within a day of the server starting up.</div>`;
+      return;
+    }
+    area.innerHTML = backups.map(b => `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">
+        <div>
+          <div style="color:var(--text);font-size:13px">${esc(new Date(b.created_at).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }))}</div>
+          <div class="dim" style="font-size:11px">${fmtBytes(b.size_bytes)}</div>
+        </div>
+        <a class="btn ghost small" href="${apiUrl(`/api/backups/${encodeURIComponent(b.filename)}`)}?token=${encodeURIComponent(getAuthToken())}" download>⬇ Download</a>
+      </div>
+    `).join("");
+  } catch (err) {
+    area.innerHTML = `<div class="dim">Couldn't load the backup list right now.</div>`;
+  }
+}
+
+async function loadFailedLoginsList() {
+  const area = document.getElementById("failedLoginsList");
+  if (!area) return;
+  try {
+    const attempts = await apiGet("/api/auth/failed-logins");
+    area.innerHTML = attempts.length === 0 ? "None" : attempts.map(a => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
+        <span>${esc(a.name_attempted || "(no name)")} <span class="mono dim" style="font-size:11px">${esc(a.code_attempted || "")}</span></span>
+        <span class="dim" style="font-size:11px;text-align:right">${esc(a.ip)}<br>${relativeTime(a.attempted_at)}</span>
+      </div>`).join("");
+  } catch (err) {
+    area.textContent = "Couldn't load -- offline?";
+  }
 }
 
 async function loadServerInfo() {
@@ -2597,7 +2652,7 @@ function renderActivityLogSection() {
         <div class="list-card tone-${tone}">
           <div class="list-card-main">
             <div><strong style="color:var(--text)">${esc(e.changed_by || "Someone")}</strong> ${esc(e.summary || `${e.op} ${e.resource}`)}</div>
-            <div class="list-card-desc dim">${relativeTime(e.updated_at)}</div>
+            <div class="list-card-desc dim">${e.updated_at ? esc(new Date(e.updated_at).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })) : ""} — <span style="color:var(--gold)">${relativeTimeLong(e.updated_at)}</span></div>
           </div>
         </div>`;
       }).join("")}
@@ -2614,36 +2669,7 @@ function renderConnectionSection() {
   const current = getServerUrl();
   const groupHeaderStyle = "font-family:'Roboto Slab',serif;font-weight:700;font-size:15px;color:var(--gold);margin:26px 0 2px";
   el.innerHTML = `
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
-      <div class="dim" style="font-size:11px;font-family:'JetBrains Mono',monospace">App version: ${esc(APP_VERSION)}</div>
-      <button class="btn ghost small" id="checkUpdateBtn">Check for updates</button>
-    </div>
-
     <div class="card">
-      <div class="card-title">App installation</div>
-      ${isRunningAsInstalledPwa()
-        ? `<div class="dim" style="font-size:12px">✓ Running as an installed app -- its own window, icon, and full offline access.</div>`
-        : deferredInstallPrompt
-          ? `<div class="dim" style="font-size:12px;margin-bottom:10px">Install this for its own icon and window, and full offline access after your first visit.</div>
-             <button class="btn btn-confirm" id="manualInstallBtn">⬇ Install app</button>`
-          : `<div class="dim" style="font-size:12px">Not currently installed. If your browser supports it, look for an install icon in the address bar, or an "Install app" / "Add to Home Screen" option in its menu.</div>`
-      }
-    </div>
-
-    <div class="card" style="margin-top:16px">
-      <div class="card-title">📸 Photo quality</div>
-      <div class="dim" style="font-size:12px;margin-bottom:12px">How big new photos get saved at -- applies to birds, their timeline history, and supply products alike, going forward only (nothing already saved changes). Per-device, not synced, so a phone and a desktop can each use whatever tier makes sense for them.</div>
-      <div style="display:flex;flex-direction:column;gap:10px">
-        ${Object.entries(PHOTO_QUALITY_TIERS).map(([key, tier]) => `
-          <label class="field" style="display:flex;flex-direction:row;align-items:flex-start;gap:10px;cursor:pointer;margin:0">
-            <input type="radio" name="photoQualityTier" value="${key}" ${getPhotoQualityTier() === key ? "checked" : ""} style="width:auto;margin-top:3px">
-            <span><strong style="color:var(--text)">${tier.label}</strong> <span class="dim" style="font-size:11px">(~${tier.maxDim}px)</span><br><span class="dim" style="font-size:11px">${tier.hint}</span></span>
-          </label>
-        `).join("")}
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:16px">
       <div class="card-title">How this app runs</div>
       <div class="dim" style="font-size:12px;margin-bottom:12px">Switch anytime -- nothing is lost either way. Turning sync on later automatically pushes out everything you did while local-only.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -2651,21 +2677,6 @@ function renderConnectionSection() {
         <button class="btn ${!localOnlyMode ? "btn-confirm" : "ghost"}" id="modeSyncBtn">☁️ Sync with a server</button>
       </div>
     </div>
-
-    <div style="${groupHeaderStyle}">Local backup</div>
-    ${SYNC_FOLDER_SUPPORTED ? `
-    <div class="card" style="margin-top:10px" id="syncFolderCard">
-      <div class="card-title">Synced folder</div>
-      <div class="dim" style="font-size:12px;margin-bottom:10px" id="syncFolderStatus">Checking...</div>
-      <div class="dim" style="font-size:12px;margin-bottom:12px">Point this at a folder that Dropbox, Google Drive, OneDrive, or anything similar already watches on this device, and a backup can be saved straight into it -- no account or setup with any specific provider needed here, since whatever syncs that folder handles getting it off this device on its own.</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap" id="syncFolderButtons"></div>
-    </div>
-    ` : `
-    <div class="card" style="margin-top:10px">
-      <div class="card-title">Synced folder</div>
-      <div class="dim" style="font-size:12px">Not available in this browser -- this needs a Chromium-based desktop browser (Chrome or Edge on Windows, Mac, Linux, or ChromeOS). It isn't available on Android in any browser, including this app if installed there, since Android has no matching system file picker for it. Exporting a backup manually and saving it into a synced folder yourself works everywhere as an alternative.</div>
-    </div>
-    `}
 
     <div style="${groupHeaderStyle}">Online sync</div>
     <div class="card" style="margin-top:10px">
@@ -2706,12 +2717,6 @@ function renderConnectionSection() {
         <button class="btn ghost" id="testConnBtn">Test connection</button>
         ${current ? `<button class="btn btn-close" id="clearConnBtn">Reset to default</button>` : ""}
       </div>
-    </div>
-
-    <div class="card" style="margin-top:16px">
-      <div class="card-title">Server backups</div>
-      <div class="dim" style="font-size:12px;margin-bottom:10px">The server automatically keeps a rolling set of daily backups (everything, plus every photo), no action needed. Download any of them below as an extra copy of your own.</div>
-      <div id="backupsListArea" class="dim" style="font-size:12px">Loading...</div>
     </div>
 
     ${getUserRole() === "admin" ? `
@@ -2776,39 +2781,9 @@ function renderConnectionSection() {
       <div id="sessionsList" class="dim" style="font-size:12px">Loading...</div>
     </div>
 
-    <div class="card" style="margin-top:16px">
-      <div class="card-title">Failed login attempts</div>
-      <div class="dim" style="font-size:12px;margin-bottom:8px">Most recent 100 -- name and code as typed, not confirmed to belong to anyone.</div>
-      <div id="failedLoginsList" class="dim" style="font-size:12px">Loading...</div>
-    </div>
     `}
 
-    <div class="card" style="margin-top:16px;border-color:rgba(184,76,62,0.4)">
-      <div class="card-title">⚠️ Clear local data</div>
-      <div class="dim" style="font-size:12px;margin-bottom:14px">
-        Wipes everything cached on this device -- every coop, bird, egg entry, all of it -- and starts fresh. Mainly useful if switching servers has left old, unrelated coops sitting in this device's local cache.
-        ${localOnlyMode
-          ? " You're in local-only mode, so this is permanent -- there's no server copy to fall back on. Export a backup first if there's anything here you'd want to keep."
-          : " If you're synced with a server, this is generally safe -- everything gets re-downloaded from there once reconnected. But anything saved on this device that hasn't synced yet (e.g. while offline) will be lost for good."}
-      </div>
-      <button class="btn btn-close" id="clearLocalDataBtn">🗑 Clear local data and start fresh</button>
-    </div>
   `;
-  const checkUpdateBtn = document.getElementById("checkUpdateBtn");
-  if (checkUpdateBtn) checkUpdateBtn.addEventListener("click", () => checkForAppUpdate({ manual: true }));
-  const manualInstallBtn = document.getElementById("manualInstallBtn");
-  if (manualInstallBtn) manualInstallBtn.addEventListener("click", async () => {
-    if (!deferredInstallPrompt) return;
-    deferredInstallPrompt.prompt();
-    await deferredInstallPrompt.userChoice;
-    deferredInstallPrompt = null;
-    renderConnectionSection();
-  });
-  document.querySelectorAll('input[name="photoQualityTier"]').forEach(radio => radio.addEventListener("change", (e) => {
-    setPhotoQualityTier(e.target.value);
-    showToast(`Photo quality set to ${PHOTO_QUALITY_TIERS[e.target.value].label} -- applies to new photos from here on`, "update");
-  }));
-  if (SYNC_FOLDER_SUPPORTED) refreshSyncFolderUi();
   document.getElementById("saveUserNameBtn").addEventListener("click", () => {
     setUserName(document.getElementById("userNameInput").value);
     showToast(getUserName() ? `Set as ${getUserName()}` : "Name cleared", "update");
@@ -2838,51 +2813,7 @@ function renderConnectionSection() {
     if (currentCoopId) refreshAndRender();
   });
 
-  document.getElementById("clearLocalDataBtn").addEventListener("click", async () => {
-    const confirmed = await showTypeToConfirmDialog(
-      localOnlyMode
-        ? "This permanently deletes everything cached on this device -- every coop, bird, and log entry -- with no server copy to restore from. Export a backup first if you want to keep any of it."
-        : "This deletes everything cached on this device. Anything already synced re-downloads from the server automatically, but anything saved here that hasn't synced yet (e.g. while offline) is lost for good.",
-      "CLEAR",
-      "Clear local data"
-    );
-    if (!confirmed) return;
-    await new Promise((resolve, reject) => {
-      const req = indexedDB.deleteDatabase(LOCAL_DB_NAME);
-      req.onsuccess = resolve;
-      req.onerror = () => reject(req.error);
-      req.onblocked = resolve; // another tab has it open -- still proceeds, just may need a manual refresh there too
-    });
-    localStorage.removeItem(COOP_KEY);
-    location.reload();
-  });
-
   if (localOnlyMode) return; // nothing else on this page applies in local-only mode
-
-  (async () => {
-    const area = document.getElementById("backupsListArea");
-    if (!area) return;
-    try {
-      const res = await fetch(apiUrl("/api/backups"), { headers: authHeaders() });
-      if (!res.ok) throw new Error("Failed to load backups");
-      const { backups } = await res.json();
-      if (backups.length === 0) {
-        area.innerHTML = `<div class="dim">No backups yet -- the first one is created automatically within a day of the server starting up.</div>`;
-        return;
-      }
-      area.innerHTML = backups.map(b => `
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">
-          <div>
-            <div style="color:var(--text);font-size:13px">${esc(new Date(b.created_at).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }))}</div>
-            <div class="dim" style="font-size:11px">${fmtBytes(b.size_bytes)}</div>
-          </div>
-          <a class="btn ghost small" href="${apiUrl(`/api/backups/${encodeURIComponent(b.filename)}`)}?token=${encodeURIComponent(getAuthToken())}" download>⬇ Download</a>
-        </div>
-      `).join("");
-    } catch (err) {
-      area.innerHTML = `<div class="dim">Couldn't load the backup list right now.</div>`;
-    }
-  })();
 
   if (getUserRole() === "admin") {
     async function loadInviteCodesList() {
@@ -3056,19 +2987,6 @@ function renderConnectionSection() {
         sessionsEl.textContent = "Couldn't load -- offline?";
       }
     }
-    const failedLoginsEl = document.getElementById("failedLoginsList");
-    if (failedLoginsEl) {
-      try {
-        const attempts = await apiGet("/api/auth/failed-logins");
-        failedLoginsEl.innerHTML = attempts.length === 0 ? "None" : attempts.map(a => `
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
-            <span>${esc(a.name_attempted || "(no name)")} <span class="mono dim" style="font-size:11px">${esc(a.code_attempted || "")}</span></span>
-            <span class="dim" style="font-size:11px;text-align:right">${esc(a.ip)}<br>${relativeTime(a.attempted_at)}</span>
-          </div>`).join("");
-      } catch (err) {
-        failedLoginsEl.textContent = "Couldn't load -- offline?";
-      }
-    }
   }
   refreshAccountCard();
 
@@ -3111,6 +3029,25 @@ function relativeTime(iso) {
   const hrs = Math.round(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
   return fmtDate(iso.slice(0, 10));
+}
+
+/** Like relativeTime, but never falls back to a plain date -- keeps counting
+ * in days/weeks/months/years. Used where the exact timestamp is already
+ * shown alongside it (the activity log), so a second date would be noise. */
+function relativeTimeLong(iso) {
+  if (!iso) return "never";
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  if (days < 14) return `${days}d ago`;
+  const weeks = Math.round(days / 7);
+  if (weeks < 9) return `${weeks}w ago`;
+  const months = Math.round(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.round(days / 365)}y ago`;
 }
 
 async function refreshSyncStatus() {
@@ -3165,13 +3102,56 @@ function getCoopDefaults() {
   return { eggPrice: s.default_egg_price != null ? s.default_egg_price : "", pricePerLb: s.default_price_per_lb != null ? s.default_price_per_lb : "" };
 }
 
-function renderDefaultsSection() {
+function renderAppSection() {
   const el = document.getElementById("settingsContent");
-  if (!currentCoopId) { el.innerHTML = noCoopMessage(); return; }
-  const d = getCoopDefaults();
-  const weightUnit = getWeightUnit();
+  const d = currentCoopId ? getCoopDefaults() : null;
+  const weightUnit = currentCoopId ? getWeightUnit() : null;
   el.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <div class="dim" style="font-size:11px;font-family:'JetBrains Mono',monospace">App version: ${esc(APP_VERSION)}</div>
+      <button class="btn ghost small" id="checkUpdateBtn">Check for updates</button>
+    </div>
+
     <div class="card">
+      <div class="card-title">App installation</div>
+      ${isRunningAsInstalledPwa()
+        ? `<div class="dim" style="font-size:12px">✓ Running as an installed app -- its own window, icon, and full offline access.</div>`
+        : deferredInstallPrompt
+          ? `<div class="dim" style="font-size:12px;margin-bottom:10px">Install this for its own icon and window, and full offline access after your first visit.</div>
+             <button class="btn btn-confirm" id="manualInstallBtn">⬇ Install app</button>`
+          : `<div class="dim" style="font-size:12px">Not currently installed. If your browser supports it, look for an install icon in the address bar, or an "Install app" / "Add to Home Screen" option in its menu.</div>`
+      }
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">📸 Photo quality</div>
+      <div class="dim" style="font-size:12px;margin-bottom:12px">How big new photos get saved at -- applies to birds, their timeline history, and supply products alike, going forward only (nothing already saved changes). Per-device, not synced, so a phone and a desktop can each use whatever tier makes sense for them.</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${Object.entries(PHOTO_QUALITY_TIERS).map(([key, tier]) => `
+          <label class="field" style="display:flex;flex-direction:row;align-items:flex-start;gap:10px;cursor:pointer;margin:0">
+            <input type="radio" name="photoQualityTier" value="${key}" ${getPhotoQualityTier() === key ? "checked" : ""} style="width:auto;margin-top:3px">
+            <span><strong style="color:var(--text)">${tier.label}</strong> <span class="dim" style="font-size:11px">(~${tier.maxDim}px)</span><br><span class="dim" style="font-size:11px">${tier.hint}</span></span>
+          </label>
+        `).join("")}
+      </div>
+    </div>
+
+    ${SYNC_FOLDER_SUPPORTED ? `
+    <div class="card" style="margin-top:16px" id="syncFolderCard">
+      <div class="card-title">Local backup -- synced folder</div>
+      <div class="dim" style="font-size:12px;margin-bottom:10px" id="syncFolderStatus">Checking...</div>
+      <div class="dim" style="font-size:12px;margin-bottom:12px">Point this at a folder that Dropbox, Google Drive, OneDrive, or anything similar already watches on this device, and a backup can be saved straight into it -- no account or setup with any specific provider needed here, since whatever syncs that folder handles getting it off this device on its own.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap" id="syncFolderButtons"></div>
+    </div>
+    ` : `
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">Local backup -- synced folder</div>
+      <div class="dim" style="font-size:12px">Not available in this browser -- this needs a Chromium-based desktop browser (Chrome or Edge on Windows, Mac, Linux, or ChromeOS). It isn't available on Android in any browser, including this app if installed there, since Android has no matching system file picker for it. Exporting a backup manually and saving it into a synced folder yourself works everywhere as an alternative.</div>
+    </div>
+    `}
+
+    ${currentCoopId ? `
+    <div class="card" style="margin-top:16px">
       <div class="card-title">Units</div>
       <div class="dim" style="font-size:12px;margin-bottom:14px">Applies to bird weights throughout the app. Existing weights aren't changed or converted in storage -- only how they're shown and entered.</div>
       <div style="display:flex;gap:8px">
@@ -3189,20 +3169,66 @@ function renderDefaultsSection() {
       </div>
       <div style="margin-top:14px"><button class="btn btn-confirm" id="saveDefaults">✓ Save defaults</button></div>
     </div>
+    ` : `<div class="card" style="margin-top:16px"><div class="dim" style="font-size:12px">Units and default values are per-coop -- pick or create a coop to set them.</div></div>`}
+
+    <div class="card" style="margin-top:16px;border-color:rgba(184,76,62,0.4)">
+      <div class="card-title">⚠️ Clear local data</div>
+      <div class="dim" style="font-size:12px;margin-bottom:14px">
+        Wipes everything cached on this device -- every coop, bird, egg entry, all of it -- and starts fresh. Mainly useful if switching servers has left old, unrelated coops sitting in this device's local cache.
+        ${localOnlyMode
+          ? " You're in local-only mode, so this is permanent -- there's no server copy to fall back on. Export a backup first if there's anything here you'd want to keep."
+          : " If you're synced with a server, this is generally safe -- everything gets re-downloaded from there once reconnected. But anything saved on this device that hasn't synced yet (e.g. while offline) will be lost for good."}
+      </div>
+      <button class="btn btn-close" id="clearLocalDataBtn">🗑 Clear local data and start fresh</button>
+    </div>
   `;
+  const checkUpdateBtn = document.getElementById("checkUpdateBtn");
+  if (checkUpdateBtn) checkUpdateBtn.addEventListener("click", () => checkForAppUpdate({ manual: true }));
+  const manualInstallBtn = document.getElementById("manualInstallBtn");
+  if (manualInstallBtn) manualInstallBtn.addEventListener("click", async () => {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    renderAppSection();
+  });
+  document.querySelectorAll('input[name="photoQualityTier"]').forEach(radio => radio.addEventListener("change", (e) => {
+    setPhotoQualityTier(e.target.value);
+    showToast(`Photo quality set to ${PHOTO_QUALITY_TIERS[e.target.value].label} -- applies to new photos from here on`, "update");
+  }));
+  if (SYNC_FOLDER_SUPPORTED) refreshSyncFolderUi();
+  document.getElementById("clearLocalDataBtn").addEventListener("click", async () => {
+    const confirmed = await showTypeToConfirmDialog(
+      localOnlyMode
+        ? "This permanently deletes everything cached on this device -- every coop, bird, and log entry -- with no server copy to restore from. Export a backup first if you want to keep any of it."
+        : "This deletes everything cached on this device. Anything already synced re-downloads from the server automatically, but anything saved here that hasn't synced yet (e.g. while offline) is lost for good.",
+      "CLEAR",
+      "Clear local data"
+    );
+    if (!confirmed) return;
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.deleteDatabase(LOCAL_DB_NAME);
+      req.onsuccess = resolve;
+      req.onerror = () => reject(req.error);
+      req.onblocked = resolve; // another tab has it open -- still proceeds, just may need a manual refresh there too
+    });
+    localStorage.removeItem(COOP_KEY);
+    location.reload();
+  });
+  if (!currentCoopId) return; // the per-coop handlers below have nothing to attach to
   document.getElementById("unitLbBtn").addEventListener("click", async () => {
     const settings = getCoopSettings();
     settings.weight_unit = "lb";
     await localCoopUpdate(currentCoopId, { settings: JSON.stringify(settings) });
     await loadCoops();
-    renderDefaultsSection();
+    renderAppSection();
   });
   document.getElementById("unitKgBtn").addEventListener("click", async () => {
     const settings = getCoopSettings();
     settings.weight_unit = "kg";
     await localCoopUpdate(currentCoopId, { settings: JSON.stringify(settings) });
     await loadCoops();
-    renderDefaultsSection();
+    renderAppSection();
   });
   document.getElementById("saveDefaults").addEventListener("click", async () => {
     const settings = getCoopSettings();
@@ -3213,7 +3239,7 @@ function renderDefaultsSection() {
     await localCoopUpdate(currentCoopId, { settings: JSON.stringify(settings) });
     showToast("Defaults saved", "update");
     await loadCoops();
-    renderDefaultsSection();
+    renderAppSection();
   });
 }
 
@@ -3986,19 +4012,21 @@ function renderCoopsSection() {
   el.innerHTML = `
     <div class="toolbar"><div class="dim">${STATE.coops.length} coop${STATE.coops.length !== 1 ? "s" : ""}</div></div>
 
-    <div class="form-block">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start">
+    <div class="form-block" style="margin:0">
       <div class="form-head">Create a coop</div>
-      <div class="grid-form">
+      <div class="grid-form" style="grid-template-columns:1fr">
         <label class="field"><span>Name</span><input id="c_name" placeholder="e.g. Home Flock"></label>
         <label class="field"><span>Notes</span><input id="c_notes" placeholder="optional"></label>
       </div>
       <div style="margin-top:12px"><button class="btn btn-confirm" id="createCoop">+ Create coop</button></div>
     </div>
 
-    <div class="form-block">
+    <div class="form-block" style="margin:0">
       <div class="form-head">Import a coop</div>
       <div class="dim" style="font-size:12px;margin-bottom:10px">A .json import works with no connection at all -- everything (including any photos) lands in this device's local storage and syncs to the server whenever one's reachable. A .zip import needs a live connection, since unzipping and writing photo files happens server-side. Either way, this always creates a brand-new coop — it never overwrites an existing one.</div>
-      <input type="file" id="importFile" accept=".zip,application/zip,application/json">
+      <input type="file" id="importFile" accept=".zip,application/zip,application/json" style="max-width:100%">
+    </div>
     </div>
 
     <div class="note-box" style="margin-bottom:12px"><strong style="color:var(--text)">Export (.zip)</strong> is the backup to use -- everything, with real photo files in a photos/ folder, and it works the same whether you're online or offline. <strong style="color:var(--text)">Spreadsheet (.csv)</strong> is not a backup -- it's just for viewing or analyzing the data in a spreadsheet program, can't be re-imported, and doesn't include photos.</div>
@@ -5205,7 +5233,24 @@ function openGlobalSearchModal() {
       style="width:100%;padding:11px 12px;font-size:16px;border-radius:8px;border:1px solid var(--border);background:var(--surface-raised);color:var(--text);margin-bottom:14px;box-sizing:border-box">
     <div id="globalSearchResults"></div>
   `;
-  openModal(html, null);
+  // Cap the panel to the *visual* viewport -- the part of the screen the
+  // mobile keyboard isn't covering -- so the results list scrolls within
+  // the visible area instead of extending down behind the keyboard. The
+  // CSS (.modal-search) anchors this modal to the top on mobile for the
+  // same reason. Recomputed live as the keyboard opens/closes/resizes.
+  const panel = () => document.getElementById("modalPanel");
+  const fitToViewport = () => {
+    const p = panel();
+    if (!p || !window.visualViewport) return;
+    p.style.maxHeight = `${Math.round(window.visualViewport.height) - 12}px`;
+  };
+  if (window.visualViewport) visualViewport.addEventListener("resize", fitToViewport);
+  openModal(html, () => {
+    if (window.visualViewport) visualViewport.removeEventListener("resize", fitToViewport);
+    const p = panel();
+    if (p) p.style.maxHeight = ""; // don't leak the cap into the next modal that reuses this panel
+  }, null, null, "modal-search");
+  fitToViewport();
   const input = document.getElementById("globalSearchInput");
   input.focus();
   const resultsEl = document.getElementById("globalSearchResults");
@@ -6417,7 +6462,7 @@ function openHistoryPhotoOptionsModal(photo, bird, onDone) {
   const ageLabel = photo.date_taken && bird.hatch_date ? ageAtDate(bird.hatch_date, photo.date_taken) : null;
   const html = `
     <div class="form-head">Timeline photo</div>
-    <div style="width:140px;height:140px;border-radius:10px;overflow:hidden;margin:0 auto 10px;border:1px solid var(--border)">
+    <div id="hpo_photo_thumb" title="Tap to view full size" style="width:140px;height:140px;border-radius:10px;overflow:hidden;margin:0 auto 10px;border:1px solid var(--border);cursor:zoom-in">
       <img src="${birdHistoryPhotoUrl(photo)}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(photo)};${photoTransformStyle(photo)}">
     </div>
     ${ageLabel ? `<div class="dim" style="font-size:12px;text-align:center;margin-bottom:14px">${esc(ageLabel)}</div>` : ""}
@@ -6436,6 +6481,9 @@ function openHistoryPhotoOptionsModal(photo, bird, onDone) {
     </div>
   `;
   openModal(html, null, null, onDone);
+  // Same behavior as the bird's main photo in the edit form: tapping the
+  // thumbnail opens it full size. Reposition stays on its own button below.
+  document.getElementById("hpo_photo_thumb").addEventListener("click", () => showPhotoLightbox(birdHistoryPhotoUrl(photo)));
   document.getElementById("hpo_delete").addEventListener("click", async () => {
     if (!(await showConfirmDialog("Delete this timeline photo? This can't be undone."))) return;
     await localBulkDelete("bird_photos", [photo.id], currentCoopId);
@@ -8255,7 +8303,7 @@ function supplyCardHtml(s) {
   const line1 = s.brand || s.description || s.category;
   const line2 = (s.description && s.description !== line1) ? s.description : "";
   const thumb = photo
-    ? `<div style="width:48px;height:48px;border-radius:6px;overflow:hidden;flex:0 0 auto"><img src="${photo}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(product)};${photoTransformStyle(product)}"></div>`
+    ? `<div class="thumb-clickable" data-view-supply-photo="${esc(photo)}" title="Tap to view full size" onclick="event.stopPropagation()" style="width:48px;height:48px;border-radius:6px;overflow:hidden;flex:0 0 auto;cursor:zoom-in"><img src="${photo}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(product)};${photoTransformStyle(product)}"></div>`
     : `<div style="width:48px;height:48px;border-radius:6px;flex:0 0 auto;background:color-mix(in srgb, var(--${catTone}) 12%, var(--bg));display:flex;align-items:center;justify-content:center;font-size:20px">📦</div>`;
   return `<div class="list-card tone-${catTone}${selectedSupplyIds.has(s.id) ? " card-selected" : ""}" data-edit-supply="${s.id}" data-id="${s.id}">
     ${selectionState.supplies.mode ? `<input type="checkbox" class="list-card-check supply-check" data-id="${s.id}" ${selectedSupplyIds.has(s.id) ? "checked" : ""} onclick="event.stopPropagation()">` : ""}
@@ -8611,6 +8659,10 @@ function renderSupplyInventory() {
     renderSupplyInventory();
   }));
   el.querySelectorAll("[data-edit-group]").forEach(card => card.addEventListener("click", () => openSupplyGroupModal(card.dataset.editGroup)));
+  el.querySelectorAll("[data-view-supply-photo]").forEach(t => t.addEventListener("click", (e) => {
+    e.stopPropagation(); // the card itself opens the edit modal -- the photo opens full size instead
+    showPhotoLightbox(t.dataset.viewSupplyPhoto);
+  }));
   el.querySelectorAll(".fullness-pill").forEach(pill => pill.addEventListener("click", async (e) => {
     e.stopPropagation();
     const id = pill.dataset.id;
@@ -9152,6 +9204,26 @@ async function doLogin() {
 async function init() {
   document.getElementById("todayDate").textContent = fmtDate(todayStr());
   document.getElementById("globalSearchBtn").addEventListener("click", openGlobalSearchModal);
+  // Enter in any text/number/date input saves the entry it belongs to --
+  // "type 8, hit Enter, egg entry saved" instead of reaching for the button.
+  // Scoped to a containing modal or inline form block, and targeting only
+  // the primary confirm button (preferring one in .modal-actions when a
+  // modal has several buttons). Textareas keep Enter for newlines, and
+  // checkboxes/radios/files/buttons keep their native behavior.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.isComposing) return;
+    const t = e.target;
+    if (!t || t.tagName !== "INPUT") return;
+    const type = (t.getAttribute("type") || "text").toLowerCase();
+    if (["checkbox", "radio", "file", "button", "submit", "range"].includes(type)) return;
+    const scope = t.closest("#modalContent") || t.closest(".form-block");
+    if (!scope) return;
+    const saveBtn = scope.querySelector(".modal-actions .btn-confirm") || scope.querySelector(".btn-confirm");
+    if (!saveBtn || saveBtn.disabled) return;
+    e.preventDefault();
+    t.blur(); // commit any in-progress value (and drop the mobile keyboard) before saving
+    saveBtn.click();
+  });
   if (showOnboardingIfNeeded()) return; // get-started screen is showing; a choice there reloads the page and restarts init() cleanly
   const authOk = await checkAuthAndShowLoginIfNeeded();
   if (!authOk) return; // login screen is showing; a successful login reloads the page and restarts init() cleanly
