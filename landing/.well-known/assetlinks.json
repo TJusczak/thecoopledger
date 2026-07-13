@@ -1,10 +1,26 @@
 [
   {
-    "relation": ["delegate_permission/common.handle_all_urls"],
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
     "target": {
       "namespace": "android_app",
       "package_name": "com.thecoopledger.twa",
-      "sha256_cert_fingerprints": ["1E:47:14:41:BE:0F:AD:9B:96:99:AD:E9:5D:D7:7D:5C:FF:A7:6D:22:3B:CA:06:50:EC:64:C6:41:24:71:A4:52"]
+      "sha256_cert_fingerprints": [
+        "0F:89:BA:7B:D9:31:E1:E1:FB:CB:CC:AF:12:02:97:6D:98:23:EE:A3:71:2D:03:8F:46:2A:0D:BC:0C:C1:46:AA"
+      ]
+    }
+  },
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.thecoopledger.beta.twa",
+      "sha256_cert_fingerprints": [
+        "F9:1F:27:F2:63:37:D1:D1:CF:B1:3B:DF:74:3F:8F:C1:10:F1:43:01:7A:CE:54:2D:69:A9:7A:7D:42:FE:01:42"
+      ]
     }
   }
 ]
