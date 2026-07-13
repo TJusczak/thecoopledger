@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-156";
+const APP_VERSION = "2026.07.06-157";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -3319,7 +3319,7 @@ function renderAllTimeStatsSection() {
     </div>
     ${(s.costPerDozenLayers !== null || s.costPerLbMeat !== null) ? `<div class="note-box" style="margin-top:14px">
       ${s.costPerDozenLayers !== null ? `Feed cost per dozen eggs: <strong style="color:var(--text)">${fmtMoney(s.costPerDozenLayers)}</strong><br>` : ""}
-      ${s.costPerLbMeat !== null ? `Feed cost per lb of meat: <strong style="color:var(--text)">${fmtMoney(s.costPerLbMeat)}</strong><br>` : ""}
+      ${s.costPerLbMeat !== null ? `Feed cost per ${getWeightUnit()} of meat: <strong style="color:var(--text)">${fmtMoney(displayPricePerLb(s.costPerLbMeat))}</strong><br>` : ""}
       Tag Feed expenses by flock in the Finances tab to sharpen these.
     </div>` : ""}
     ${Object.keys(catTotals).length > 0 ? `
@@ -4548,7 +4548,7 @@ function renderYearReviewSection() {
 
     ${(s.costPerDozenLayers !== null || s.costPerLbMeat !== null) ? `<div class="note-box" style="margin-bottom:16px">
       ${s.costPerDozenLayers !== null ? `Feed cost per dozen eggs, ${selectedYear}: <strong style="color:var(--text)">${fmtMoney(s.costPerDozenLayers)}</strong><br>` : ""}
-      ${s.costPerLbMeat !== null ? `Feed cost per lb of meat, ${selectedYear}: <strong style="color:var(--text)">${fmtMoney(s.costPerLbMeat)}</strong><br>` : ""}
+      ${s.costPerLbMeat !== null ? `Feed cost per ${getWeightUnit()} of meat, ${selectedYear}: <strong style="color:var(--text)">${fmtMoney(displayPricePerLb(s.costPerLbMeat))}</strong><br>` : ""}
       Tag Feed expenses by flock in the Finances tab to sharpen these.
     </div>` : ""}
 
@@ -4613,7 +4613,7 @@ function drawYearReviewCharts(year) {
   reviewCharts.meat = new Chart(document.getElementById("reviewMeatChart"), {
     type: "bar",
     data: { labels: MONTH_LABELS, datasets: [{ label: "Lbs processed", data: meatMonthly, backgroundColor: "#C1502E" }] },
-    options: chartOpts((v) => `${v.toFixed(1)} lb`)
+    options: chartOpts((v) => `${displayWeight(v)} ${getWeightUnit()}`)
   });
 
   const expenseMonthly = monthlyBuckets(STATE.expenses.filter(x => x.entry_type !== "income"), year, x => Number(x.amount) || 0);
@@ -4695,6 +4695,26 @@ function parseWeightInput(displayValue) {
   if (isNaN(n)) return null;
   return getWeightUnit() === "kg" ? n / LB_TO_KG : n;
 }
+/** Converts a stored $/lb rate to the user's preferred unit's equivalent
+ * rate for display -- the INVERSE of the weight conversion, since a rate
+ * scales the opposite way from a plain quantity. $5/lb is about $11.02/kg
+ * (dividing by the lb-to-kg factor), not $2.27/kg -- a kg costs more
+ * because it's the bigger unit, not less. */
+function displayPricePerLb(dollarsPerLb) {
+  if (dollarsPerLb == null || dollarsPerLb === "") return "";
+  const n = Number(dollarsPerLb);
+  if (isNaN(n)) return "";
+  return getWeightUnit() === "kg" ? String(+(n / LB_TO_KG).toFixed(2)) : String(+n.toFixed(2));
+}
+/** Converts a $/kg (or $/lb) value the user typed back to $/lb for
+ * storage -- the inverse of displayPricePerLb. */
+function parsePricePerLbInput(displayValue) {
+  if (displayValue === "" || displayValue == null) return null;
+  const n = Number(displayValue);
+  if (isNaN(n)) return null;
+  return getWeightUnit() === "kg" ? n * LB_TO_KG : n;
+}
+function weightUnitLabel() { return getWeightUnit(); }
 function getBeddingAreas() {
   const s = getCoopSettings();
   return (s.bedding_areas && s.bedding_areas.length) ? s.bedding_areas : Object.keys(DEFAULT_BEDDING_THRESHOLDS);
@@ -5126,7 +5146,7 @@ function drawCharts() {
   charts.meat = new Chart(document.getElementById("meatChart"), {
     type: "line",
     data: { labels: meatLabels, datasets: [{ label: "Dressed weight", data: meatSeries, borderColor: "#C1502E", backgroundColor: "#C1502E22", stepped: true, pointRadius: 3 }] },
-    options: { ...chartOpts((v) => `${v.toFixed(1)} lb`) },
+    options: { ...chartOpts((v) => `${displayWeight(v)} ${getWeightUnit()}`) },
   });
 }
 
@@ -5745,7 +5765,7 @@ function birdCardHtml(b) {
       <div class="flock-card-sub">${age}${b.gender ? ` · ${b.gender === "Hen" ? "♀" : "♂"} ${b.gender}` : ""}${statusDetail ? " · " + statusDetail : ""}</div>
       ${b.status === "Active" && b.target_harvest_date ? `<div class="flock-card-sub">target ${fmtDate(b.target_harvest_date)}</div>` : ""}
       ${b.location ? `<span class="stamp tone-slate" style="margin-top:2px">📍 ${esc(b.location)}</span>` : ""}
-      ${showRate ? `<span class="stamp tone-slate" style="margin-top:4px">${weight.toFixed(1)} lb @ ${fmtMoney(pricePerLb)}/lb</span>` : ""}
+      ${showRate ? `<span class="stamp tone-slate" style="margin-top:4px">${displayWeight(weight)} ${getWeightUnit()} @ ${fmtMoney(displayPricePerLb(pricePerLb))}/${getWeightUnit()}</span>` : ""}
       ${meatValue > 0 ? `<span class="stamp stamp-lg tone-gold" style="margin-top:4px">${fmtMoney(meatValue)}</span>` : ""}
     </div>
   </div>`;
@@ -5798,7 +5818,7 @@ function groupCardHtml(batchName, filteredBirds, totalCount) {
       ${hasActive && s.target_harvest_date ? `<div style="margin-top:2px">${harvestCountdownHtml(s.target_harvest_date)}</div>` : ""}
       ${sharedLocation ? `<span class="stamp tone-slate" style="margin-top:2px">📍 ${esc(sharedLocation)}</span>` : ""}
       ${processedCount > 0 ? `
-        <span class="stamp tone-slate" style="align-self:flex-start;margin-top:4px">${totalWeight.toFixed(1)} lb @ ${fmtMoney(avgPricePerLb)}/lb</span>
+        <span class="stamp tone-slate" style="align-self:flex-start;margin-top:4px">${displayWeight(totalWeight)} ${getWeightUnit()} @ ${fmtMoney(displayPricePerLb(avgPricePerLb))}/${getWeightUnit()}</span>
         <span class="stamp tone-rust" style="align-self:flex-start;margin-top:4px">${processedCount} Processed</span>
         ${totalValue > 0 ? `<span class="stamp stamp-lg tone-gold" style="align-self:flex-start;margin-top:4px">${fmtMoney(totalValue)}</span>` : ""}
       ` : ""}
@@ -6235,7 +6255,7 @@ function showBulkEditForm() {
     <div class="grid-form">
       <label class="field"><span>Harvest date</span><input type="date" id="be_harvest_date"></label>
       <label class="field"><span>Harvest weight (${getWeightUnit()}, each)</span><input type="number" step="0.01" id="be_harvest_weight" placeholder="(no change)"></label>
-      <label class="field"><span>Store-equivalent value per lb ($)</span><input type="number" step="0.01" id="be_price" placeholder="(no change)"></label>
+      <label class="field"><span>Store-equivalent value per ${getWeightUnit()} ($)</span><input type="number" step="0.01" id="be_price" placeholder="(no change)"></label>
     </div>
     <div class="dim" style="font-size:11px;margin:12px 0 4px">If setting Status to Deceased, these fill in the loss record:</div>
     <div class="grid-form">
@@ -6284,7 +6304,7 @@ function showBulkEditForm() {
     if (type === "Layer" && !target) updates.target_harvest_date = null;
     if (harvestDate) updates.harvest_date = harvestDate;
     if (harvestWeight) updates.harvest_weight = parseWeightInput(harvestWeight);
-    if (price) updates.price_per_lb = Number(price);
+    if (price) updates.price_per_lb = parsePricePerLbInput(price);
     if (deathDate) updates.death_date = deathDate;
     if (deathCause) updates.death_cause = deathCause;
     if (borderStyle) updates.border_style = borderStyle;
@@ -6742,7 +6762,7 @@ function showBirdForm(bird) {
       target_harvest_date: val("f_target") ?? formState.target_harvest_date,
       harvest_date: val("f_hdate") ?? formState.harvest_date,
       harvest_weight: val("f_weight") != null ? parseWeightInput(val("f_weight")) : formState.harvest_weight,
-      price_per_lb: val("f_price") ?? formState.price_per_lb,
+      price_per_lb: val("f_price") != null ? parsePricePerLbInput(val("f_price")) : formState.price_per_lb,
       death_date: val("f_death_date") ?? formState.death_date,
       death_cause: val("f_death_cause") ?? formState.death_cause,
       card_color: val("f_color") ?? formState.card_color,
@@ -6826,7 +6846,7 @@ function showBirdForm(bird) {
         <label class="field"><span>Location</span><select id="f_location"><option value="">(unspecified)</option>${getBeddingAreas().map(a => `<option value="${esc(a)}" ${f.location === a ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></label>
         <label class="field"><span>Status</span><select id="f_status">${BIRD_STATUSES.map(s => `<option ${f.status === s ? "selected" : ""}>${s}</option>`).join("")}</select></label>
         <label class="field"><span>Batch</span><input id="f_batch" value="${esc(f.batch_name || "")}" placeholder="(not in a batch)"></label>
-        ${showProcessed ? `<label class="field"><span>Value per LB</span><input type="number" step="0.01" id="f_price" value="${f.price_per_lb ?? ""}" placeholder="e.g. 5.00"></label>` : ""}
+        ${showProcessed ? `<label class="field"><span>Value per ${getWeightUnit()}</span><input type="number" step="0.01" id="f_price" value="${displayPricePerLb(f.price_per_lb)}" placeholder="e.g. 5.00"></label>` : ""}
         ${showProcessed ? `<label class="field"><span>Dressed Weight (${getWeightUnit()})</span><input type="number" step="0.1" id="f_weight" value="${displayWeight(f.harvest_weight)}"></label>` : ""}
       </div>
 
