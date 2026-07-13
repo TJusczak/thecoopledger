@@ -42,7 +42,25 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  test:
+    # Runs the server test suite first -- a build that fails its own tests
+    # never gets published to either channel. Fast (a couple of minutes at
+    # most), so it costs essentially nothing on each push.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run tests
+        run: pytest -q
+
   build-and-push:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read

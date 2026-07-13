@@ -11,7 +11,7 @@ import sqlite3
 import time
 import uuid
 import zipfile
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -22,6 +22,34 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
 
+# ---------- Configuration (environment variables) ----------
+# Every setting has a sane default -- a bare `docker compose up` with no
+# configuration at all keeps working exactly as before. A malformed value
+# (e.g. MAX_PHOTO_UPLOAD_MB=banana) falls back to the default rather than
+# crashing the server on startup, but prints a warning so it isn't silent.
+
+def _env_int(name: str, default: int, minimum: int | None = None) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw.strip())
+        if minimum is not None and value < minimum:
+            print(f"WARNING: {name}={value} is below the minimum of {minimum} -- using {default}")
+            return default
+        return value
+    except ValueError:
+        print(f"WARNING: {name}={raw!r} isn't a whole number -- using the default of {default}")
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 DATA_DIR = Path(os.environ.get("DATA_DIR", "./data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "coop.db"
@@ -30,14 +58,32 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.06-157"
+SERVER_VERSION = "2026.07.13-158"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
 # well under this -- this is a backstop against something huge slipping
 # through, whether picked by mistake or from a client that bypasses the
 # frontend's resize step and hits the API directly.
-MAX_PHOTO_UPLOAD_BYTES = 25 * 1024 * 1024
+MAX_PHOTO_UPLOAD_BYTES = _env_int("MAX_PHOTO_UPLOAD_MB", 25, minimum=1) * 1024 * 1024
+
+# Automatic backups (see _create_full_backup below for how they work).
+BACKUPS_ENABLED = _env_bool("BACKUPS_ENABLED", True)
+BACKUP_INTERVAL_HOURS = _env_int("BACKUP_INTERVAL_HOURS", 24, minimum=1)
+MAX_BACKUPS_TO_KEEP = _env_int("MAX_BACKUPS_TO_KEEP", 14, minimum=1)
+
+# 0 (the default) means sessions never expire from inactivity -- matching
+# the app's original behavior, where logging in once on the kitchen tablet
+# was meant to stick. Set to e.g. 90 to automatically drop sessions that
+# haven't been used in that many days.
+SESSION_MAX_IDLE_DAYS = _env_int("SESSION_MAX_IDLE_DAYS", 0, minimum=0)
+
+# Comma-separated list of allowed CORS origins, or "*" (the default) to
+# allow any -- the permissive default is what lets a TWA/wrapped app or a
+# CDN-hosted frontend talk to a separately-hosted sync server out of the
+# box. Lock it down (e.g. "https://coop.example.com") if your frontend
+# only ever lives at one origin.
+CORS_ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "*").split(",") if o.strip()] or ["*"]
 
 DEFAULT_SETTINGS = {
     "bedding_thresholds": {
@@ -146,7 +192,7 @@ INVITE_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 # remove their local copies too via the normal sync/tombstone mechanism,
 # rather than silently drifting out of sync with the server's shorter
 # history).
-ACTIVITY_LOG_RETENTION_DAYS = 7
+ACTIVITY_LOG_RETENTION_DAYS = _env_int("ACTIVITY_LOG_RETENTION_DAYS", 7, minimum=1)
 
 
 def generate_invite_code(length=8):
@@ -385,7 +431,7 @@ def _photo_to_data_uri(photo_value):
     if not p or not p.exists():
         return None
     ext = p.suffix.lower()
-    mime = "image/png" if ext == ".png" else "image/jpeg"
+    mime = {".png": "image/png", ".webp": "image/webp", ".gif": "image/gif"}.get(ext, "image/jpeg")
     return f"data:{mime};base64,{base64.b64encode(p.read_bytes()).decode()}"
 
 
@@ -463,7 +509,13 @@ def migrate_repair_orphaned_photo_refs():
                     conn.execute(f"UPDATE {table} SET photo = NULL, updated_at = ? WHERE id = ?", (now, r["id"]))
 
 
-app = FastAPI(title="Coop Ledger")
+@asynccontextmanager
+async def _lifespan(app):
+    await _on_startup()
+    yield
+
+
+app = FastAPI(title="Coop Ledger", lifespan=_lifespan)
 
 
 # The app shell files below MUST never be cached by an intermediate proxy
@@ -516,6 +568,46 @@ class NoCacheMiddleware:
 
 
 app.add_middleware(NoCacheMiddleware)
+
+
+class SecurityHeadersMiddleware:
+    """Same non-buffering ASGI pattern as NoCacheMiddleware above -- only
+    mutates headers on http.response.start, never touches the body, so
+    streaming responses (/api/events, backup downloads) pass through
+    untouched. The headers themselves are the conservative, break-nothing
+    set:
+
+    - X-Content-Type-Options: nosniff -- the companion to the magic-byte
+      check on photo uploads. Even if something non-image ever ended up
+      under /photos/, the browser is told to trust the declared image/*
+      type rather than sniffing the bytes and potentially executing them.
+    - X-Frame-Options: DENY -- nothing about this app belongs in someone
+      else's iframe (the Android TWA is not an iframe and is unaffected).
+    - Referrer-Policy: same-origin -- photo URLs carry ?token=... for
+      <img> loading; this keeps them from leaking to any external site a
+      note or link might ever point at.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers["X-Content-Type-Options"] = "nosniff"
+                headers["X-Frame-Options"] = "DENY"
+                headers["Referrer-Policy"] = "same-origin"
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 # Paths that must stay reachable with no login at all: the login endpoint
@@ -580,9 +672,17 @@ class AuthMiddleware:
         role = None
         if token:
             with get_db() as conn:
-                row = conn.execute("SELECT role FROM sessions WHERE token = ?", (token,)).fetchone()
+                row = conn.execute("SELECT role, last_activity FROM sessions WHERE token = ?", (token,)).fetchone()
                 if row:
                     role = row["role"]
+                    # Keep last_activity current so idle-session expiry (and
+                    # the Sessions list on the Server page) reflects reality --
+                    # most requests only ever pass through here, not through
+                    # _require_auth. Throttled to once an hour per session so
+                    # this stays one read per request, not a write per request.
+                    last = row["last_activity"]
+                    if not last or (_now_iso()[:13] != last[:13]):  # different UTC hour
+                        conn.execute("UPDATE sessions SET last_activity = ? WHERE token = ?", (_now_iso(), token))
 
         if role is None:
             response = JSONResponse({"detail": "Not logged in"}, status_code=401)
@@ -607,19 +707,11 @@ app.add_middleware(AuthMiddleware)
 # regardless of status code.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def on_startup():
-    init_db()
-    migrate_base64_photos_to_files()
-    migrate_flat_photos_to_coop_folders()
-    migrate_repair_orphaned_photo_refs()
 
 
 @app.get("/api/health")
@@ -959,7 +1051,14 @@ def get_server_info(request: Request):
 
 
 @app.get("/api/backups")
-def list_backups():
+def list_backups(request: Request):
+    # Admin-only, like everything else on the Server settings page. The
+    # middleware's write-blocking doesn't help here (these are GETs), and
+    # a backup is the single most sensitive thing this server has: the
+    # database inside it contains every invite code and every session
+    # token. A read-only session being able to fetch one would be a
+    # direct path to escalating itself to admin.
+    _require_admin(request)
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     backups = []
     for p in sorted([d for d in BACKUP_DIR.glob("backup-*") if d.is_dir()], key=lambda p: p.name, reverse=True):
@@ -970,7 +1069,8 @@ def list_backups():
 
 
 @app.get("/api/backups/{filename}")
-def download_backup(filename: str):
+def download_backup(filename: str, request: Request):
+    _require_admin(request)  # see list_backups above -- a backup contains all codes and tokens
     # Guard against a path-traversal filename (e.g. "../../etc/passwd") --
     # only ever serve something that's actually a folder directly inside
     # BACKUP_DIR, matching the naming this endpoint itself creates.
@@ -1022,6 +1122,23 @@ def delete_coop(coop_id: str):
         return {"deleted": coop_id}
 
 
+def _sniff_image_ext(content: bytes) -> str | None:
+    """Determine the image type from the file's own magic bytes -- the
+    only part of an upload that can't simply be lied about the way a
+    Content-Type header or a filename extension can. Returns the correct
+    extension for the actual content, or None if it isn't a recognized
+    image format at all."""
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return ".webp"
+    if content.startswith(b"GIF87a") or content.startswith(b"GIF89a"):
+        return ".gif"
+    return None
+
+
 async def _upload_photo_for(table: str, item_id: str, file: UploadFile):
     with get_db() as conn:
         row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (item_id,)).fetchone()
@@ -1036,7 +1153,12 @@ async def _upload_photo_for(table: str, item_id: str, file: UploadFile):
     content = await file.read()
     if len(content) > MAX_PHOTO_UPLOAD_BYTES:
         raise HTTPException(413, f"That photo is too large ({len(content) // (1024*1024)}MB) -- please use one under {MAX_PHOTO_UPLOAD_BYTES // (1024*1024)}MB")
-    ext = ".png" if (file.content_type or "").endswith("png") else ".jpg"
+    ext = _sniff_image_ext(content)
+    if ext is None:
+        # The Content-Type header is just whatever the client claims; the
+        # bytes themselves are what actually gets stored and later served
+        # back. Only accept things that are verifiably image data.
+        raise HTTPException(415, "That file doesn't look like an image -- photos must be JPEG, PNG, WebP, or GIF")
     new_ref = _save_photo_bytes(coop_id, item_id, content, ext)
 
     with get_db() as conn:
@@ -1403,7 +1525,11 @@ def delete_invite_code_permanently(code_id: int, request: Request):
 
 @app.get("/api/auth/failed-logins")
 def list_failed_logins(request: Request):
-    _require_auth(request)
+    # Admin-only, not just logged-in: code_attempted routinely contains a
+    # VALID code someone typed alongside a mistyped name, or a code one
+    # character off from a real one. Letting a read-only session read this
+    # list would hand it exactly the material needed to escalate itself.
+    _require_admin(request)
     with get_db() as conn:
         rows = conn.execute(
             "SELECT id, name_attempted, code_attempted, ip, attempted_at FROM failed_logins ORDER BY attempted_at DESC LIMIT 100"
@@ -1413,7 +1539,11 @@ def list_failed_logins(request: Request):
 
 @app.delete("/api/auth/sessions/{session_id}")
 def revoke_session(session_id: int, request: Request):
-    _require_auth(request)
+    # The middleware already blocks readonly DELETEs, but revoking someone
+    # else's session is an admin action -- enforce that here too rather
+    # than relying on the write-gate alone (defense in depth, and it stays
+    # correct even if a future role gains some write access).
+    _require_admin(request)
     with get_db() as conn:
         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
     return {"ok": True}
@@ -1470,9 +1600,26 @@ def _prune_old_failed_logins():
         ''')
 
 
+def _prune_idle_sessions():
+    """Drops sessions that haven't been used in SESSION_MAX_IDLE_DAYS.
+    Disabled entirely at the default of 0 -- a household server where
+    logging in once on the kitchen tablet is meant to stick forever is
+    a perfectly reasonable setup, so expiry is strictly opt-in."""
+    if SESSION_MAX_IDLE_DAYS <= 0:
+        return
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=SESSION_MAX_IDLE_DAYS)).isoformat()
+    with get_db() as conn:
+        # COALESCE: sessions from before last_activity existed have only
+        # created_at to judge idleness by -- better than never expiring them.
+        cur = conn.execute(
+            "DELETE FROM sessions WHERE COALESCE(last_activity, created_at) < ?",
+            (cutoff,),
+        )
+        if cur.rowcount:
+            print(f"Pruned {cur.rowcount} session(s) idle for over {SESSION_MAX_IDLE_DAYS} days")
+
+
 BACKUP_DIR = DATA_DIR / "backups"
-BACKUP_INTERVAL_HOURS = 24
-MAX_BACKUPS_TO_KEEP = 14  # two weeks of daily backups
 
 
 def _create_full_backup():
@@ -1514,6 +1661,8 @@ def _create_full_backup():
 
 
 def _maybe_run_scheduled_backup():
+    if not BACKUPS_ENABLED:
+        return
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     existing = sorted([p for p in BACKUP_DIR.glob("backup-*") if p.is_dir()], key=lambda p: p.name, reverse=True)
     if existing:
@@ -1541,18 +1690,27 @@ async def _periodic_maintenance_loop():
             _maybe_auto_rotate_invite_code()
             _prune_old_activity_log()
             _prune_old_failed_logins()
+            _prune_idle_sessions()
             _maybe_run_scheduled_backup()
         except Exception as e:
             print(f"Periodic maintenance error: {e}")
 
 
-@app.on_event("startup")
-async def _capture_event_loop():
+async def _on_startup():
+    """All startup work in one place (modern lifespan handler, replacing the
+    two deprecated @app.on_event hooks this grew out of). Order matters:
+    the schema must exist before the migrations that touch it, and the
+    event loop must be captured before anything can publish SSE events."""
     global _main_event_loop
     _main_event_loop = asyncio.get_running_loop()
+    init_db()
+    migrate_base64_photos_to_files()
+    migrate_flat_photos_to_coop_folders()
+    migrate_repair_orphaned_photo_refs()
     _maybe_auto_rotate_invite_code()  # catch anything overdue from while the server was down
     _prune_old_activity_log()
     _prune_old_failed_logins()
+    _prune_idle_sessions()
     _maybe_run_scheduled_backup()
     asyncio.create_task(_periodic_maintenance_loop())
 

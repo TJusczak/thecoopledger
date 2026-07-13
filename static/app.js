@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> Connection
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.06-157";
+const APP_VERSION = "2026.07.13-158";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -221,15 +221,6 @@ function supplyCategoryTone(category) {
   if (category === "Bedding") return "slate";
   return "slate";
 }
-function supplySliderValue(status) {
-  const idx = { "Empty": 0, "1/4": 1, "1/2": 2, "3/4": 3, "Full": 4 };
-  return idx[status] ?? 4;
-}
-function supplyStatusFromSlider(value) {
-  const byIdx = ["Empty", "1/4", "1/2", "3/4", "Full"];
-  return byIdx[Number(value)] ?? "Full";
-}
-function supplyIsPartial(status) { return status === "1/4" || status === "1/2" || status === "3/4"; }
 function supplyFraction(status) { return { "Full": 1, "3/4": 0.75, "1/2": 0.5, "1/4": 0.25, "Empty": 0 }[status] ?? 1; }
 function supplyStampLabel(s) {
   if (!s.quantity) return s.status; // no quantity recorded -- nothing to compute a remaining amount from
@@ -463,7 +454,6 @@ function authHeaders() {
 
 async function apiGet(path) { return (await fetch(apiUrl(path), { headers: authHeaders() })).json(); }
 async function apiPost(path, body) { return (await fetch(apiUrl(path), { method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify(body) })).json(); }
-async function apiPut(path, body) { return (await fetch(apiUrl(path), { method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify(body) })).json(); }
 async function apiDelete(path) { return (await fetch(apiUrl(path), { method: "DELETE", headers: authHeaders() })).json(); }
 
 // Local-only mode: a deliberate choice to never attempt to reach a server at
@@ -1693,15 +1683,6 @@ async function localBirdLogCreate(payload, opts = {}) {
   if (!opts.suppressUndo) pushUndoAction(`Added health log entry (${fmtDate(record.date)})`, [{ resource: "bird_logs", id: record.id, before: null, after: record }]);
   return record;
 }
-async function localBirdLogUpdate(id, payload, opts = {}) {
-  const existing = await localGetOne("bird_logs", id);
-  const record = { ...(existing || { id }), ...payload, updated_at: new Date().toISOString() };
-  await localPutMany("bird_logs", [record]);
-  await queueOutbox({ resource: "bird_logs", op: "update", id, payload });
-  trySyncSoon("bird_logs", payload.coop_id || (existing && existing.coop_id));
-  if (existing && !opts.suppressUndo) pushUndoAction(`Edited health log entry (${fmtDate(record.date)})`, [{ resource: "bird_logs", id, before: existing, after: record }]);
-  return record;
-}
 async function localBirdLogDelete(id, coopId) {
   const existing = await localGetOne("bird_logs", id);
   const now = new Date().toISOString();
@@ -1817,14 +1798,6 @@ async function localCoopDelete(id) {
 // for a serious long-term archive -- real photo files, not base64 -- but it
 // needs a connection. This is the "100% standalone" path: works with none.
 
-function blobToDataUri(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(blob);
-  });
-}
 function dataUriToBlob(dataUri) { return fetch(dataUri).then(res => res.blob()); }
 
 /** A not-yet-uploaded local photo is used first (guaranteed available with
@@ -1863,28 +1836,6 @@ async function productPhotoToBlob(product) {
     try {
       const res = await fetch(mediaUrl(product.photo));
       if (res.ok) return await res.blob();
-    } catch (err) { /* offline or unreachable -- exported without this photo */ }
-  }
-  return null;
-}
-async function birdPhotoToDataUri(bird) {
-  const pending = await getPendingPhoto(bird.id);
-  if (pending && pending.blob) return blobToDataUri(pending.blob);
-  if (bird.photo) {
-    try {
-      const res = await fetch(mediaUrl(bird.photo));
-      if (res.ok) return blobToDataUri(await res.blob());
-    } catch (err) { /* offline or unreachable -- exported without this photo */ }
-  }
-  return null;
-}
-async function productPhotoToDataUri(product) {
-  const pending = await getPendingProductPhoto(product.id);
-  if (pending && pending.blob) return blobToDataUri(pending.blob);
-  if (product.photo) {
-    try {
-      const res = await fetch(mediaUrl(product.photo));
-      if (res.ok) return blobToDataUri(await res.blob());
     } catch (err) { /* offline or unreachable -- exported without this photo */ }
   }
   return null;
@@ -4714,7 +4665,6 @@ function parsePricePerLbInput(displayValue) {
   if (isNaN(n)) return null;
   return getWeightUnit() === "kg" ? n * LB_TO_KG : n;
 }
-function weightUnitLabel() { return getWeightUnit(); }
 function getBeddingAreas() {
   const s = getCoopSettings();
   return (s.bedding_areas && s.bedding_areas.length) ? s.bedding_areas : Object.keys(DEFAULT_BEDDING_THRESHOLDS);
@@ -4932,21 +4882,6 @@ function allBucketsInRange(mode, days) {
  * same shared range/bucket-mode as every other chart on this tab. A bird
  * counts as "in the flock" as of a given date if it had arrived (acquired or
  * hatched) by then and hadn't yet been processed/lost on or before that day. */
-/** How many active birds existed as of a given date -- acquired/hatched by
- * then, and not yet processed or deceased by then. Shared by the flock-size
- * chart and the feed-per-bird chart, since both need "how big was the flock
- * at this point in time," not just the current count. */
-function activeBirdCountAsOf(asOfDate) {
-  let layers = 0, meat = 0;
-  STATE.birds.forEach(b => {
-    const acq = b.acquired_date || b.hatch_date;
-    if (!acq || acq > asOfDate) return;
-    const leftDate = b.status === "Processed" ? b.harvest_date : b.status === "Deceased" ? b.death_date : null;
-    if (leftDate && leftDate <= asOfDate) return;
-    if (b.type === "Meat") meat++; else layers++;
-  });
-  return layers + meat;
-}
 
 function computeFlockSizeSeries() {
   const mode = pickBucketMode(chartRangeDays);

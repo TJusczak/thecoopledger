@@ -121,6 +121,47 @@ pip install -r requirements.txt
 DATA_DIR=./data uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
+## Configuration
+
+Everything is configured with environment variables, and **everything has a
+sensible default** — a bare `docker compose up` with no configuration at
+all is a fully working, safe setup. The commented `environment:` block in
+`docker-compose.yml` mirrors this table; uncomment only what you want to
+change. A malformed value falls back to its default with a warning in the
+logs rather than refusing to start.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `DATA_DIR` | `/data` (in Docker) | Where the database, photos, and backups live. Map a volume here. |
+| `PUID` / `PGID` | `1000` / `1000` | Host user/group that owns the files in `./data`. Set to your own ids (`id -u` / `id -g`) so the data stays readable to you. The container starts as root only long enough to fix volume ownership, then drops to this unprivileged user. |
+| `TRUST_PROXY_HEADERS` | unset | Set to `1` **only** behind a reverse proxy you control (e.g. Cloudflare Tunnel), so the login rate-limit sees real visitor IPs. See Security notes. |
+| `MAX_PHOTO_UPLOAD_MB` | `25` | Per-photo upload size cap. The app resizes photos before upload anyway; this is the server-side backstop. |
+| `BACKUPS_ENABLED` | `true` | Automatic rotating backups into `DATA_DIR/backups`. Turn off only if you snapshot the volume some other way. |
+| `BACKUP_INTERVAL_HOURS` | `24` | How often an automatic backup is taken. |
+| `MAX_BACKUPS_TO_KEEP` | `14` | Older backups are rotated out past this count. Backups hard-link photos, so keeping many is nearly free on disk. |
+| `SESSION_MAX_IDLE_DAYS` | `0` | `0` = logins never expire (the kitchen-tablet default). Set to e.g. `90` to automatically log out sessions idle that long. |
+| `ACTIVITY_LOG_RETENTION_DAYS` | `7` | How much history the activity feed keeps. |
+| `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed origins for the API. The permissive default is what lets the Android app / a CDN-hosted frontend talk to your server out of the box; set e.g. `https://coop.example.com` to lock it to one origin. |
+
+The container reports its health at `/api/health` and carries a Docker
+`HEALTHCHECK`, so `docker ps`, Portainer, Uptime Kuma, and
+`depends_on: condition: service_healthy` all see real status instead of
+just "running".
+
+## Running the tests
+
+The server has a test suite covering auth and roles, the admin-only
+boundary, CRUD + sync tombstones, photo upload validation, backups, and
+invite-code lifecycle:
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest
+```
+
+The tests run against a temporary data directory — they can't touch a real
+deployment's database.
+
 ## Publishing your own image
 
 A GitHub Actions workflow (`.github/workflows/docker-publish.yml`) is
@@ -337,7 +378,21 @@ page.
   login rate-limit be trivially bypassed by spoofing a different IP on
   each attempt.
 - Photos are only ever served to an authenticated request — same as any
-  other data in the app.
+  other data in the app. Uploads are additionally validated by their
+  actual bytes (magic numbers), not the claimed content type, so only
+  genuine JPEG/PNG/WebP/GIF data is ever stored, and every response
+  carries `X-Content-Type-Options: nosniff` so a browser never
+  second-guesses that.
+- Admin-only material is enforced per-endpoint on the server, not just by
+  which pages the UI shows: backups (which contain the full database,
+  including every invite code and session token), the failed-login log
+  (attempted codes are exactly the material someone would need to guess a
+  real one), session management, and invite-code management all reject
+  non-admin sessions outright — including read-only sessions, which can
+  read everything else.
+- The container runs the server as an unprivileged user; root is used
+  only momentarily at startup to fix data-volume ownership (`PUID`/`PGID`
+  above).
 
 ## Notes
 

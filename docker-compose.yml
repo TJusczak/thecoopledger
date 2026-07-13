@@ -16,3 +16,29 @@ services:
     volumes:
       - ./data:/data
     restart: unless-stopped
+
+    # ----- Optional settings -----
+    # Everything below has a sensible default; uncomment only what you
+    # want to change. Full descriptions in the README's Configuration
+    # section.
+    # environment:
+    #   PUID: "1000"                      # host user id that owns ./data (match `id -u`)
+    #   PGID: "1000"                      # host group id that owns ./data (match `id -g`)
+    #   TRUST_PROXY_HEADERS: "1"          # ONLY behind Cloudflare Tunnel or a reverse proxy you control
+    #   MAX_PHOTO_UPLOAD_MB: "25"         # per-photo upload size cap
+    #   BACKUPS_ENABLED: "true"           # automatic daily backups into ./data/backups
+    #   BACKUP_INTERVAL_HOURS: "24"       # how often a backup is taken
+    #   MAX_BACKUPS_TO_KEEP: "14"         # older backups are rotated out
+    #   SESSION_MAX_IDLE_DAYS: "0"        # 0 = logins never expire; e.g. 90 to expire idle sessions
+    #   ACTIVITY_LOG_RETENTION_DAYS: "7"  # how long the activity feed keeps history
+    #   CORS_ALLOWED_ORIGINS: "*"         # e.g. "https://coop.example.com" to lock the API to one origin
+
+    healthcheck:
+      # The image defines its own HEALTHCHECK; declared here too so a
+      # compose file pointing at an older image (or a registry that strips
+      # them) still gets health status.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
