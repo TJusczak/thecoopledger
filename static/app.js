@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-161";
+const APP_VERSION = "2026.07.13-163";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -48,6 +48,53 @@ const FLOCK_DATE_FIELDS = [
 let flockFilters = { status: "Active", type: "", dateField: "", year: "", location: "" };
 let flockFiltersOpen = false;
 let flockSort = "name"; // "name" | "age" | "target"
+// Per-device, not synced -- the right density on a phone isn't the right
+// density on a desktop, so this is a device preference the way photo
+// quality is. "grid" + "cozy" reproduces the layout that existed before.
+const FLOCK_VIEW_KEY = "coop_flock_view";
+const FLOCK_DENSITY_KEY = "coop_flock_density";
+function getFlockView() { return localStorage.getItem(FLOCK_VIEW_KEY) === "list" ? "list" : "grid"; }
+function setFlockView(v) { localStorage.setItem(FLOCK_VIEW_KEY, v === "list" ? "list" : "grid"); }
+function getFlockDensity() {
+  const d = localStorage.getItem(FLOCK_DENSITY_KEY);
+  return ["comfortable", "cozy", "compact"].includes(d) ? d : "cozy";
+}
+function setFlockDensity(d) { localStorage.setItem(FLOCK_DENSITY_KEY, d); }
+/** The class list every .flock-grid gets, so the main grid, the filtered
+ * flat grid, and the grid inside an expanded batch panel all honor the
+ * same preference from one place. */
+/** List/Grid toggle plus, in grid mode, a density stepper. Deliberately
+ * three named density tiers rather than a 1-to-5 column slider: the useful
+ * column count depends on viewport width (5-up is fine on a desktop and
+ * unreadable on a phone), so picking a *density* and letting the grid
+ * auto-fill to fit gives the right answer on every screen instead of the
+ * same wrong one everywhere. */
+function flockViewControlHtml() {
+  const view = getFlockView();
+  const d = getFlockDensity();
+  const densities = [
+    { id: "comfortable", label: "Large", title: "Fewer, larger cards" },
+    { id: "cozy", label: "Medium", title: "Default size" },
+    { id: "compact", label: "Small", title: "More, smaller cards" },
+  ];
+  return `
+    <div class="range-select" style="margin:0;gap:4px">
+      <button class="range-btn ${view === "grid" ? "active" : ""}" id="flockViewGrid" title="Grid view">▦</button>
+      <button class="range-btn ${view === "list" ? "active" : ""}" id="flockViewList" title="List view">☰</button>
+    </div>
+    ${view === "grid" ? `
+    <div class="range-select" style="margin:0;gap:4px">
+      ${densities.map(x => `<button class="range-btn ${d === x.id ? "active" : ""}" data-flock-density="${x.id}" title="${x.title}">${x.label}</button>`).join("")}
+    </div>` : ""}
+  `;
+}
+
+function flockGridClass() {
+  const view = getFlockView();
+  if (view === "list") return "flock-grid view-list";
+  const d = getFlockDensity();
+  return `flock-grid${d === "cozy" ? "" : ` density-${d}`}`; // cozy == the default grid, no extra class
+}
 let selectedBirdIds = new Set();
 let selectedSupplyIds = new Set();
 
@@ -3291,23 +3338,24 @@ function renderAllTimeStatsSection() {
   const costPerLbMeatFeed = usage.meatFeedLbs > 0 ? meatFeedSpendAll / usage.meatFeedLbs : null;
   const beddingSpendAll = STATE.expenses.filter(x => x.category === "Bedding" && x.entry_type !== "income").reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
   const costPerCuFtBedding = usage.beddingCuFt > 0 ? beddingSpendAll / usage.beddingCuFt : null;
+  const ty = yearlyTrends(); // one bucket per calendar year with data
   el.innerHTML = `
     <div class="card-title" style="margin-bottom:12px">All-time totals — ${esc(coop ? coop.name : "")}</div>
     <div class="dim" style="font-size:12px;margin-bottom:14px">Everything this coop has ever logged, no date range -- things that only ever add up, not things like Active Birds that go up and down day to day (that lives on the Coop tab). For a specific year's breakdown (by category, by clean-out area, etc.), use Year Review instead.</div>
     <div class="grid-stats-2">
-      <div class="stat"><div class="stat-label">Total birds added, all time</div><div class="stat-value">${totalBirdsAdded}</div><div class="stat-sub">${s.layers + s.meatActive} currently active</div></div>
-      <div class="stat tone-slate"><div class="stat-label">Losses, all time</div><div class="stat-value">${s.lossesAll}</div><div class="stat-sub">${s.lossesThisYear} this year</div></div>
-      <div class="stat tone-gold"><div class="stat-label">Eggs collected, all time</div><div class="stat-value">${s.totalEggs}</div><div class="stat-sub">${(s.totalEggs / 12).toFixed(1)} dozen · ${valueBreakdownHtml(s.eggIncomeAll, s.eggActualIncomeAll)}</div></div>
-      <div class="stat tone-sage"><div class="stat-label">Meat processed, all time</div><div class="stat-value">${meatProcessedValue(s.processed, s.totalWeight, s.meatTotalValueAll)}</div><div class="stat-sub">${s.processed > 0 ? `${s.processed} bird${s.processed !== 1 ? "s" : ""} · ${valueBreakdownHtml(s.meatIncomeAll, s.meatActualIncomeAll)}` : ""}</div></div>
-      <div class="stat tone-slate"><div class="stat-label">Spent, all time</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${fmtMoney(s.thisMonth)} this month</div></div>
-      <div class="stat tone-gold"><div class="stat-label">Value produced, all time</div><div class="stat-value">${fmtMoney(s.incomeAll)}</div><div class="stat-sub">eggs + meat + other income</div></div>
-      <div class="stat ${s.netAll >= 0 ? "tone-sage" : ""}" style="${s.netAll < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net savings, all time</div><div class="stat-value">${fmtMoney(s.netAll)}</div><div class="stat-sub">value − spend</div></div>
-      <div class="stat tone-gold"><div class="stat-label">Full clean-outs, all time</div><div class="stat-value">${totalCleanouts}</div><div class="stat-sub">across ${getBeddingAreas().length} tracked area${getBeddingAreas().length !== 1 ? "s" : ""}</div></div>
-      <div class="stat tone-gold"><div class="stat-label">Layer feed used, all time</div><div class="stat-value">${usage.layerFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${costPerLbLayerFeed !== null ? fmtMoney(costPerLbLayerFeed) + "/lb" : "no cost data yet"}</div></div>
-      <div class="stat tone-rust"><div class="stat-label">Meat feed used, all time</div><div class="stat-value">${usage.meatFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${costPerLbMeatFeed !== null ? fmtMoney(costPerLbMeatFeed) + "/lb" : "no cost data yet"}</div></div>
-      <div class="stat tone-slate"><div class="stat-label">Bedding used, all time</div><div class="stat-value">${usage.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">${costPerCuFtBedding !== null ? fmtMoney(costPerCuFtBedding) + "/cu ft" : "no cost data yet"}</div></div>
+      <div class="stat"><div class="stat-label">Total birds added, all time</div><div class="stat-value">${totalBirdsAdded}</div><div class="stat-sub">${s.layers + s.meatActive} currently active</div>${statSpark(ty.newBirds)}</div>
+      <div class="stat tone-slate"><div class="stat-label">Losses, all time</div><div class="stat-value">${s.lossesAll}</div><div class="stat-sub">${s.lossesThisYear} this year</div>${statSpark(ty.losses)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Eggs collected, all time</div><div class="stat-value">${s.totalEggs}</div><div class="stat-sub">${(s.totalEggs / 12).toFixed(1)} dozen · ${valueBreakdownHtml(s.eggIncomeAll, s.eggActualIncomeAll)}</div>${statSpark(ty.eggs)}</div>
+      <div class="stat tone-sage"><div class="stat-label">Meat processed, all time</div><div class="stat-value">${meatProcessedValue(s.processed, s.totalWeight, s.meatTotalValueAll)}</div><div class="stat-sub">${s.processed > 0 ? `${s.processed} bird${s.processed !== 1 ? "s" : ""} · ${valueBreakdownHtml(s.meatIncomeAll, s.meatActualIncomeAll)}` : ""}</div>${statSpark(ty.meatLb)}</div>
+      <div class="stat tone-slate"><div class="stat-label">Spent, all time</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${fmtMoney(s.thisMonth)} this month</div>${statSpark(ty.spent)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Value produced, all time</div><div class="stat-value">${fmtMoney(s.incomeAll)}</div><div class="stat-sub">eggs + meat + other income</div>${statSpark(ty.value)}</div>
+      <div class="stat ${s.netAll >= 0 ? "tone-sage" : ""}" style="${s.netAll < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net savings, all time</div><div class="stat-value">${fmtMoney(s.netAll)}</div><div class="stat-sub">value − spend</div>${statSpark(ty.net)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Full clean-outs, all time</div><div class="stat-value">${totalCleanouts}</div><div class="stat-sub">across ${getBeddingAreas().length} tracked area${getBeddingAreas().length !== 1 ? "s" : ""}</div>${statSpark(ty.cleanouts)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Layer feed used, all time</div><div class="stat-value">${usage.layerFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${costPerLbLayerFeed !== null ? fmtMoney(costPerLbLayerFeed) + "/lb" : "no cost data yet"}</div>${statSpark(ty.layerFeed)}</div>
+      <div class="stat tone-rust"><div class="stat-label">Meat feed used, all time</div><div class="stat-value">${usage.meatFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${costPerLbMeatFeed !== null ? fmtMoney(costPerLbMeatFeed) + "/lb" : "no cost data yet"}</div>${statSpark(ty.meatFeed)}</div>
+      <div class="stat tone-slate"><div class="stat-label">Bedding used, all time</div><div class="stat-value">${usage.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">${costPerCuFtBedding !== null ? fmtMoney(costPerCuFtBedding) + "/cu ft" : "no cost data yet"}</div>${statSpark(ty.bedding)}</div>
       ${STATE.hatches.length > 0 ? `
-      <div class="stat tone-gold"><div class="stat-label">Chicks hatched, all time</div><div class="stat-value">${s.chicksHatchedAll}</div><div class="stat-sub">across ${STATE.hatches.length} clutch${STATE.hatches.length !== 1 ? "es" : ""}</div></div>
+      <div class="stat tone-gold"><div class="stat-label">Chicks hatched, all time</div><div class="stat-value">${s.chicksHatchedAll}</div><div class="stat-sub">across ${STATE.hatches.length} clutch${STATE.hatches.length !== 1 ? "es" : ""}</div>${statSpark(ty.chicks)}</div>
       <div class="stat tone-rust"><div class="stat-label">Lost from hatching, all time</div><div class="stat-value">${s.hatchLossAll}</div><div class="stat-sub">${s.hatchClearAll} clear · ${s.hatchQuitAll} quit · ${s.hatchFailedAll} failed to hatch</div></div>
       ` : ""}
     </div>
@@ -4421,6 +4469,68 @@ function allCoopYears() {
   return [...years].sort().reverse();
 }
 
+/** Per-bucket trend series for the stat cards on Year Review and All-Time.
+ * Year Review -> 12 monthly buckets for the selected year; All-Time ->
+ * one bucket per calendar year the coop has data, oldest to newest. Every
+ * card that represents a summable quantity gets one, so each stat on those
+ * pages carries the same at-a-glance shape the dashboard cards do. Values
+ * use raw per-entry estimates (count x price, weight x price), matching the
+ * dashboard sparklines -- a consistent estimator is what keeps a trend
+ * honest; the exact washed-out figure stays in the card's main number. */
+function monthlyTrends(year) {
+  const z = () => Array(12).fill(0);
+  const idx = (d) => (d && d.slice(0, 4) === year) ? (parseInt(d.slice(5, 7), 10) - 1) : -1;
+  const out = { eggs: z(), eggValue: z(), meatLb: z(), meatValue: z(), spent: z(), income: z(), losses: z(), newBirds: z(), layerFeed: z(), meatFeed: z(), bedding: z(), cleanouts: z(), chicks: z() };
+  const d = getCoopDefaults();
+  const eggFallback = Number(d.eggPrice) || 0, meatFallback = Number(d.pricePerLb) || 0;
+  STATE.eggs.forEach(e => { const m = idx(e.date); if (m < 0) return; const c = Number(e.count) || 0; out.eggs[m] += c; out.eggValue[m] += c * (Number(e.price_per_egg) || eggFallback); });
+  STATE.birds.forEach(b => {
+    if (b.status === "Processed") { const m = idx(b.harvest_date); if (m >= 0) { const w = Number(b.harvest_weight) || 0; out.meatLb[m] += w; out.meatValue[m] += w * (Number(b.price_per_lb) || meatFallback); } }
+    if (b.status === "Deceased") { const m = idx(b.death_date); if (m >= 0) out.losses[m]++; }
+    const acq = b.acquired_date || b.hatch_date; const m = idx(acq); if (m >= 0) out.newBirds[m]++;
+  });
+  STATE.expenses.forEach(x => { const m = idx(x.date); if (m < 0) return; if (x.entry_type === "income") out.income[m] += Number(x.amount) || 0; else out.spent[m] += Number(x.amount) || 0; });
+  STATE.supplies.forEach(s => { if (!s.date_emptied) return; const m = idx(s.date_emptied); if (m < 0) return; const q = Number(s.quantity) || 0; if (s.category === "Layer Feed") out.layerFeed[m] += q; else if (s.category === "Meat Feed") out.meatFeed[m] += q; else if (s.category === "Bedding") out.bedding[m] += q; });
+  STATE.bedding.forEach(b => { if (b.entry_type !== "Full Clean-out") return; const m = idx(b.date); if (m >= 0) out.cleanouts[m]++; });
+  const hatchMonth = {}; STATE.hatches.forEach(h => { hatchMonth[h.id] = idx(h.date_started); });
+  STATE.hatchEggs.forEach(e => { const m = hatchMonth[e.hatch_id]; if (m >= 0 && e.status === "Hatched") out.chicks[m]++; });
+  out.value = out.eggValue.map((v, i) => v + out.meatValue[i] + out.income[i]);
+  out.net = out.value.map((v, i) => v - out.spent[i]);
+  return out;
+}
+
+function yearlyTrends() {
+  const years = allCoopYears(); // ascending, only years with data
+  if (years.length === 0) return { years: [] };
+  const pos = {}; years.forEach((y, i) => pos[y] = i);
+  const z = () => Array(years.length).fill(0);
+  const yr = (d) => (d && pos[d.slice(0, 4)] !== undefined) ? pos[d.slice(0, 4)] : -1;
+  const out = { years, eggs: z(), eggValue: z(), meatLb: z(), meatValue: z(), spent: z(), income: z(), losses: z(), newBirds: z(), layerFeed: z(), meatFeed: z(), bedding: z(), cleanouts: z(), chicks: z() };
+  const d = getCoopDefaults();
+  const eggFallback = Number(d.eggPrice) || 0, meatFallback = Number(d.pricePerLb) || 0;
+  STATE.eggs.forEach(e => { const i = yr(e.date); if (i < 0) return; const c = Number(e.count) || 0; out.eggs[i] += c; out.eggValue[i] += c * (Number(e.price_per_egg) || eggFallback); });
+  STATE.birds.forEach(b => {
+    if (b.status === "Processed") { const i = yr(b.harvest_date); if (i >= 0) { const w = Number(b.harvest_weight) || 0; out.meatLb[i] += w; out.meatValue[i] += w * (Number(b.price_per_lb) || meatFallback); } }
+    if (b.status === "Deceased") { const i = yr(b.death_date); if (i >= 0) out.losses[i]++; }
+    const i = yr(b.acquired_date || b.hatch_date); if (i >= 0) out.newBirds[i]++;
+  });
+  STATE.expenses.forEach(x => { const i = yr(x.date); if (i < 0) return; if (x.entry_type === "income") out.income[i] += Number(x.amount) || 0; else out.spent[i] += Number(x.amount) || 0; });
+  STATE.supplies.forEach(s => { if (!s.date_emptied) return; const i = yr(s.date_emptied); if (i < 0) return; const q = Number(s.quantity) || 0; if (s.category === "Layer Feed") out.layerFeed[i] += q; else if (s.category === "Meat Feed") out.meatFeed[i] += q; else if (s.category === "Bedding") out.bedding[i] += q; });
+  STATE.bedding.forEach(b => { if (b.entry_type !== "Full Clean-out") return; const i = yr(b.date); if (i >= 0) out.cleanouts[i]++; });
+  const hatchYear = {}; STATE.hatches.forEach(h => { hatchYear[h.id] = yr(h.date_started); });
+  STATE.hatchEggs.forEach(e => { const i = hatchYear[e.hatch_id]; if (i >= 0 && e.status === "Hatched") out.chicks[i]++; });
+  out.value = out.eggValue.map((v, i) => v + out.meatValue[i] + out.income[i]);
+  out.net = out.value.map((v, i) => v - out.spent[i]);
+  return out;
+}
+
+function statSpark(values) {
+  // A trend needs at least two points to mean anything; one bucket (a
+  // brand-new coop's first month/year) draws nothing rather than a dot.
+  if (!values || values.length < 2 || values.every(v => v === 0)) return "";
+  return `<div class="stat-spark-wrap">${sparklineSvg(values)}</div>`;
+}
+
 function computeYearStats(year) {
   const inYear = (d) => d && d.slice(0, 4) === year;
 
@@ -4519,6 +4629,7 @@ function renderYearReviewSection() {
   const selectedYear = years.includes(reviewYear) ? reviewYear : (years.includes(currentYear) ? currentYear : years[0]);
   reviewYear = selectedYear;
   const s = computeYearStats(selectedYear);
+  const tm = monthlyTrends(selectedYear); // per-month series for the card sparklines
 
   el.innerHTML = `
     <div class="toolbar">
@@ -4527,17 +4638,17 @@ function renderYearReviewSection() {
     </div>
 
     <div class="grid-stats-2" style="margin-bottom:16px">
-      <div class="stat tone-gold"><div class="stat-label">Eggs collected</div><div class="stat-value">${s.eggCount}</div><div class="stat-sub">${(s.eggCount / 12).toFixed(1)} dozen · ${valueBreakdownHtml(s.eggValue, s.eggActualIncome)}</div></div>
-      <div class="stat tone-sage"><div class="stat-label">Meat processed</div><div class="stat-value">${meatProcessedValue(s.processedCount, s.processedWeight, s.meatTotalValue)}</div><div class="stat-sub">${s.processedCount > 0 ? `${s.processedCount} bird${s.processedCount !== 1 ? "s" : ""} · ${valueBreakdownHtml(s.meatValue, s.meatActualIncome)}` : ""}</div></div>
-      <div class="stat" style="${s.lossesInYear ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Losses</div><div class="stat-value">${s.lossesInYear}</div><div class="stat-sub">${s.newBirds} new bird${s.newBirds !== 1 ? "s" : ""} added</div></div>
-      <div class="stat tone-slate"><div class="stat-label">Total spent</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${Object.keys(s.categoryBreakdown).length} categories</div></div>
-      <div class="stat tone-gold"><div class="stat-label">Value produced</div><div class="stat-value">${fmtMoney(s.income)}</div><div class="stat-sub">eggs + meat</div></div>
-      <div class="stat ${s.net >= 0 ? "tone-sage" : ""}" style="${s.net < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net for ${selectedYear}</div><div class="stat-value">${fmtMoney(s.net)}</div><div class="stat-sub">value − spend</div></div>
-      <div class="stat tone-gold"><div class="stat-label">Layer feed used</div><div class="stat-value">${s.layerFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbLayerFeed !== null ? fmtMoney(s.costPerLbLayerFeed) + "/lb" : "no cost data yet"}</div></div>
-      <div class="stat tone-rust"><div class="stat-label">Meat feed used</div><div class="stat-value">${s.meatFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbMeatFeed !== null ? fmtMoney(s.costPerLbMeatFeed) + "/lb" : "no cost data yet"}</div></div>
-      <div class="stat tone-slate"><div class="stat-label">Bedding used</div><div class="stat-value">${s.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">bags emptied this year</div></div>
+      <div class="stat tone-gold"><div class="stat-label">Eggs collected</div><div class="stat-value">${s.eggCount}</div><div class="stat-sub">${(s.eggCount / 12).toFixed(1)} dozen · ${valueBreakdownHtml(s.eggValue, s.eggActualIncome)}</div>${statSpark(tm.eggs)}</div>
+      <div class="stat tone-sage"><div class="stat-label">Meat processed</div><div class="stat-value">${meatProcessedValue(s.processedCount, s.processedWeight, s.meatTotalValue)}</div><div class="stat-sub">${s.processedCount > 0 ? `${s.processedCount} bird${s.processedCount !== 1 ? "s" : ""} · ${valueBreakdownHtml(s.meatValue, s.meatActualIncome)}` : ""}</div>${statSpark(tm.meatLb)}</div>
+      <div class="stat" style="${s.lossesInYear ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Losses</div><div class="stat-value">${s.lossesInYear}</div><div class="stat-sub">${s.newBirds} new bird${s.newBirds !== 1 ? "s" : ""} added</div>${statSpark(tm.losses)}</div>
+      <div class="stat tone-slate"><div class="stat-label">Total spent</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${Object.keys(s.categoryBreakdown).length} categories</div>${statSpark(tm.spent)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Value produced</div><div class="stat-value">${fmtMoney(s.income)}</div><div class="stat-sub">eggs + meat</div>${statSpark(tm.value)}</div>
+      <div class="stat ${s.net >= 0 ? "tone-sage" : ""}" style="${s.net < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net for ${selectedYear}</div><div class="stat-value">${fmtMoney(s.net)}</div><div class="stat-sub">value − spend</div>${statSpark(tm.net)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Layer feed used</div><div class="stat-value">${s.layerFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbLayerFeed !== null ? fmtMoney(s.costPerLbLayerFeed) + "/lb" : "no cost data yet"}</div>${statSpark(tm.layerFeed)}</div>
+      <div class="stat tone-rust"><div class="stat-label">Meat feed used</div><div class="stat-value">${s.meatFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbMeatFeed !== null ? fmtMoney(s.costPerLbMeatFeed) + "/lb" : "no cost data yet"}</div>${statSpark(tm.meatFeed)}</div>
+      <div class="stat tone-slate"><div class="stat-label">Bedding used</div><div class="stat-value">${s.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">bags emptied this year</div>${statSpark(tm.bedding)}</div>
       ${(s.chicksHatched + s.hatchLoss) > 0 ? `
-      <div class="stat tone-gold"><div class="stat-label">Chicks hatched</div><div class="stat-value">${s.chicksHatched}</div><div class="stat-sub">from clutches started this year</div></div>
+      <div class="stat tone-gold"><div class="stat-label">Chicks hatched</div><div class="stat-value">${s.chicksHatched}</div><div class="stat-sub">from clutches started this year</div>${statSpark(tm.chicks)}</div>
       <div class="stat tone-rust"><div class="stat-label">Lost from hatching</div><div class="stat-value">${s.hatchLoss}</div><div class="stat-sub">${s.hatchClear} clear · ${s.hatchQuit} quit · ${s.hatchFailed} failed to hatch</div></div>
       ` : ""}
     </div>
@@ -6035,7 +6146,7 @@ function renderFlockBirds() {
   if (filtered.length === 0) {
     bodyHtml = `<div class="card"><div class="empty">${STATE.birds.length === 0 ? "No birds yet — add your first one." : "No birds match these filters."}</div></div>`;
   } else if (forcesFlatView) {
-    bodyHtml = `<div class="flock-grid">${filtered.map(b => birdCardHtml(b)).join("")}</div>`;
+    bodyHtml = `<div class="${flockGridClass()}">${filtered.map(b => birdCardHtml(b)).join("")}</div>`;
   } else {
     const { ungrouped, groups } = groupBirds(filtered);
     const isMeat = (b) => b.type === "Meat";
@@ -6050,14 +6161,15 @@ function renderFlockBirds() {
     const layerItems = items.filter(it => !it.isMeat);
     const meatItems = items.filter(it => it.isMeat);
     bodyHtml = ""
-      + (layerItems.length ? `<div class="flock-section-header">Layers</div><div class="flock-grid">${layerItems.map(it => it.html).join("")}</div>` : "")
-      + (meatItems.length ? `<div class="flock-section-header">Meat birds</div><div class="flock-grid">${meatItems.map(it => it.html).join("")}</div>` : "");
+      + (layerItems.length ? `<div class="flock-section-header">Layers</div><div class="${flockGridClass()}">${layerItems.map(it => it.html).join("")}</div>` : "")
+      + (meatItems.length ? `<div class="flock-section-header">Meat birds</div><div class="${flockGridClass()}">${meatItems.map(it => it.html).join("")}</div>` : "");
   }
 
   el.innerHTML = `
     <div class="toolbar">
       <div class="dim">${filtered.length} of ${STATE.birds.length} bird${STATE.birds.length !== 1 ? "s" : ""} shown${flockFilters.status === "Active" && nonDefaultFilterCount === 0 ? " (active only)" : ""}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${flockViewControlHtml()}
         ${flockSortSelectHtml("flockSortSelect")}
         <button class="btn ghost small" id="toggleFlockFilters">Filters${nonDefaultFilterCount ? ` (${nonDefaultFilterCount})` : ""} ${flockFiltersOpen ? "▾" : "▸"}</button>
         <button class="btn ${selectionState.birds.mode ? "btn-close" : "ghost"} small" id="toggleBirdSelectMode">${selectionState.birds.mode ? "✕ Cancel selection" : "☑ Select"}</button>
@@ -6097,6 +6209,9 @@ function renderFlockBirds() {
     <div id="birdFormHost"></div>
   `;
 
+  document.getElementById("flockViewGrid").addEventListener("click", () => { setFlockView("grid"); renderFlockBirds(); });
+  document.getElementById("flockViewList").addEventListener("click", () => { setFlockView("list"); renderFlockBirds(); });
+  el.querySelectorAll("[data-flock-density]").forEach(b => b.addEventListener("click", () => { setFlockDensity(b.dataset.flockDensity); renderFlockBirds(); }));
   document.getElementById("flockSortSelect").addEventListener("change", (e) => { flockSort = e.target.value; renderFlockBirds(); });
   document.getElementById("toggleFlockFilters").addEventListener("click", () => { flockFiltersOpen = !flockFiltersOpen; renderFlockBirds(); });
   document.getElementById("newBirdBtn").addEventListener("click", () => showBirdForm(null));
@@ -6154,7 +6269,15 @@ function wireFlockCardHandlers(el) {
     (id) => showBirdForm(STATE.birds.find(x => x.id === id)),
     renderFlockBirds
   );
-  el.querySelectorAll("[data-open-batch]").forEach(card => card.addEventListener("click", () => { currentOpenBatchName = card.dataset.openBatch; renderFlockBirds(); }));
+  el.querySelectorAll("[data-open-batch]").forEach(card => card.addEventListener("click", () => {
+    // Toggle, not just open -- tapping the batch card that's already expanded
+    // collapses it again, so the card behaves like the disclosure control it
+    // looks like. (Previously it re-opened the same panel, and the only way
+    // to close was the ✕ inside it.)
+    const name = card.dataset.openBatch;
+    currentOpenBatchName = (currentOpenBatchName === name) ? null : name;
+    renderFlockBirds();
+  }));
 }
 
 function showBatchPanel(batchName) {
@@ -6187,7 +6310,7 @@ function showBatchPanel(batchName) {
       </div>
       ` : ""}
 
-      <div class="flock-grid">${birds.map(b => birdCardHtml(b)).join("")}</div>
+      <div class="${flockGridClass()}">${birds.map(b => birdCardHtml(b)).join("")}</div>
     </div>
   `;
   const close = () => { currentOpenBatchName = null; renderFlockBirds(); };

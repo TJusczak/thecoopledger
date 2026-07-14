@@ -142,6 +142,35 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 @media (max-width: 640px) { .grid-stats-3 { grid-template-columns: 1fr; } }
 @media (max-width: 360px) { .grid-stats-2 { gap: 6px; } .grid-stats-2 .stat { padding: 12px 10px; } }
 .grid-2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; align-items: start; }
+
+/* Narrow phones (Galaxy Z Flip and similar, ~340-400px wide). The regular
+   mobile layout assumes Pixel/iPhone width; below that, fixed sizes start
+   overflowing -- the bottom tab bar's tabs stop fitting, sub-navs push the
+   bar down, and generous paddings eat the usable width. Everything here
+   just scales those fixed values down proportionally. */
+@media (max-width: 400px) {
+  .wrap { padding-left: 12px; padding-right: 12px; }
+
+  /* Main tab bar: let tabs shrink and compress so all of them fit one row
+     no matter how narrow. space-between + fixed min-height was letting them
+     overflow their row on a flip phone. */
+  .tabs { padding-left: 3px; padding-right: 3px; gap: 1px; justify-content: space-around; }
+  .tab { min-height: 52px; padding: 7px 2px; font-size: 9px; gap: 2px; }
+  .tab-icon { font-size: 19px; }
+
+  /* Fixed sub-nav (Coop/Flock/Eggs/Supply) + its buttons: smaller so it's a
+     slim single row above the main bar, and the two together stay within the
+     reserved bottom padding instead of stacking taller than it. */
+  .range-select.sub-nav-fixed, .settings-subnav.visible { padding: 9px 8px; }
+  .range-btn { padding: 6px 10px; font-size: 11px; }
+
+  /* Coop overview stat cards: the value + delta chip can wrap awkwardly at
+     this width, so ease the padding and value size a touch. */
+  .grid-stats-2 { gap: 6px; }
+  .stat { padding: 12px 11px; }
+  .stat-value { font-size: 22px; }
+  .coop-banner-name { font-size: 19px; }
+}
 .grid-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap: 12px; }
 
 @media (max-width: 800px) { .grid-2 { grid-template-columns: 1fr; } }
@@ -232,7 +261,7 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
   }
-  .wrap.subnav-open { padding-bottom: 160px; }
+  .wrap.subnav-open { padding-bottom: 172px; } /* clears both the sub-nav and main tab bar on all phones */
 }
 
 .coop-icon-select { font-size: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 2px 4px; cursor: pointer; }
@@ -367,6 +396,60 @@ tr:hover td { background: var(--surface-raised); }
 
 .flock-section-header { font-family: 'Roboto Slab', serif; font-weight: 700; font-size: 15px; margin: 4px 0 2px; grid-column: 1 / -1; }
 .flock-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 12px; margin-bottom: 18px; }
+@media (max-width: 480px) {
+  /* Force exactly two bird cards per row on phones -- auto-fill with a fixed
+     floor drops to one column the moment the viewport can't fit two at that
+     floor, which is exactly what happens on a narrow flip phone. Two-up is
+     the right density for scanning a flock on any phone. */
+  .flock-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+}
+
+/* ---- Flock view modes ----
+   All three grid densities and the list view reuse the exact same card
+   markup (birdCardHtml / groupCardHtml) -- only the layout changes, so
+   there's no second copy of a bird card to keep in sync. Density sets the
+   auto-fill floor rather than a fixed column count, so a wide desktop can
+   still fit more columns than a phone at the same setting. */
+.flock-grid.density-comfortable { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+.flock-grid.density-compact { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+@media (max-width: 480px) {
+  /* Comfortable = one big card per row on a phone (the old accidental
+     behavior, now something you actually choose); compact = three-up. */
+  .flock-grid.density-comfortable { grid-template-columns: 1fr; }
+  .flock-grid.density-compact { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+}
+
+/* List view: one bird per row, small thumbnail, details flowing left-aligned
+   beside it. This is the density that actually scales to a large flock --
+   a 60-bird grid is a lot of scrolling, and a list is scannable. */
+.flock-grid.view-list { grid-template-columns: 1fr; gap: 6px; }
+.flock-grid.view-list .flock-card { flex-direction: row; align-items: stretch; }
+.flock-grid.view-list .flock-card-photo {
+  width: 64px; min-width: 64px; height: auto; aspect-ratio: auto; font-size: 22px;
+}
+.flock-grid.view-list .flock-card-info {
+  align-items: flex-start; text-align: left; padding: 8px 12px;
+  flex-direction: row; flex-wrap: wrap; align-content: center; gap: 4px 8px;
+}
+.flock-grid.view-list .flock-card-name { font-size: 14px; }
+.flock-grid.view-list .flock-card-name-ribbon { padding: 2px 8px; }
+/* The photo badges are absolutely positioned for the tall card; at 64px wide
+   they'd cover the thumbnail entirely, so the status/count moves inline into
+   the info row instead and the photo stays a clean thumbnail. */
+.flock-grid.view-list .flock-card-status-badge,
+.flock-grid.view-list .flock-card-harvest-badge,
+.flock-grid.view-list .flock-card-countdown-badge,
+.flock-grid.view-list .flock-group-badge {
+  position: static; transform: none; box-shadow: none; margin: 0;
+}
+.flock-grid.view-list .flock-card-countdown-badge,
+.flock-grid.view-list .flock-group-badge { display: inline-flex; align-items: center; }
+.flock-grid.view-list .flock-card-harvest-badge {
+  background: none; padding: 0; font-size: 11px; color: var(--text-dim); white-space: nowrap;
+}
+.flock-grid.view-list .flock-card-check { position: static; margin: auto 0 auto 8px; }
+/* In list mode the section header shouldn't stretch a full-width row. */
+.flock-grid.view-list .flock-section-header { grid-column: 1 / -1; }
 .flock-card {
   background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
   cursor: pointer; position: relative; display: flex; flex-direction: column;
