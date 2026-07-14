@@ -428,26 +428,77 @@ tr:hover td { background: var(--surface-raised); }
   width: 64px; min-width: 64px; height: auto; aspect-ratio: auto; font-size: 22px;
 }
 .flock-grid.view-list .flock-card-info {
+  /* Column, not wrapped rows: a list only earns its keep if the rows are
+     uniform and compact enough to scan. Letting name/breed/sub/stamps wrap
+     across each other produced ragged 120px rows -- worse than the grid it
+     was meant to condense. min-width:0 so long names ellipsize instead of
+     shoving past the badge gutter. */
   align-items: flex-start; text-align: left; padding: 8px 12px;
-  flex-direction: row; flex-wrap: wrap; align-content: center; gap: 4px 8px;
+  flex-direction: column; justify-content: center; gap: 2px; min-width: 0;
 }
-.flock-grid.view-list .flock-card-name { font-size: 14px; }
+/* The location and price-per-lb stamps are grid-card detail -- in a list row
+   they'd each claim a line and blow the row height up. Name, breed, and the
+   summary line carry the identity; the money still shows, since that's the
+   one number worth scanning a processed flock for. */
+.flock-grid.view-list .flock-card-info .stamp.tone-slate { display: none; }
+.flock-grid.view-list .flock-card-info .stamp.tone-gold { margin-top: 2px !important; }
+.flock-grid.view-list .flock-card-name {
+  font-size: 14px;
+  /* Flex items default to min-width:auto, so a long nowrap name refuses to
+     shrink and runs straight under the status badge instead of ellipsizing.
+     min-width:0 is what actually lets the existing text-overflow kick in. */
+  min-width: 0; flex: 0 1 auto;
+}
 .flock-grid.view-list .flock-card-name-ribbon { padding: 2px 8px; }
-/* The photo badges are absolutely positioned for the tall card; at 64px wide
-   they'd cover the thumbnail entirely, so the status/count moves inline into
-   the info row instead and the photo stays a clean thumbnail. */
-.flock-grid.view-list .flock-card-status-badge,
+/* Badges live inside .flock-card-photo, which is the positioning context in
+   grid mode -- at a 64px thumbnail that means they sit on top of the photo
+   and bury it. Dropping the photo out of the positioning chain lets them
+   resolve against the card itself instead, so they can be pinned to a
+   gutter on the far right of the row: status on the name's line, and the
+   secondary badge (harvest date / countdown / batch count) beneath it.
+   Status and the secondary badge never co-occur by accident -- a countdown
+   only exists on an Active bird, a harvest date only on a Processed one. */
+.flock-grid.view-list .flock-card-photo { position: static; }
+.flock-grid.view-list .flock-card-info { padding-right: 104px; } /* keep text clear of the badge gutter */
+
+.flock-grid.view-list .flock-card-status-badge {
+  position: absolute; top: 10px; right: 10px; left: auto; bottom: auto;
+  margin: 0; z-index: 2;
+  /* Down from stamp-lg: at 14px, "PROCESSED" in tracked-out uppercase mono
+     runs ~115px and would blow through the gutter. Base stamp size keeps the
+     same look at a width a list row can actually spare. Keeps the signature
+     tilt, just less of it, so it reads as aligned in a column of rows. */
+  font-size: 10px; padding: 1px 8px; border-width: 2px; transform: rotate(-1.5deg);
+}
 .flock-grid.view-list .flock-card-harvest-badge,
 .flock-grid.view-list .flock-card-countdown-badge,
 .flock-grid.view-list .flock-group-badge {
-  position: static; transform: none; box-shadow: none; margin: 0;
+  position: absolute; right: 10px; bottom: 8px; top: auto; left: auto;
+  transform: none; margin: 0; z-index: 2;
 }
-.flock-grid.view-list .flock-card-countdown-badge,
-.flock-grid.view-list .flock-group-badge { display: inline-flex; align-items: center; }
 .flock-grid.view-list .flock-card-harvest-badge {
-  background: none; padding: 0; font-size: 11px; color: var(--text-dim); white-space: nowrap;
+  background: none; padding: 0; box-shadow: none;
+  font-size: 10px; color: var(--text-dim); white-space: nowrap;
 }
-.flock-grid.view-list .flock-card-check { position: static; margin: auto 0 auto 8px; }
+/* Same reason the status stamp shrank: at stamp-lg, "24 BIRDS" / "42D LEFT"
+   run wide enough to reach back into the name on a narrow phone. */
+.flock-grid.view-list .flock-group-badge .stamp,
+.flock-grid.view-list .flock-card-countdown-badge .stamp {
+  font-size: 10px; padding: 1px 8px; border-width: 2px; box-shadow: none;
+}
+/* Checkbox stays over the thumbnail (photo is no longer the positioning
+   context, so anchor it to the card's own top-left, which is the same spot). */
+.flock-grid.view-list .flock-card-check { top: 6px; left: 6px; }
+
+@media (max-width: 480px) {
+  /* Narrow phones: the gutter would eat the name, so shrink it and let the
+     badges sit tighter. */
+  .flock-grid.view-list .flock-card-info { padding-right: 92px; }
+  .flock-grid.view-list .flock-card-status-badge { top: 8px; right: 6px; }
+  .flock-grid.view-list .flock-card-harvest-badge,
+  .flock-grid.view-list .flock-card-countdown-badge,
+  .flock-grid.view-list .flock-group-badge { right: 6px; bottom: 6px; }
+}
 /* In list mode the section header shouldn't stretch a full-width row. */
 .flock-grid.view-list .flock-section-header { grid-column: 1 / -1; }
 .flock-card {
