@@ -97,4 +97,31 @@ ok(approx(rp.meat.at(-2), 50), "partial estimate lands only on today, not the da
 const re = F([], 30);
 ok(re.labels.length === 0, "empty supplies -> empty series");
 
+// --- Shared-axis mode: feed aligns to a caller-provided bucket axis ---
+// allBucketsInRange and weekStart are needed for the axis; pull them in.
+for (const fn of ["localDateStr"]) { /* already defined above */ }
+(0, eval)(grab("bucketLabel").replace(/^function /, "globalThis.bucketLabel=function "));
+(0, eval)(grab("pickBucketMode").replace(/^function /, "globalThis.pickBucketMode=function "));
+(0, eval)(grab("allBucketsInRange").replace(/^function /, "globalThis.allBucketsInRange=function "));
+// allBucketsInRange references STATE for the all-time case; give it a stub.
+globalThis.STATE = { birds: [] };
+
+// Same bag, viewed through a shared 30-day axis: the series must have exactly
+// one value per shared bucket, and still reach the true total (50) on the last.
+const axis = allBucketsInRange(pickBucketMode(30), 30);
+const shared = F(bag, 30, axis);
+ok(shared.layer.length === axis.length && shared.meat.length === axis.length,
+  `shared-axis series length (${shared.meat.length}) must equal axis length (${axis.length})`);
+ok(shared.labels.length === axis.length, "shared-axis labels match the provided axis");
+ok(approx(shared.meat.at(-1), 50), `shared-axis final still 50, got ${shared.meat.at(-1)}`);
+
+// The 90-day shared axis must start before the bag opened (full window shown),
+// with a flat 0 leading stretch rather than starting at the first data point.
+const axis90 = allBucketsInRange(pickBucketMode(90), 90);
+const shared90 = F(bag, 90, axis90);
+ok(shared90.meat.length === axis90.length, "90-day shared-axis spans full window");
+ok(shared90.meat[0] === 0 || shared90.meat[0] < shared90.meat.at(-1),
+  "90-day shared axis starts at/near zero (flat leading stretch), not mid-line");
+ok(approx(shared90.meat.at(-1), 50), "90-day shared-axis also reaches 50");
+
 console.log(`\u2713 feed series: ${passed} assertions passed`);

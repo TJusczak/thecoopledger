@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-173";
+const APP_VERSION = "2026.07.13-175";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -57,7 +57,7 @@ const CATEGORY_ICONS = {
   "Bedding":            { emoji: "🍂", from: "#D08A3C", to: "#A85E22" }, // rust/orange
   "Building Materials": { emoji: "🔨", from: "#8C8074", to: "#5E544A" }, // grey/brown
   "Equipment":          { emoji: "📦", from: "#9A7B54", to: "#6E5233" }, // brown
-  "Birds/Chicks":       { emoji: "🐤", from: "#E4B62C", to: "#C08A12" }, // gold
+  "Birds/Chicks":       { emoji: "🐤", from: "#E4E7EC", to: "#AEB4BE" }, // silvery/white -- distinct from gold layer feed
   "Medical/Health":     { emoji: "🩺", from: "#8AA0B4", to: "#5E7488" }, // slate blue
   "Other":              { emoji: "🏷️", from: "#6E6258", to: "#463E38" }, // dark slate/brown
   // Income categories reuse a neutral sage tile -- income rows don't need a
@@ -70,6 +70,23 @@ const CATEGORY_ICONS = {
 function categoryIconTile(category, isIncome) {
   const spec = isIncome ? CATEGORY_ICONS["_income"] : (CATEGORY_ICONS[category] || CATEGORY_ICONS["Other"]);
   return `<div class="cat-icon" title="${esc(category || "")}" style="background:linear-gradient(145deg, ${spec.from}, ${spec.to})"><span>${spec.emoji}</span></div>`;
+}
+
+// Shared bird-type visual language: layers = egg on gold, meat = drumstick on
+// rust. Used for the finance "applies to" tiles, the flock group headers, and
+// the dashboard's active-birds breakdown, so the same two symbols mean the
+// same thing everywhere in the app.
+const BIRD_TYPE_ICONS = {
+  layer: { emoji: "🥚", from: "#E4B62C", to: "#B4860E" },
+  meat:  { emoji: "🍗", from: "#D0623C", to: "#9E3E20" },
+};
+
+/** Small egg/meat tile for an expense's audience ("Layers Only" / "Meat Birds
+ * Only"). Only rendered for targeted expenses -- an all-birds expense shows
+ * nothing, so the tile that IS shown carries real meaning at a glance. */
+function audienceTile(forType) {
+  const spec = forType === "Meat Birds Only" ? BIRD_TYPE_ICONS.meat : BIRD_TYPE_ICONS.layer;
+  return `<span class="audience-tile" title="${esc(forType)}" style="background:linear-gradient(145deg, ${spec.from}, ${spec.to})">${spec.emoji}</span>`;
 }
 const INCOME_CATEGORIES = ["Egg Sale", "Meat Sale", "Bird Sale", "Other Income"];
 // Egg Sale and Meat Sale get their quantity/unit locked, same idea as feed
@@ -4511,7 +4528,7 @@ function feedBeddingUsageInRange(supplies, days) {
  * cumulative meat chart, which has the identical sporadic-event shape. */
 const STATUS_USED_FRACTION = { "Full": 0, "3/4": 0.25, "1/2": 0.5, "1/4": 0.75, "Empty": 1 };
 
-function feedBeddingCumulativeSeries(supplies, days) {
+function feedBeddingCumulativeSeries(supplies, days, axisBuckets) {
   // Build each emptied bag's consumption as a per-day amount, spread linearly
   // across its open->emptied window (opened_at = 0 used, date_emptied = full
   // quantity used). A bag with no opened_at, or opened and emptied the same
@@ -4532,61 +4549,63 @@ function feedBeddingCumulativeSeries(supplies, days) {
     for (let i = 0; i < spanDays; i++) addOnDay(cat, addDays(start, i), perDayQty);
   });
 
-  // The chart is CUMULATIVE, so every plotted point must show the true total
-  // consumed up to and including that day -- including consumption from before
-  // the visible window began. The previous version summed only the days inside
-  // the window, which made the same bag show a different final total at 7 vs 90
-  // days, and (because week buckets were labeled by their Monday) could plot a
-  // week's usage on a date before the bag was even opened. Walking real
-  // calendar days and carrying a genuine running total fixes both: the total is
-  // range-independent, and each point sits on its own real date.
   const cats = ["Layer Feed", "Meat Feed", "Bedding"];
-  const allDays = [...new Set(cats.flatMap(c => Object.keys(perDay[c])))].sort();
-  if (allDays.length === 0) return { labels: [], layer: [], meat: [], bedding: [] };
-
-  // Window bounds: earliest visible day is max(first-consumption, today-days).
-  const today = todayStr();
-  const windowStart = days ? addDays(today, -(days - 1)) : allDays[0];
-  const firstDay = allDays[0] < windowStart ? windowStart : allDays[0];
-
-  // Running totals BEFORE the window starts -- the baseline the visible line
-  // begins from, so a partly-consumed-before-window bag isn't undercounted.
-  const runBefore = { "Layer Feed": 0, "Meat Feed": 0, "Bedding": 0 };
-  cats.forEach(c => {
-    for (const [day, amt] of Object.entries(perDay[c])) {
-      if (day < firstDay) runBefore[c] += amt;
-    }
-  });
-
-  // Emit one point per calendar day from firstDay through today, each the true
-  // cumulative-to-date. Flat stretches (no consumption that day) simply repeat
-  // the previous total, which is the correct cumulative shape.
-  const labels = [], layer = [], meat = [], bedding = [];
-  const run = { "Layer Feed": runBefore["Layer Feed"], "Meat Feed": runBefore["Meat Feed"], "Bedding": runBefore["Bedding"] };
-  let cursor = firstDay;
-  // Safety bound: never loop more than ~2 years of days.
-  for (let guard = 0; guard < 800 && cursor <= today; guard++) {
-    cats.forEach(c => { if (perDay[c][cursor]) run[c] += perDay[c][cursor]; });
-    labels.push(cursor.slice(5)); // MM-DD; full ISO not needed for the axis
-    layer.push(run["Layer Feed"]);
-    meat.push(run["Meat Feed"]);
-    bedding.push(run["Bedding"]);
-    cursor = addDays(cursor, 1);
-  }
-
-  // Bags open right now but not yet emptied: their partial consumption (from
-  // the status slider) can't be dated to any earlier day, so it's added onto
-  // today's point as a single "as of now" increment on top of the confirmed
-  // total -- better than showing zero usage from an obviously-being-eaten bag.
+  // Build a lookup of true cumulative-to-date, per category, for every day
+  // that had any consumption. This is the range-independent backbone: the
+  // total consumed up to and including any given day never depends on the
+  // chart window.
   const activeSum = (cat) => supplies.filter(s => s.category === cat && !s.date_emptied)
     .reduce((sum, s) => sum + (Number(s.quantity) || 0) * (STATUS_USED_FRACTION[s.status] ?? 0), 0);
-  if (labels.length) {
-    const last = labels.length - 1;
-    layer[last] += activeSum("Layer Feed");
-    meat[last] += activeSum("Meat Feed");
-    bedding[last] += activeSum("Bedding");
+  const today = todayStr();
+
+  // cumAsOf(cat, dayStr): total consumed for cat through the END of dayStr,
+  // including the open-bag partial estimate once we reach today.
+  const sortedDays = {};
+  const cumByDay = {};
+  cats.forEach(c => {
+    const days = Object.keys(perDay[c]).sort();
+    sortedDays[c] = days;
+    let run = 0; const map = {};
+    days.forEach(d => { run += perDay[c][d]; map[d] = run; });
+    cumByDay[c] = map;
+  });
+  const cumAsOf = (cat, dayStr) => {
+    // Largest recorded day <= dayStr gives the running total at that point.
+    const days = sortedDays[cat];
+    let val = 0;
+    for (let i = 0; i < days.length; i++) { if (days[i] <= dayStr) val = cumByDay[cat][days[i]]; else break; }
+    if (dayStr >= today) val += activeSum(cat); // open-bag partial only counts as-of today
+    return val;
+  };
+
+  // If a shared axis was provided, emit one value per shared bucket (using the
+  // bucket's last calendar date as the "as of" reference). This keeps every
+  // chart on the same x-axis while preserving true cumulative totals.
+  if (axisBuckets) {
+    const layer = [], meat = [], bedding = [];
+    axisBuckets.forEach(({ asOfDate }) => {
+      layer.push(cumAsOf("Layer Feed", asOfDate));
+      meat.push(cumAsOf("Meat Feed", asOfDate));
+      bedding.push(cumAsOf("Bedding", asOfDate));
+    });
+    return { labels: axisBuckets.map(b => b.key), layer, meat, bedding };
   }
 
+  // No shared axis (e.g. a caller that wants raw daily points): emit one point
+  // per calendar day from the window start (or first data) through today.
+  const allDays = [...new Set(cats.flatMap(c => Object.keys(perDay[c])))].sort();
+  if (allDays.length === 0) return { labels: [], layer: [], meat: [], bedding: [] };
+  const windowStart = days ? addDays(today, -(days - 1)) : allDays[0];
+  const firstDay = allDays[0] < windowStart ? windowStart : allDays[0];
+  const labels = [], layer = [], meat = [], bedding = [];
+  let cursor = firstDay;
+  for (let guard = 0; guard < 800 && cursor <= today; guard++) {
+    labels.push(cursor.slice(5));
+    layer.push(cumAsOf("Layer Feed", cursor));
+    meat.push(cumAsOf("Meat Feed", cursor));
+    bedding.push(cumAsOf("Bedding", cursor));
+    cursor = addDays(cursor, 1);
+  }
   return { labels, layer, meat, bedding };
 }
 /** Which of Layer Feed / Meat Feed / Bedding are actually running low right
@@ -5268,7 +5287,7 @@ function renderCoopOverview() {
     <div class="section-gap">
       <div class="grid-stats-2">
         ${statCard({ tone: "sage", goto: "flock", label: "Active Birds", value: s.active,
-          sub: `${s.layers} layer · ${s.meatActive} meat`,
+          sub: `${BIRD_TYPE_ICONS.layer.emoji} ${s.layers} layer · ${BIRD_TYPE_ICONS.meat.emoji} ${s.meatActive} meat`,
           spark: sparklineSvg(tr.flockW),
           chip: deltaChipHtml(tr.flockW[tr.flockW.length - 1], tr.flockW[tr.flockW.length - 5]) })}
         ${statCard({ tone: "gold", goto: "expenses", label: "Value produced this month", value: fmtMoney(s.incomeMonth),
@@ -5497,6 +5516,28 @@ function drawCharts() {
   Object.values(charts).forEach(c => c && c.destroy());
   const mode = pickBucketMode(chartRangeDays);
 
+  // ONE shared axis for every time-series chart on this tab. Previously each
+  // chart built its labels only where it had data, so at "90 days" the eggs
+  // chart might start at the first egg entry, the balance chart at the first
+  // expense, and the flock chart at day -90 -- all different windows, which
+  // made them impossible to compare and made a chart look like it "started
+  // late." Now they all span the same today-minus-range through today (or, on
+  // All Time, the full data extent), so switching ranges moves every chart in
+  // lockstep and a flat leading stretch honestly shows "nothing happened yet."
+  const sharedBuckets = allBucketsInRange(mode, chartRangeDays);
+  const axisLabels = sharedBuckets.map(b => b.key);
+  // Map a sparse {bucketLabel: value} onto the shared axis. `carry` = true
+  // fills gaps forward from the last known value (for cumulative/running
+  // series that should hold flat between events); `carry` = false leaves gaps
+  // as the zero-default (for per-bucket sums like eggs or spend-per-period).
+  const onAxis = (sparse, { carry = false } = {}) => {
+    let last = 0;
+    return axisLabels.map(l => {
+      if (sparse[l] !== undefined) { last = sparse[l]; return sparse[l]; }
+      return carry ? last : 0;
+    });
+  };
+
   const flockSize = computeFlockSizeSeries();
   charts.flockSize = new Chart(document.getElementById("flockSizeChart"), {
     type: "line",
@@ -5518,14 +5559,13 @@ function drawCharts() {
     const k = bucketLabel(e.date, mode);
     eggMap[k] = (eggMap[k] || 0) + (Number(e.count) || 0);
   });
-  const eggLabels = Object.keys(eggMap).sort();
   charts.egg = new Chart(document.getElementById("eggChart"), {
     type: "line",
-    data: { labels: eggLabels, datasets: [{ label: "Eggs", data: eggLabels.map(l => eggMap[l]), borderColor: "#D4A017", backgroundColor: "#D4A01733", tension: 0.25, pointRadius: 2 }] },
+    data: { labels: axisLabels, datasets: [{ label: "Eggs", data: onAxis(eggMap), borderColor: "#D4A017", backgroundColor: "#D4A01733", tension: 0.25, pointRadius: 2 }] },
     options: chartOpts()
   });
 
-  const feedBedding = feedBeddingCumulativeSeries(STATE.supplies, chartRangeDays);
+  const feedBedding = feedBeddingCumulativeSeries(STATE.supplies, chartRangeDays, sharedBuckets);
   charts.feedUsed = new Chart(document.getElementById("feedUsedChart"), {
     type: "line",
     data: {
@@ -5580,14 +5620,14 @@ function drawCharts() {
     const k = bucketLabel(x.date, mode);
     spendMap[k] = (spendMap[k] || 0) + (Number(x.amount) || 0);
   });
-  const incomeLabels = [...new Set([...Object.keys(incomeMap), ...Object.keys(spendMap)])].sort();
+  const incomeLabels = axisLabels;
   charts.income = new Chart(document.getElementById("incomeChart"), {
     type: "bar",
     data: {
       labels: incomeLabels,
       datasets: [
-        { label: "Value produced", data: incomeLabels.map(l => incomeMap[l] || 0), backgroundColor: "#8A9A5B" },
-        { label: "Spend", data: incomeLabels.map(l => spendMap[l] || 0), backgroundColor: "#C1502E" },
+        { label: "Value produced", data: onAxis(incomeMap), backgroundColor: "#8A9A5B" },
+        { label: "Spend", data: onAxis(spendMap), backgroundColor: "#C1502E" },
       ]
     },
     options: {
@@ -5596,28 +5636,25 @@ function drawCharts() {
     }
   });
 
-  // Cumulative balance: income and spend both accumulated over time, plus the net gap between them.
-  // Both series carry forward their last known total between events, so gaps read as flat rather than skipped.
-  // Filtering to the selected range happens BEFORE accumulating, not after -- so a "last 7 days" view
-  // genuinely starts its running total from 0 at the start of that window, rather than carrying forward
-  // whatever the all-time total already was going into it.
-  const spendSorted = [...STATE.expenses].filter(x => x.entry_type !== "income").sort((a, b) => a.date.localeCompare(b.date));
-  const spendInRange = chartRangeDays ? spendSorted.filter(x => withinRange(x.date, chartRangeDays)) : spendSorted;
-  let runningSpend = 0;
-  const spendPoints = spendInRange.map(x => { runningSpend += Number(x.amount) || 0; return { date: x.date, total: runningSpend }; });
-  const spendSparse = {};
-  spendPoints.forEach(p => { spendSparse[bucketLabel(p.date, mode)] = p.total; });
+  // Cumulative balance: income and spend accumulated over time, plus the net.
+  // Plotted on the shared axis so it lines up with every other chart. Each
+  // bucket shows the TRUE running total as of that bucket's end date --
+  // including everything before the visible window -- so "90 days" and "all
+  // time" agree on the balance at any shared date, rather than the window
+  // secretly resetting the total to 0 at its left edge (which made the same
+  // day read as a different balance depending on the range).
+  const spendEventsAll = [...STATE.expenses].filter(x => x.entry_type !== "income")
+    .map(x => ({ date: x.date, amount: Number(x.amount) || 0 }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 
   const allTimeEggPrice = weightedAvgEggPrice(STATE.eggs, Number(chartDefaults.eggPrice) || 0);
   const allTimeMeatPrice = weightedAvgMeatPrice(STATE.birds.filter(b => b.status === "Processed" && b.harvest_date), Number(chartDefaults.pricePerLb) || 0);
-  const incomeEvents = [
+  const incomeEventsAll = [
     ...STATE.eggs.map(e => ({ date: e.date, amount: (Number(e.count) || 0) * (Number(e.price_per_egg) || 0) })),
     ...STATE.birds.filter(b => b.status === "Processed" && b.harvest_date).map(b => ({ date: b.harvest_date, amount: (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || 0) })),
-    // A real sale contributes its NET effect at the date it happened: the
-    // actual amount received, minus whatever it washes out of the estimate
-    // above (using a weighted average of what was actually logged, not the
-    // current default price) -- so the running total stays correct at every
-    // point along the line, not just in the final sum.
+    // A real sale contributes its NET effect at its date: the amount received
+    // minus whatever it washes out of the estimate above (weighted average of
+    // what was actually logged), so the running total stays correct all along.
     ...STATE.expenses.filter(x => x.entry_type === "income").map(x => {
       const washedOut = x.category === "Egg Sale" ? (Number(x.quantity) || 0) * (x.washout_unit_price != null ? Number(x.washout_unit_price) : allTimeEggPrice)
         : x.category === "Meat Sale" ? (Number(x.quantity) || 0) * (x.washout_unit_price != null ? Number(x.washout_unit_price) : allTimeMeatPrice)
@@ -5625,20 +5662,17 @@ function drawCharts() {
       return { date: x.date, amount: (Number(x.amount) || 0) - washedOut };
     }),
   ].sort((a, b) => a.date.localeCompare(b.date));
-  const incomeEventsInRange = chartRangeDays ? incomeEvents.filter(e => withinRange(e.date, chartRangeDays)) : incomeEvents;
-  let runningIncome = 0;
-  const incomePoints = incomeEventsInRange.map(e => { runningIncome += e.amount; return { date: e.date, total: runningIncome }; });
-  const incomeSparse = {};
-  incomePoints.forEach(p => { incomeSparse[bucketLabel(p.date, mode)] = p.total; });
 
-  const balanceLabels = [...new Set([...Object.keys(incomeSparse), ...Object.keys(spendSparse)])].sort();
-  const fillForward = (labels, sparse) => {
-    let last = 0;
-    return labels.map(l => { if (sparse[l] !== undefined) last = sparse[l]; return last; });
+  // runningAsOf(events, dayStr): sum of every event on or before dayStr.
+  const runningAsOf = (events, dayStr) => {
+    let sum = 0;
+    for (const e of events) { if (e.date <= dayStr) sum += e.amount; else break; }
+    return sum;
   };
-  const incomeSeries = fillForward(balanceLabels, incomeSparse);
-  const spendSeries = fillForward(balanceLabels, spendSparse);
-  const netSeries = balanceLabels.map((l, i) => incomeSeries[i] - spendSeries[i]);
+  const incomeSeries = sharedBuckets.map(({ asOfDate }) => runningAsOf(incomeEventsAll, asOfDate));
+  const spendSeries = sharedBuckets.map(({ asOfDate }) => runningAsOf(spendEventsAll, asOfDate));
+  const netSeries = incomeSeries.map((v, i) => v - spendSeries[i]);
+  const balanceLabels = axisLabels;
 
   charts.cum = new Chart(document.getElementById("cumChart"), {
     type: "line",
@@ -5658,21 +5692,16 @@ function drawCharts() {
 
   // Cumulative meat produced (lbs) — processing happens rarely (maybe once or twice a year for a
   // home flock), so a running total that steps up on each batch tells the story better than a bar
-  // chart full of empty buckets would.
-  const meatEvents = STATE.birds
+  // chart full of empty buckets would. Plotted on the shared axis with a true running total (all
+  // batches on or before each bucket's date), so it lines up with every other chart.
+  const meatEventsAll = STATE.birds
     .filter(b => b.status === "Processed" && b.harvest_date && b.harvest_weight)
-    .map(b => ({ date: b.harvest_date, weight: Number(b.harvest_weight) || 0 }))
+    .map(b => ({ date: b.harvest_date, amount: Number(b.harvest_weight) || 0 }))
     .sort((a, b) => a.date.localeCompare(b.date));
-  const meatEventsInRange = chartRangeDays ? meatEvents.filter(e => withinRange(e.date, chartRangeDays)) : meatEvents;
-  let runningMeat = 0;
-  const meatPoints = meatEventsInRange.map(e => { runningMeat += e.weight; return { date: e.date, total: runningMeat }; });
-  const meatSparse = {};
-  meatPoints.forEach(p => { meatSparse[bucketLabel(p.date, mode)] = p.total; });
-  const meatLabels = Object.keys(meatSparse).sort();
-  const meatSeries = fillForward(meatLabels, meatSparse);
+  const meatSeries = sharedBuckets.map(({ asOfDate }) => runningAsOf(meatEventsAll, asOfDate));
   charts.meat = new Chart(document.getElementById("meatChart"), {
     type: "line",
-    data: { labels: meatLabels, datasets: [{ label: "Dressed weight", data: meatSeries, borderColor: "#C1502E", backgroundColor: "#C1502E22", stepped: true, pointRadius: 3 }] },
+    data: { labels: axisLabels, datasets: [{ label: "Dressed weight", data: meatSeries, borderColor: "#C1502E", backgroundColor: "#C1502E22", stepped: true, pointRadius: 2 }] },
     options: { ...chartOpts((v) => `${displayWeight(v)} ${getWeightUnit()}`) },
   });
 }
@@ -6455,8 +6484,8 @@ function renderFlockBirds() {
     const layerItems = items.filter(it => !it.isMeat);
     const meatItems = items.filter(it => it.isMeat);
     bodyHtml = ""
-      + (layerItems.length ? `<div class="flock-section-header">Layers</div><div class="${flockGridClass()}">${layerItems.map(it => it.html).join("")}</div>` : "")
-      + (meatItems.length ? `<div class="flock-section-header">Meat birds</div><div class="${flockGridClass()}">${meatItems.map(it => it.html).join("")}</div>` : "");
+      + (layerItems.length ? `<div class="flock-section-header">${BIRD_TYPE_ICONS.layer.emoji} Layers</div><div class="${flockGridClass()}">${layerItems.map(it => it.html).join("")}</div>` : "")
+      + (meatItems.length ? `<div class="flock-section-header">${BIRD_TYPE_ICONS.meat.emoji} Meat birds</div><div class="${flockGridClass()}">${meatItems.map(it => it.html).join("")}</div>` : "");
   }
 
   el.innerHTML = `
@@ -8457,7 +8486,7 @@ function renderExpenses() {
           <div class="list-card-main">
             <div class="expense-row-title">
               <span class="expense-cat-name">${esc(x.category)}</span>
-              ${!isIncome && x.for_type && x.for_type !== "All Birds" ? `<span class="audience-dot tone-${x.for_type === "Meat Birds Only" ? "rust" : "gold"}" title="${esc(x.for_type)}"></span><span class="audience-label">${x.for_type === "Meat Birds Only" ? "Meat" : "Layers"}</span>` : ""}
+              ${!isIncome && x.for_type && x.for_type !== "All Birds" ? audienceTile(x.for_type) : ""}
             </div>
             <div class="list-card-desc dim">${fmtDate(x.date)}${x.quantity ? ` · ${x.quantity} ${esc(x.unit || "")}` : ""}${x.description ? " · " + esc(x.description) : ""}</div>
             ${isIncome && QUANTITY_RELEVANT_INCOME.has(x.category) ? (() => { const rate = saleRateLabel(x.amount, x.quantity, x.category); return rate ? `<div class="list-card-desc dim">${rate}</div>` : ""; })() : ""}
