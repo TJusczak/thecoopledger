@@ -86,6 +86,12 @@ jobs:
         run: |
           CHANNEL=${{ startsWith(github.ref, 'refs/tags/v') && 'stable' || 'beta' }}
           sed -i "s/__BUILD_CHANNEL__/$CHANNEL/" static/app.js
+          # The landing page carries the same placeholder (in the beta-badge
+          # wrapper's class). Stamp it too, or the deployed beta site keeps
+          # the literal channel-__BUILD_CHANNEL__ class and its badge/logo
+          # swap never fires. (The landing JS also has a beta.* hostname
+          # fallback, but substituting here is the correct primary path.)
+          sed -i "s/__BUILD_CHANNEL__/$CHANNEL/" landing/index.html
 
       - name: Set up QEMU
         # Lets the amd64 runner below also emulate arm64 well enough to

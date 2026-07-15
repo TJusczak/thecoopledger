@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-169";
+const APP_VERSION = "2026.07.13-171";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -16,6 +16,22 @@ const LOGO_INLINE = IS_BETA_BUILD ? "logo-inline-beta.png" : "logo-inline.png";
 // by this script), so it needs its src swapped directly rather than
 // picking up LOGO_INLINE automatically the way freshly-rendered HTML does.
 document.querySelectorAll('.sticky-header-title img').forEach(img => { img.src = LOGO_INLINE; });
+// Same story for the favicon / apple-touch icon / manifest: they're
+// referenced in the <head> before this script runs, and hardcoded to the
+// stable icons. On a beta build, swap them to the -beta variants so the
+// browser tab, the installed-app icon, and the "add to home screen"
+// preview all carry the beta mark instead of looking identical to stable.
+if (IS_BETA_BUILD) {
+  const fav = document.getElementById("faviconLink");
+  const apple = document.getElementById("appleTouchIcon");
+  if (fav) fav.href = "icon-192-beta.png";
+  if (apple) apple.href = "icon-192-beta.png";
+  // The manifest is fetched independently by the browser, so pointing it at
+  // a beta-specific file is the only way its icons (used for the installed
+  // PWA) pick up the beta mark.
+  const mani = document.querySelector('link[rel="manifest"]');
+  if (mani) mani.href = "manifest-beta.json";
+}
 renderBetaBadge();
 const COOP_KEY = "coopLedgerCurrentCoop";
 const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive lists
@@ -5333,13 +5349,6 @@ function renderCoopOverview() {
         ${RANGES.map(r => `<button class="range-btn ${chartRangeDays === r.days ? "active" : ""}" data-days="${r.days}">${r.label}</button>`).join("")}
       </div>
       ${rangeHiddenDataHint()}
-      ${(() => {
-        const usage = feedBeddingUsageInRange(STATE.supplies, chartRangeDays);
-        const activeBirds = STATE.birds.filter(b => b.status === "Active").length;
-        const feedLbs = usage.layerFeedLbs + usage.meatFeedLbs;
-        if (feedLbs === 0 || activeBirds === 0) return "";
-        return `<div class="dim" style="font-size:12px;margin:-4px 0 4px">Feed used per active bird, this period: <strong style="color:var(--text)">${(feedLbs / activeBirds).toFixed(2)} lb</strong> (${activeBirds} active bird${activeBirds !== 1 ? "s" : ""} currently) -- includes an estimate for bags currently open based on their status slider, not just fully emptied ones.</div>`;
-      })()}
 
       <div class="chart-grid">
         <div class="card"><div class="card-title">Flock size over time</div><div class="chart-box"><canvas id="flockSizeChart"></canvas></div></div>
@@ -5347,12 +5356,26 @@ function renderCoopOverview() {
         <div class="card"><div class="card-title">Cumulative meat produced (lbs)</div><div class="chart-box"><canvas id="meatChart"></canvas></div></div>
         <div class="card">
           <div class="card-title">Cumulative feed used (lbs)</div>
-          <div class="dim" style="font-size:11px;margin-bottom:6px">Steps up when a bag empties; today's point also includes a partial estimate from bags currently open.</div>
+          <div class="dim" style="font-size:11px;margin-bottom:6px">Ramps up over each bag's open-to-emptied window; today's point also includes a partial estimate from bags currently open.</div>
+          ${(() => {
+            const usage = feedBeddingUsageInRange(STATE.supplies, chartRangeDays);
+            const activeLayers = STATE.birds.filter(b => b.status === "Active" && (b.type === "Layer" || b.type === "Dual Purpose")).length;
+            const activeMeat = STATE.birds.filter(b => b.status === "Active" && b.type === "Meat").length;
+            const lines = [];
+            if (usage.layerFeedLbs > 0 && activeLayers > 0) lines.push(`<span class="stamp tone-gold">Layers: ${(usage.layerFeedLbs / activeLayers).toFixed(2)} lb/bird</span>`);
+            if (usage.meatFeedLbs > 0 && activeMeat > 0) lines.push(`<span class="stamp tone-rust">Meat: ${(usage.meatFeedLbs / activeMeat).toFixed(2)} lb/bird</span>`);
+            if (!lines.length) return "";
+            // Per active bird, this period. Includes a partial estimate from
+            // currently-open bags (via feedBeddingUsageInRange), so it reflects
+            // real consumption, not just fully-emptied bags.
+            return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${lines.join("")}</div>
+              <div class="dim" style="font-size:10px;margin-bottom:6px">per active bird, this period</div>`;
+          })()}
           <div class="chart-box"><canvas id="feedUsedChart"></canvas></div>
         </div>
         <div class="card">
           <div class="card-title">Cumulative bedding used (cu ft)</div>
-          <div class="dim" style="font-size:11px;margin-bottom:6px">Same idea -- steps up on empty, today's point includes what's currently in progress.</div>
+          <div class="dim" style="font-size:11px;margin-bottom:6px">Same idea -- ramps over each bag's usage window, today's point includes what's currently in progress.</div>
           <div class="chart-box"><canvas id="beddingUsedChart"></canvas></div>
         </div>
         <div class="card"><div class="card-title">Spend by category</div><div class="chart-box"><canvas id="catChart"></canvas></div></div>
@@ -8978,7 +9001,7 @@ function emptySupplyModalHtml() {
           <div class="list-card-main">
             <div style="font-weight:600">${esc(s.brand || s.description || s.category)}</div>
             <div class="list-card-desc dim">${esc(s.category)}${s.quantity ? ` · ${s.quantity} ${esc(s.unit || "")}` : ""}</div>
-            <div class="list-card-desc dim">${s.date_added ? `added ${fmtDate(s.date_added)}` : ""}${s.date_emptied ? ` · emptied ${fmtDate(s.date_emptied)}` : ""}${s.date_added && s.date_emptied ? ` · lasted ${daysSince(s.date_added) - daysSince(s.date_emptied)}d` : ""}</div>
+            <div class="list-card-desc dim">${s.date_added ? `added ${fmtDate(s.date_added)}` : ""}${s.opened_at ? ` · opened ${fmtDate(s.opened_at)}` : ""}${s.date_emptied ? ` · emptied ${fmtDate(s.date_emptied)}` : ""}${s.opened_at && s.date_emptied ? ` · used over ${Math.max(1, daysSince(s.opened_at) - daysSince(s.date_emptied))}d` : ""}</div>
           </div>
           <div class="list-card-side">
             <button class="icon-btn" data-restore-supply="${s.id}" title="Not actually empty -- restore to Full" onclick="event.stopPropagation()">↺</button>
@@ -9267,7 +9290,10 @@ function supplyFormHtml(editingSupply) {
       ${!editingSupply ? `<label class="field"><span>Number of items</span><input type="number" min="1" max="500" step="1" id="sp_count" value="1" placeholder="e.g. 3 for three separate bags"></label>` : ""}
     </div>
     ${!editingSupply ? `<div id="productPickerHost">${renderProductPickerRow([...QUANTITY_CATEGORIES][0])}</div>` : ""}
-    ${editingSupply ? `<label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="sp_opened" ${editingSupply.opened_at ? "checked" : ""} style="width:auto"><span>Opened -- won't group with sealed spares even at Full</span></label>` : ""}
+    ${editingSupply ? `
+    <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="sp_opened" ${editingSupply.opened_at ? "checked" : ""} style="width:auto"><span>Opened -- won't group with sealed spares even at Full</span></label>
+    <label class="field" id="sp_opened_date_field" style="margin-top:8px;${editingSupply.opened_at ? "" : "display:none"}"><span>Date opened</span><input type="date" id="sp_opened_at" value="${editingSupply.opened_at || todayStr()}"><span class="dim" style="font-size:11px;margin-top:4px">Feed usage is drawn as a straight line from this date (0 used) to the emptied date (fully used). Correcting an opened date fixes the curve and the daily-average estimate.</span></label>
+    ` : ""}
     ${!editingSupply ? `<div class="dim" style="font-size:11px;margin-top:8px">Buying multiple bags at once? Set the count above -- each one is added as its own separate, independently trackable item rather than a single item marked "3 bags." Identical full bags collapse into one compact card automatically -- "Open one" peels a single bag off to track it on its own.</div>` : ""}
     <div class="modal-actions">
       <button class="btn btn-confirm" id="saveSupply">${editingSupply ? "✓ Save changes" : "+ Add item"}</button>
@@ -9288,10 +9314,28 @@ function wireSupplyForm(editingSupply) {
     wireProductPicker(productPickerHost, pickerCfg);
     document.getElementById("sp_category").addEventListener("change", rerenderPicker);
   }
+  // Show the opened-date field only when "Opened" is checked -- an unopened
+  // bag has no opened date to set.
+  const openedToggle = document.getElementById("sp_opened");
+  const openedDateField = document.getElementById("sp_opened_date_field");
+  if (openedToggle && openedDateField) {
+    openedToggle.addEventListener("change", () => { openedDateField.style.display = openedToggle.checked ? "" : "none"; });
+  }
   document.getElementById("saveSupply").addEventListener("click", async () => {
     const status = document.getElementById("sp_status").value;
     const dateEmptiedEl = document.getElementById("sp_date_emptied");
     const openedEl = document.getElementById("sp_opened");
+    // Guard: an opened date after the emptied date would produce a negative
+    // span and a nonsensical ramp. Catch it here with a clear message rather
+    // than silently saving something the chart can't draw.
+    if (openedEl && openedEl.checked) {
+      const openedVal = (document.getElementById("sp_opened_at") || {}).value;
+      const emptiedVal = status === "Empty" ? ((dateEmptiedEl && dateEmptiedEl.value) || editingSupply?.date_emptied) : null;
+      if (openedVal && emptiedVal && openedVal > emptiedVal) {
+        alert("The opened date can't be after the emptied date -- a bag has to be opened before it's finished.");
+        return;
+      }
+    }
     const payload = {
       coop_id: currentCoopId,
       category: document.getElementById("sp_category").value,
@@ -9306,7 +9350,16 @@ function wireSupplyForm(editingSupply) {
       // reasoning as the earlier fix: a status corrected away from Empty
       // must not leave a stale emptied date behind.
       date_emptied: status === "Empty" ? ((dateEmptiedEl && dateEmptiedEl.value) || editingSupply?.date_emptied || todayStr()) : null,
-      opened_at: openedEl ? (openedEl.checked ? (editingSupply?.opened_at || todayStr()) : null) : (editingSupply?.opened_at || null),
+      // Opened date is now explicitly editable (was implicitly "today").
+      // Checkbox off clears it entirely; checkbox on uses whatever's in the
+      // date field, falling back to a preserved value or today. This is the
+      // fix for a bag whose opened date was wrong and skewed its usage ramp.
+      opened_at: (() => {
+        if (!openedEl) return editingSupply?.opened_at || null;
+        if (!openedEl.checked) return null;
+        const openedDateEl = document.getElementById("sp_opened_at");
+        return (openedDateEl && openedDateEl.value) || editingSupply?.opened_at || todayStr();
+      })(),
     };
     if (editingSupply) {
       await localSupplyUpdate(editingSupply.id, payload);

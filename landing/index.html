@@ -15,8 +15,22 @@
 <meta name="twitter:title" content="The Coop Ledger — track your flock, keep your data">
 <meta name="twitter:description" content="A homestead flock tracker for birds, eggs, expenses, and supplies. Works instantly, your data stays yours, free and open source.">
 <meta name="twitter:image" content="https://thecoopledger.com/icon-512.png">
-<link rel="icon" href="favicon.png" type="image/png">
-<link rel="apple-touch-icon" href="icon-512.png">
+<link rel="icon" href="favicon.png" type="image/png" id="landingFavicon">
+<link rel="apple-touch-icon" href="icon-512.png" id="landingAppleIcon">
+<script>
+  // Pick the beta favicon on the beta host. Done here in the head, by
+  // hostname, so it's self-contained and doesn't depend on the build
+  // pipeline substituting anything into this file (it currently only
+  // stamps the channel into the app bundle, not the landing page).
+  (function () {
+    if (/(^|\.)beta\./i.test(location.hostname)) {
+      var f = document.getElementById("landingFavicon");
+      var a = document.getElementById("landingAppleIcon");
+      if (f) f.href = "favicon-beta.png";
+      if (a) a.href = "icon-512-beta.png";
+    }
+  })();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Roboto+Slab:wght@500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="landing.css">
@@ -443,8 +457,15 @@
 
 (function () {
   var wrap = document.getElementById("betaTabWrap");
-  var isBeta = wrap && wrap.classList.contains("channel-beta");
-  if (!isBeta) return; // stable build -- the regular logo and APK link already in the markup are correct as-is
+  // Two ways to be "beta": the build stamped channel-beta into this file,
+  // OR we're being served from a beta.* host. The hostname check is the
+  // safety net -- if a deploy ever ships this page without substituting
+  // __BUILD_CHANNEL__, the beta site still correctly shows as beta rather
+  // than silently masquerading as stable.
+  var isBeta = (wrap && wrap.classList.contains("channel-beta"))
+    || /(^|\.)beta\./i.test(location.hostname);
+  if (!isBeta) return; // stable build -- the regular logo and links already in the markup are correct as-is
+  if (wrap) { wrap.classList.remove("channel-__BUILD_CHANNEL__"); wrap.classList.add("channel-beta"); } // ensure the badge's CSS shows it
   document.querySelectorAll(".brand-logo").forEach(function (img) { img.src = "logo-inline-beta.png"; });
   document.querySelectorAll(".android-download").forEach(function (a) { a.href = "TheCoopLedgerBeta.apk"; });
 })();
