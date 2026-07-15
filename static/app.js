@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-175";
+const APP_VERSION = "2026.07.13-176";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5395,36 +5395,26 @@ function renderCoopOverview() {
       ${rangeHiddenDataHint()}
 
       <div class="chart-grid">
-        <div class="card"><div class="card-title">Flock size over time</div><div class="chart-box"><canvas id="flockSizeChart"></canvas></div></div>
-        <div class="card"><div class="card-title">Egg production</div><div class="chart-box"><canvas id="eggChart"></canvas></div></div>
-        <div class="card"><div class="card-title">Cumulative meat produced (lbs)</div><div class="chart-box"><canvas id="meatChart"></canvas></div></div>
+        <div class="card"><div class="chart-head"><div class="card-title">Flock size over time</div></div><div class="chart-box"><canvas id="flockSizeChart"></canvas></div></div>
+        <div class="card"><div class="chart-head"><div class="card-title">Egg production</div></div><div class="chart-box"><canvas id="eggChart"></canvas></div></div>
+        <div class="card"><div class="chart-head"><div class="card-title">Cumulative meat produced (lbs)</div></div><div class="chart-box"><canvas id="meatChart"></canvas></div></div>
         <div class="card">
-          <div class="card-title">Cumulative feed used (lbs)</div>
-          <div class="dim" style="font-size:11px;margin-bottom:6px">Ramps up over each bag's open-to-emptied window; today's point also includes a partial estimate from bags currently open.</div>
-          ${(() => {
-            const usage = feedBeddingUsageInRange(STATE.supplies, chartRangeDays);
-            const activeLayers = STATE.birds.filter(b => b.status === "Active" && (b.type === "Layer" || b.type === "Dual Purpose")).length;
-            const activeMeat = STATE.birds.filter(b => b.status === "Active" && b.type === "Meat").length;
-            const lines = [];
-            if (usage.layerFeedLbs > 0 && activeLayers > 0) lines.push(`<span class="stamp tone-gold">Layers: ${(usage.layerFeedLbs / activeLayers).toFixed(2)} lb/bird</span>`);
-            if (usage.meatFeedLbs > 0 && activeMeat > 0) lines.push(`<span class="stamp tone-rust">Meat: ${(usage.meatFeedLbs / activeMeat).toFixed(2)} lb/bird</span>`);
-            if (!lines.length) return "";
-            // Per active bird, this period. Includes a partial estimate from
-            // currently-open bags (via feedBeddingUsageInRange), so it reflects
-            // real consumption, not just fully-emptied bags.
-            return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${lines.join("")}</div>
-              <div class="dim" style="font-size:10px;margin-bottom:6px">per active bird, this period</div>`;
-          })()}
+          <div class="chart-head">
+            <div class="card-title">Cumulative feed used (lbs)</div>
+            <div class="dim" style="font-size:11px;margin-bottom:6px">Ramps up over each bag's open-to-emptied window; today's point also includes a partial estimate from bags currently open.</div>
+          </div>
           <div class="chart-box"><canvas id="feedUsedChart"></canvas></div>
         </div>
         <div class="card">
-          <div class="card-title">Cumulative bedding used (cu ft)</div>
-          <div class="dim" style="font-size:11px;margin-bottom:6px">Same idea -- ramps over each bag's usage window, today's point includes what's currently in progress.</div>
+          <div class="chart-head">
+            <div class="card-title">Cumulative bedding used (cu ft)</div>
+            <div class="dim" style="font-size:11px;margin-bottom:6px">Same idea -- ramps over each bag's usage window, today's point includes what's currently in progress.</div>
+          </div>
           <div class="chart-box"><canvas id="beddingUsedChart"></canvas></div>
         </div>
-        <div class="card"><div class="card-title">Spend by category</div><div class="chart-box"><canvas id="catChart"></canvas></div></div>
-        <div class="card"><div class="card-title">Value produced vs. spend over time</div><div class="chart-box"><canvas id="incomeChart"></canvas></div></div>
-        <div class="card"><div class="card-title">Cumulative balance over time</div><div class="chart-box"><canvas id="cumChart"></canvas></div></div>
+        <div class="card"><div class="chart-head"><div class="card-title">Spend by category</div></div><div class="chart-box"><canvas id="catChart"></canvas></div></div>
+        <div class="card"><div class="chart-head"><div class="card-title">Value produced vs. spend over time</div></div><div class="chart-box"><canvas id="incomeChart"></canvas></div></div>
+        <div class="card"><div class="chart-head"><div class="card-title">Cumulative balance over time</div></div><div class="chart-box"><canvas id="cumChart"></canvas></div></div>
       </div>
     </div>
   `;

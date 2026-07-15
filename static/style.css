@@ -176,7 +176,15 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 @media (max-width: 800px) { .grid-2 { grid-template-columns: 1fr; } }
 
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; align-items: start; }
-.chart-box { position: relative; height: 260px; }
+/* Every chart card reserves the same fixed-height header zone above its
+   canvas, whatever it contains -- a bare one-line title, or the feed card's
+   title + description + per-bird tags. The chart-box itself is a fixed
+   height. Together that means every chart card is the same total height and
+   every canvas starts and ends at the same place, so switching ranges or
+   comparing charts side by side stays visually aligned. */
+.chart-grid > .card { display: flex; flex-direction: column; }
+.chart-head { min-height: 78px; display: flex; flex-direction: column; }
+.chart-box { position: relative; height: 260px; flex: 0 0 260px; }
 .chart-box canvas { width: 100% !important; height: 100% !important; }
 
 .stat {
