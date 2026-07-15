@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-176";
+const APP_VERSION = "2026.07.13-177";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -38,7 +38,12 @@ const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive li
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], birdPhotos: [], activityLog: [], supplyProducts: [] };
 let currentCoopId = null;
 let activeTab = "dashboard";
-let chartRangeDays = 30; // default 30 days -- shows meaningful recent activity without hiding older data by surprise
+// Dashboard month view: which month is shown, which month overlays it for
+// comparison, and (for the spend chart) which category is isolated. Default to
+// the current month vs the previous month.
+let dashMonthKey = null;       // set on first render to current month
+let dashCompareKey = null;     // set to previous month
+let dashSpendCategory = null;  // null = all categories combined
 let charts = {};
 
 const BIRD_TYPES = ["Layer", "Meat", "Dual Purpose"];
@@ -96,7 +101,6 @@ const INCOME_UNIT_LOCKS = { "Egg Sale": "eggs", "Meat Sale": "lb" };
 const BEDDING_AREAS = ["Coop Floor", "Nesting Boxes", "Run"];
 const BEDDING_MATERIALS = ["Pine Shavings", "Straw", "Sand", "Hemp Bedding", "Deep Litter (mixed)", "Other"];
 const BEDDING_TYPES = ["Top-off", "Churn", "Top-off + Churn", "Full Clean-out"];
-const RANGES = [{ label: "7D", days: 7 }, { label: "30D", days: 30 }, { label: "90D", days: 90 }, { label: "180D", days: 180 }, { label: "1Y", days: 365 }, { label: "All", days: null }];
 const PIE_COLORS = ["#C1502E", "#D4A017", "#8A9A5B", "#7A8FA6", "#9C7A54", "#6B5B95", "#C77B58"];
 const FLOCK_DATE_FIELDS = [
   { label: "Any date", value: "" },
@@ -3608,12 +3612,27 @@ function renderAllTimeStatsSection() {
       ${s.costPerLbMeat !== null ? `Feed cost per ${getWeightUnit()} of meat: <strong style="color:var(--text)">${fmtMoney(displayPricePerLb(s.costPerLbMeat))}</strong><br>` : ""}
       Tag Feed expenses by flock in the Finances tab to sharpen these.
     </div>` : ""}
-    ${Object.keys(catTotals).length > 0 ? `
     <div class="chart-grid" style="margin-top:16px">
-      <div class="card"><div class="card-title">Spend by category, all time</div><div class="chart-box"><canvas id="allTimeCatChart"></canvas></div></div>
+      <div class="card"><div class="chart-head"><div class="card-title">Cumulative meat produced (lbs)</div></div><div class="chart-box"><canvas id="atMeatChart"></canvas></div></div>
+      <div class="card">
+        <div class="chart-head">
+          <div class="card-title">Cumulative feed used (lbs)</div>
+          <div class="dim" style="font-size:11px;margin-bottom:6px">Ramps up over each bag's open-to-emptied window; today's point also includes a partial estimate from bags currently open.</div>
+        </div>
+        <div class="chart-box"><canvas id="atFeedChart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="chart-head">
+          <div class="card-title">Cumulative bedding used (cu ft)</div>
+          <div class="dim" style="font-size:11px;margin-bottom:6px">Same idea -- ramps over each bag's usage window.</div>
+        </div>
+        <div class="chart-box"><canvas id="atBeddingChart"></canvas></div>
+      </div>
+      <div class="card"><div class="chart-head"><div class="card-title">Cumulative balance over time</div></div><div class="chart-box"><canvas id="atBalanceChart"></canvas></div></div>
+      ${Object.keys(catTotals).length > 0 ? `<div class="card"><div class="chart-head"><div class="card-title">Spend by category, all time</div></div><div class="chart-box"><canvas id="allTimeCatChart"></canvas></div></div>` : ""}
     </div>
-    ` : ""}
   `;
+  drawAllTimeCumulativeCharts();
   if (Object.keys(catTotals).length > 0) {
     const catLabels = Object.keys(catTotals);
     new Chart(document.getElementById("allTimeCatChart"), {
@@ -4528,6 +4547,78 @@ function feedBeddingUsageInRange(supplies, days) {
  * cumulative meat chart, which has the identical sporadic-event shape. */
 const STATUS_USED_FRACTION = { "Full": 0, "3/4": 0.25, "1/2": 0.5, "1/4": 0.75, "Empty": 1 };
 
+// ---- Monthly daily-series helpers (dashboard month view) ----
+// The dashboard shows one calendar month at a time, broken down by day, with
+// an optional dotted overlay of another month for comparison. Everything here
+// returns a per-day array of length = days-in-month, indexed day 1..N, so two
+// months of different lengths still overlay cleanly (a 30-day month just has
+// no day-31 point). These are PER-DAY amounts (not cumulative) -- "how much
+// that day" -- which is the honest shape for a month view, unlike the
+// ever-rising cumulative charts that belong on the All-Time page.
+
+function daysInMonthKey(key) {
+  const [y, m] = key.split("-").map(Number);
+  return new Date(y, m, 0).getDate(); // day 0 of next month = last day of this one
+}
+/** "2026-07-05" -> day-of-month index 5 if it's in `key`, else -1. */
+function dayInMonth(dateStr, key) {
+  return (dateStr && dateStr.slice(0, 7) === key) ? Number(dateStr.slice(8, 10)) : -1;
+}
+
+/** Eggs collected per day for a month. */
+function eggsDailyForMonth(key) {
+  const arr = Array(daysInMonthKey(key)).fill(0);
+  STATE.eggs.forEach(e => { const d = dayInMonth(e.date, key); if (d > 0) arr[d - 1] += Number(e.count) || 0; });
+  return arr;
+}
+
+/** Total spend per day for a month (expenses only, not income). */
+function spendDailyForMonth(key, category) {
+  const arr = Array(daysInMonthKey(key)).fill(0);
+  STATE.expenses.forEach(x => {
+    if (x.entry_type === "income") return;
+    if (category && x.category !== category) return;
+    const d = dayInMonth(x.date, key);
+    if (d > 0) arr[d - 1] += Number(x.amount) || 0;
+  });
+  return arr;
+}
+
+/** Feed used (lb) per day for a month, layer + meat combined. Reuses the same
+ * open->emptied ramp as the cumulative chart: each emptied bag's quantity is
+ * spread evenly across the days it was in use, and we keep only the portion of
+ * that ramp that lands inside the target month. A bag with no opened date (or
+ * opened & emptied same day) drops its whole amount on its emptied day. */
+function feedDailyForMonth(key) {
+  const arr = Array(daysInMonthKey(key)).fill(0);
+  supplies_feedOnly().forEach(s => {
+    const qty = Number(s.quantity) || 0;
+    const end = s.date_emptied;
+    if (!end) return;
+    const start = s.opened_at && s.opened_at < end ? s.opened_at : null;
+    if (!start) { const d = dayInMonth(end, key); if (d > 0) arr[d - 1] += qty; return; }
+    const spanDays = Math.round((new Date(end + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000) + 1;
+    const perDay = qty / spanDays;
+    for (let i = 0; i < spanDays; i++) {
+      const day = addDays(start, i);
+      const d = dayInMonth(day, key);
+      if (d > 0) arr[d - 1] += perDay;
+    }
+  });
+  return arr;
+}
+function supplies_feedOnly() {
+  return STATE.supplies.filter(s => s.category === "Layer Feed" || s.category === "Meat Feed");
+}
+
+/** Spend categories that actually have expenses, for the category pill picker. */
+function spendCategoriesPresent() {
+  const set = new Set();
+  STATE.expenses.forEach(x => { if (x.entry_type !== "income" && x.category) set.add(x.category); });
+  return EXPENSE_CATEGORIES.filter(c => set.has(c));
+}
+
+
 function feedBeddingCumulativeSeries(supplies, days, axisBuckets) {
   // Build each emptied bag's consumption as a per-day amount, spread linearly
   // across its open->emptied window (opened_at = 0 used, date_emptied = full
@@ -5389,43 +5480,61 @@ function renderCoopOverview() {
         <div class="dim" style="font-size:11px;margin-top:10px">Thresholds are per-area and adjustable in the <strong style="color:var(--text)">Settings</strong> tab.</div>
       </div>
 
-      <div class="range-select" id="rangeSelect">
-        ${RANGES.map(r => `<button class="range-btn ${chartRangeDays === r.days ? "active" : ""}" data-days="${r.days}">${r.label}</button>`).join("")}
-      </div>
-      ${rangeHiddenDataHint()}
+      ${(() => {
+        // Initialize the month view on first render: this month vs last month.
+        const thisMonth = monthKeyOf(todayStr());
+        if (!dashMonthKey) dashMonthKey = thisMonth;
+        if (!dashCompareKey) dashCompareKey = shiftMonthKey(thisMonth, -1);
+        const monthOptions = dashboardMonthOptions();
+        return `
+        <div class="month-picker">
+          <div class="month-picker-row">
+            <label class="month-field"><span>Showing</span>
+              <select id="dashMonthSelect">${monthOptions.map(k => `<option value="${k}" ${k === dashMonthKey ? "selected" : ""}>${monthLabelOf(k)}</option>`).join("")}</select>
+            </label>
+            <label class="month-field"><span>Compare to</span>
+              <select id="dashCompareSelect">
+                <option value="">— none —</option>
+                ${monthOptions.filter(k => k !== dashMonthKey).map(k => `<option value="${k}" ${k === dashCompareKey ? "selected" : ""}>${monthLabelOf(k)}</option>`).join("")}
+              </select>
+            </label>
+          </div>
+          <div class="dim" style="font-size:11px;margin-top:6px">Each chart shows ${monthLabelOf(dashMonthKey)} by day${dashCompareKey ? `, with ${monthLabelOf(dashCompareKey)} as a dotted overlay for comparison` : ""}. All-time cumulative totals live on the <strong style="color:var(--text)">All-Time</strong> page.</div>
+        </div>
 
-      <div class="chart-grid">
-        <div class="card"><div class="chart-head"><div class="card-title">Flock size over time</div></div><div class="chart-box"><canvas id="flockSizeChart"></canvas></div></div>
-        <div class="card"><div class="chart-head"><div class="card-title">Egg production</div></div><div class="chart-box"><canvas id="eggChart"></canvas></div></div>
-        <div class="card"><div class="chart-head"><div class="card-title">Cumulative meat produced (lbs)</div></div><div class="chart-box"><canvas id="meatChart"></canvas></div></div>
-        <div class="card">
-          <div class="chart-head">
-            <div class="card-title">Cumulative feed used (lbs)</div>
-            <div class="dim" style="font-size:11px;margin-bottom:6px">Ramps up over each bag's open-to-emptied window; today's point also includes a partial estimate from bags currently open.</div>
+        <div class="chart-grid">
+          <div class="card"><div class="chart-head"><div class="card-title">🥚 Eggs collected</div></div><div class="chart-box"><canvas id="dashEggChart"></canvas></div></div>
+          <div class="card"><div class="chart-head"><div class="card-title">🌾 Feed used (lbs)</div></div><div class="chart-box"><canvas id="dashFeedChart"></canvas></div></div>
+          <div class="card" style="grid-column:1/-1">
+            <div class="chart-head">
+              <div class="card-title">💵 Spending</div>
+              <div class="pill-row" id="dashSpendCats">
+                <button class="pill-btn ${!dashSpendCategory ? "range-btn active" : ""}" data-spend-cat="">All</button>
+                ${spendCategoriesPresent().map(c => `<button class="pill-btn ${dashSpendCategory === c ? "range-btn active" : ""}" data-spend-cat="${esc(c)}">${(CATEGORY_ICONS[c] || CATEGORY_ICONS["Other"]).emoji} ${esc(c)}</button>`).join("")}
+              </div>
+            </div>
+            <div class="chart-box"><canvas id="dashSpendChart"></canvas></div>
           </div>
-          <div class="chart-box"><canvas id="feedUsedChart"></canvas></div>
-        </div>
-        <div class="card">
-          <div class="chart-head">
-            <div class="card-title">Cumulative bedding used (cu ft)</div>
-            <div class="dim" style="font-size:11px;margin-bottom:6px">Same idea -- ramps over each bag's usage window, today's point includes what's currently in progress.</div>
-          </div>
-          <div class="chart-box"><canvas id="beddingUsedChart"></canvas></div>
-        </div>
-        <div class="card"><div class="chart-head"><div class="card-title">Spend by category</div></div><div class="chart-box"><canvas id="catChart"></canvas></div></div>
-        <div class="card"><div class="chart-head"><div class="card-title">Value produced vs. spend over time</div></div><div class="chart-box"><canvas id="incomeChart"></canvas></div></div>
-        <div class="card"><div class="chart-head"><div class="card-title">Cumulative balance over time</div></div><div class="chart-box"><canvas id="cumChart"></canvas></div></div>
-      </div>
+        </div>`;
+      })()}
     </div>
   `;
-  document.getElementById("rangeSelect").addEventListener("click", (e) => {
-    const btn = e.target.closest(".range-btn");
-    if (!btn) return;
-    chartRangeDays = btn.dataset.days === "null" ? null : Number(btn.dataset.days);
+  const monthSel = document.getElementById("dashMonthSelect");
+  if (monthSel) monthSel.addEventListener("change", (e) => {
+    dashMonthKey = e.target.value;
+    // Keep comparison valid: if it now equals the shown month, clear it.
+    if (dashCompareKey === dashMonthKey) dashCompareKey = null;
     renderCoopOverview();
   });
-  const jumpBtn = document.getElementById("jumpToAll");
-  if (jumpBtn) jumpBtn.addEventListener("click", () => { chartRangeDays = null; renderCoopOverview(); });
+  const compareSel = document.getElementById("dashCompareSelect");
+  if (compareSel) compareSel.addEventListener("change", (e) => { dashCompareKey = e.target.value || null; renderCoopOverview(); });
+  const spendCats = document.getElementById("dashSpendCats");
+  if (spendCats) spendCats.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-spend-cat]");
+    if (!btn) return;
+    dashSpendCategory = btn.dataset.spendCat || null;
+    renderCoopOverview();
+  });
   el.querySelectorAll("[data-goto-hatching]").forEach(row => row.addEventListener("click", () => {
     switchTab("eggs");
     eggsSubTab = "hatching";
@@ -5439,15 +5548,7 @@ function renderCoopOverview() {
     card.addEventListener("click", go);
     card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
   });
-  drawCharts();
-}
-
-function rangeHiddenDataHint() {
-  if (!chartRangeDays) return "";
-  const hasHiddenEggs = STATE.eggs.length > 0 && !STATE.eggs.some(e => withinRange(e.date, chartRangeDays));
-  const hasHiddenExpenses = STATE.expenses.length > 0 && !STATE.expenses.some(x => withinRange(x.date, chartRangeDays));
-  if (!hasHiddenEggs && !hasHiddenExpenses) return "";
-  return `<div class="note-box">You have entries older than this range, so the charts below look empty. <button class="btn ghost small" id="jumpToAll" style="margin-left:6px">Show All</button></div>`;
+  drawDashboardCharts();
 }
 
 /** Every distinct bucket (day/week/month, matching pickBucketMode) between the
@@ -5479,84 +5580,114 @@ function allBucketsInRange(mode, days) {
   return order.map(key => ({ key, asOfDate: asOf[key] }));
 }
 
-/** Active flock size (layers vs meat) at the end of each bucket, using the
- * same shared range/bucket-mode as every other chart on this tab. A bird
- * counts as "in the flock" as of a given date if it had arrived (acquired or
- * hatched) by then and hadn't yet been processed/lost on or before that day. */
-
-function computeFlockSizeSeries() {
-  const mode = pickBucketMode(chartRangeDays);
-  const buckets = allBucketsInRange(mode, chartRangeDays);
-  const layers = [], meat = [];
-  buckets.forEach(({ asOfDate }) => {
-    let l = 0, m = 0;
-    STATE.birds.forEach(b => {
-      const acq = b.acquired_date || b.hatch_date;
-      if (!acq || acq > asOfDate) return;
-      const leftDate = b.status === "Processed" ? b.harvest_date : b.status === "Deceased" ? b.death_date : null;
-      if (leftDate && leftDate <= asOfDate) return;
-      if (b.type === "Meat") m++; else l++;
-    });
-    layers.push(l); meat.push(m);
-  });
-  return { labels: buckets.map(b => b.key), layers, meat };
+/** Months offered in the dashboard picker: every month that has any data,
+ * plus the current month, newest first. */
+function dashboardMonthOptions() {
+  const keys = new Set();
+  STATE.eggs.forEach(e => { const k = monthKeyOf(e.date); if (k) keys.add(k); });
+  STATE.expenses.forEach(x => { const k = monthKeyOf(x.date); if (k) keys.add(k); });
+  STATE.supplies.forEach(s => { const k = monthKeyOf(s.date_emptied); if (k) keys.add(k); });
+  keys.add(monthKeyOf(todayStr()));
+  return [...keys].sort().reverse();
 }
 
-function drawCharts() {
+/** Draws the three dashboard month charts (eggs, feed, spend), each showing the
+ * selected month by day with an optional dotted overlay of the comparison
+ * month. Comparison uses day-of-month alignment so different-length months
+ * still line up. */
+function drawDashboardCharts() {
   Object.values(charts).forEach(c => c && c.destroy());
-  const mode = pickBucketMode(chartRangeDays);
+  const shownDays = daysInMonthKey(dashMonthKey);
+  const labels = Array.from({ length: shownDays }, (_, i) => String(i + 1)); // "1".."31"
+  const compareOn = !!dashCompareKey;
 
-  // ONE shared axis for every time-series chart on this tab. Previously each
-  // chart built its labels only where it had data, so at "90 days" the eggs
-  // chart might start at the first egg entry, the balance chart at the first
-  // expense, and the flock chart at day -90 -- all different windows, which
-  // made them impossible to compare and made a chart look like it "started
-  // late." Now they all span the same today-minus-range through today (or, on
-  // All Time, the full data extent), so switching ranges moves every chart in
-  // lockstep and a flat leading stretch honestly shows "nothing happened yet."
-  const sharedBuckets = allBucketsInRange(mode, chartRangeDays);
-  const axisLabels = sharedBuckets.map(b => b.key);
-  // Map a sparse {bucketLabel: value} onto the shared axis. `carry` = true
-  // fills gaps forward from the last known value (for cumulative/running
-  // series that should hold flat between events); `carry` = false leaves gaps
-  // as the zero-default (for per-bucket sums like eggs or spend-per-period).
-  const onAxis = (sparse, { carry = false } = {}) => {
-    let last = 0;
-    return axisLabels.map(l => {
-      if (sparse[l] !== undefined) { last = sparse[l]; return sparse[l]; }
-      return carry ? last : 0;
-    });
+  // A comparison series is padded/truncated to the shown month's length so the
+  // overlay aligns by day-of-month (day 5 over day 5), even across 28 vs 31.
+  const alignCompare = (arr) => labels.map((_, i) => (i < arr.length ? arr[i] : null));
+
+  const mainLabel = monthLabelOf(dashMonthKey);
+  const compLabel = compareOn ? monthLabelOf(dashCompareKey) : "";
+  const dashLine = (color) => ({ borderColor: color, borderDash: [4, 4], backgroundColor: "transparent", pointRadius: 0, tension: 0.25 });
+
+  // ---- Eggs ----
+  const eggMain = eggsDailyForMonth(dashMonthKey);
+  const eggDatasets = [{ label: mainLabel, data: eggMain, borderColor: "#D4A017", backgroundColor: "#D4A01733", tension: 0.25, pointRadius: 2, fill: true }];
+  if (compareOn) eggDatasets.push({ label: compLabel, data: alignCompare(eggsDailyForMonth(dashCompareKey)), ...dashLine("#C7B9A6") });
+  charts.dashEgg = new Chart(document.getElementById("dashEggChart"), {
+    type: "line", data: { labels, datasets: eggDatasets },
+    options: monthChartOpts(compareOn),
+  });
+
+  // ---- Feed ----
+  const feedMain = feedDailyForMonth(dashMonthKey);
+  const feedDatasets = [{ label: mainLabel, data: feedMain, borderColor: "#C1502E", backgroundColor: "#C1502E33", tension: 0.2, pointRadius: 2, fill: true }];
+  if (compareOn) feedDatasets.push({ label: compLabel, data: alignCompare(feedDailyForMonth(dashCompareKey)), ...dashLine("#C7B9A6") });
+  charts.dashFeed = new Chart(document.getElementById("dashFeedChart"), {
+    type: "line", data: { labels, datasets: feedDatasets },
+    options: monthChartOpts(compareOn, (v) => `${v.toFixed(2)} lb`),
+  });
+
+  // ---- Spend (optionally filtered to one category) ----
+  const spendMain = spendDailyForMonth(dashMonthKey, dashSpendCategory);
+  const spendDatasets = [{ label: mainLabel, data: spendMain, borderColor: "#8A9A5B", backgroundColor: "#8A9A5B33", tension: 0.2, pointRadius: 2, fill: true }];
+  if (compareOn) spendDatasets.push({ label: compLabel, data: alignCompare(spendDailyForMonth(dashCompareKey, dashSpendCategory)), ...dashLine("#C7B9A6") });
+  charts.dashSpend = new Chart(document.getElementById("dashSpendChart"), {
+    type: "bar", data: { labels, datasets: spendDatasets.map((d, i) => i === 0 ? { ...d, type: "bar", backgroundColor: "#8A9A5B" } : d) },
+    options: monthChartOpts(compareOn, (v) => fmtMoney(v)),
+  });
+}
+
+/** Chart options for the month view: legend shown only when comparing, x-axis
+ * labeled by day-of-month. */
+function monthChartOpts(showLegend, yFormatter) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: "index", intersect: false },
+    plugins: {
+      legend: showLegend ? { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } } : { display: false },
+      tooltip: { callbacks: yFormatter ? { label: (ctx) => `${ctx.dataset.label}: ${yFormatter(ctx.parsed.y)}` } : undefined },
+    },
+    scales: {
+      x: { ticks: { color: "#C7B9A6", font: { size: 10 }, autoSkip: true, maxTicksLimit: 10, maxRotation: 0 }, grid: { color: "#5A4B3C40" }, title: { display: true, text: "Day of month", color: "#8A7A68", font: { size: 9 } } },
+      y: { ticks: { color: "#C7B9A6", font: { size: 10 } }, grid: { color: "#5A4B3C40" }, beginAtZero: true }
+    }
   };
+}
 
-  const flockSize = computeFlockSizeSeries();
-  charts.flockSize = new Chart(document.getElementById("flockSizeChart"), {
+function drawAllTimeCumulativeCharts() {
+  // The four ever-rising cumulative charts, always all-time (their whole point
+  // is the full journey). Moved here off the dashboard, which now shows a
+  // per-month breakdown instead. Each uses one shared all-time axis.
+  ["atMeat", "atFeed", "atBedding", "atBalance"].forEach(k => { if (charts[k]) charts[k].destroy(); });
+  const mode = pickBucketMode(null);
+  const sharedBuckets = allBucketsInRange(mode, null);
+  const axisLabels = sharedBuckets.map(b => b.key);
+
+  const runningAsOf = (events, dayStr) => {
+    let sum = 0;
+    for (const e of events) { if (e.date <= dayStr) sum += e.amount; else break; }
+    return sum;
+  };
+  const chartDefaults = getCoopDefaults();
+
+  // ---- Cumulative meat ----
+  const meatEventsAll = STATE.birds
+    .filter(b => b.status === "Processed" && b.harvest_date && b.harvest_weight)
+    .map(b => ({ date: b.harvest_date, amount: Number(b.harvest_weight) || 0 }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const meatSeries = sharedBuckets.map(({ asOfDate }) => runningAsOf(meatEventsAll, asOfDate));
+  const meatEl = document.getElementById("atMeatChart");
+  if (meatEl) charts.atMeat = new Chart(meatEl, {
     type: "line",
-    data: {
-      labels: flockSize.labels,
-      datasets: [
-        { label: "Layers", data: flockSize.layers, borderColor: "#D4A017", backgroundColor: "#D4A01722", tension: 0.2, pointRadius: 2 },
-        { label: "Meat", data: flockSize.meat, borderColor: "#C1502E", backgroundColor: "#C1502E22", tension: 0.2, pointRadius: 2 },
-      ]
-    },
-    options: {
-      ...chartOpts(),
-      plugins: { legend: { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } } },
-    },
+    data: { labels: axisLabels, datasets: [{ label: "Dressed weight", data: meatSeries, borderColor: "#C1502E", backgroundColor: "#C1502E22", stepped: true, pointRadius: 2 }] },
+    options: { ...chartOpts((v) => `${displayWeight(v)} ${getWeightUnit()}`) },
   });
 
-  const eggMap = {};
-  STATE.eggs.filter(e => withinRange(e.date, chartRangeDays)).forEach(e => {
-    const k = bucketLabel(e.date, mode);
-    eggMap[k] = (eggMap[k] || 0) + (Number(e.count) || 0);
-  });
-  charts.egg = new Chart(document.getElementById("eggChart"), {
-    type: "line",
-    data: { labels: axisLabels, datasets: [{ label: "Eggs", data: onAxis(eggMap), borderColor: "#D4A017", backgroundColor: "#D4A01733", tension: 0.25, pointRadius: 2 }] },
-    options: chartOpts()
-  });
-
-  const feedBedding = feedBeddingCumulativeSeries(STATE.supplies, chartRangeDays, sharedBuckets);
-  charts.feedUsed = new Chart(document.getElementById("feedUsedChart"), {
+  // ---- Cumulative feed & bedding ----
+  const feedBedding = feedBeddingCumulativeSeries(STATE.supplies, null, sharedBuckets);
+  const feedEl = document.getElementById("atFeedChart");
+  if (feedEl) charts.atFeed = new Chart(feedEl, {
     type: "line",
     data: {
       labels: feedBedding.labels,
@@ -5567,84 +5698,22 @@ function drawCharts() {
     },
     options: { ...chartOpts((v) => `${v.toFixed(1)} lb`), plugins: { legend: { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } } } },
   });
-  charts.beddingUsed = new Chart(document.getElementById("beddingUsedChart"), {
+  const bedEl = document.getElementById("atBeddingChart");
+  if (bedEl) charts.atBedding = new Chart(bedEl, {
     type: "line",
     data: { labels: feedBedding.labels, datasets: [{ label: "Bedding (cu ft)", data: feedBedding.bedding, borderColor: "#7A8FA6", backgroundColor: "#7A8FA622", tension: 0.15, pointRadius: 2 }] },
     options: chartOpts((v) => `${v.toFixed(1)} cu ft`),
   });
 
-  const catMap = {};
-  STATE.expenses.filter(x => x.entry_type !== "income" && withinRange(x.date, chartRangeDays)).forEach(x => {
-    catMap[x.category] = (catMap[x.category] || 0) + (Number(x.amount) || 0);
-  });
-  const catLabels = Object.keys(catMap);
-  charts.cat = new Chart(document.getElementById("catChart"), {
-    type: "pie",
-    data: { labels: catLabels, datasets: [{ data: catLabels.map(l => catMap[l]), backgroundColor: PIE_COLORS }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } } } }
-  });
-
-  // Income vs. spend, bucketed the same way as the other charts
-  const chartDefaults = getCoopDefaults();
-  const chartEggsInRange = STATE.eggs.filter(e => withinRange(e.date, chartRangeDays));
-  const chartProcessedInRange = STATE.birds.filter(b => b.status === "Processed" && b.harvest_date && withinRange(b.harvest_date, chartRangeDays));
-  const chartEggPrice = weightedAvgEggPrice(chartEggsInRange, Number(chartDefaults.eggPrice) || 0);
-  const chartMeatPrice = weightedAvgMeatPrice(chartProcessedInRange, Number(chartDefaults.pricePerLb) || 0);
-  const incomeMap = {}, spendMap = {};
-  chartEggsInRange.forEach(e => {
-    const k = bucketLabel(e.date, mode);
-    incomeMap[k] = (incomeMap[k] || 0) + (Number(e.count) || 0) * (Number(e.price_per_egg) || 0);
-  });
-  chartProcessedInRange.forEach(b => {
-    const k = bucketLabel(b.harvest_date, mode);
-    incomeMap[k] = (incomeMap[k] || 0) + (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || 0);
-  });
-  STATE.expenses.filter(x => x.entry_type === "income" && withinRange(x.date, chartRangeDays)).forEach(x => {
-    const k = bucketLabel(x.date, mode);
-    const washedOut = x.category === "Egg Sale" ? (Number(x.quantity) || 0) * (x.washout_unit_price != null ? Number(x.washout_unit_price) : chartEggPrice)
-      : x.category === "Meat Sale" ? (Number(x.quantity) || 0) * (x.washout_unit_price != null ? Number(x.washout_unit_price) : chartMeatPrice)
-      : 0;
-    incomeMap[k] = (incomeMap[k] || 0) + (Number(x.amount) || 0) - washedOut;
-  });
-  STATE.expenses.filter(x => x.entry_type !== "income" && withinRange(x.date, chartRangeDays)).forEach(x => {
-    const k = bucketLabel(x.date, mode);
-    spendMap[k] = (spendMap[k] || 0) + (Number(x.amount) || 0);
-  });
-  const incomeLabels = axisLabels;
-  charts.income = new Chart(document.getElementById("incomeChart"), {
-    type: "bar",
-    data: {
-      labels: incomeLabels,
-      datasets: [
-        { label: "Value produced", data: onAxis(incomeMap), backgroundColor: "#8A9A5B" },
-        { label: "Spend", data: onAxis(spendMap), backgroundColor: "#C1502E" },
-      ]
-    },
-    options: {
-      ...chartOpts((v) => fmtMoney(v)),
-      plugins: { legend: { labels: { color: "#C7B9A6", font: { size: 11 } } }, tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${fmtMoney(ctx.parsed.y)}` } } },
-    }
-  });
-
-  // Cumulative balance: income and spend accumulated over time, plus the net.
-  // Plotted on the shared axis so it lines up with every other chart. Each
-  // bucket shows the TRUE running total as of that bucket's end date --
-  // including everything before the visible window -- so "90 days" and "all
-  // time" agree on the balance at any shared date, rather than the window
-  // secretly resetting the total to 0 at its left edge (which made the same
-  // day read as a different balance depending on the range).
+  // ---- Cumulative balance ----
   const spendEventsAll = [...STATE.expenses].filter(x => x.entry_type !== "income")
     .map(x => ({ date: x.date, amount: Number(x.amount) || 0 }))
     .sort((a, b) => a.date.localeCompare(b.date));
-
   const allTimeEggPrice = weightedAvgEggPrice(STATE.eggs, Number(chartDefaults.eggPrice) || 0);
   const allTimeMeatPrice = weightedAvgMeatPrice(STATE.birds.filter(b => b.status === "Processed" && b.harvest_date), Number(chartDefaults.pricePerLb) || 0);
   const incomeEventsAll = [
     ...STATE.eggs.map(e => ({ date: e.date, amount: (Number(e.count) || 0) * (Number(e.price_per_egg) || 0) })),
     ...STATE.birds.filter(b => b.status === "Processed" && b.harvest_date).map(b => ({ date: b.harvest_date, amount: (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || 0) })),
-    // A real sale contributes its NET effect at its date: the amount received
-    // minus whatever it washes out of the estimate above (weighted average of
-    // what was actually logged), so the running total stays correct all along.
     ...STATE.expenses.filter(x => x.entry_type === "income").map(x => {
       const washedOut = x.category === "Egg Sale" ? (Number(x.quantity) || 0) * (x.washout_unit_price != null ? Number(x.washout_unit_price) : allTimeEggPrice)
         : x.category === "Meat Sale" ? (Number(x.quantity) || 0) * (x.washout_unit_price != null ? Number(x.washout_unit_price) : allTimeMeatPrice)
@@ -5652,22 +5721,14 @@ function drawCharts() {
       return { date: x.date, amount: (Number(x.amount) || 0) - washedOut };
     }),
   ].sort((a, b) => a.date.localeCompare(b.date));
-
-  // runningAsOf(events, dayStr): sum of every event on or before dayStr.
-  const runningAsOf = (events, dayStr) => {
-    let sum = 0;
-    for (const e of events) { if (e.date <= dayStr) sum += e.amount; else break; }
-    return sum;
-  };
   const incomeSeries = sharedBuckets.map(({ asOfDate }) => runningAsOf(incomeEventsAll, asOfDate));
   const spendSeries = sharedBuckets.map(({ asOfDate }) => runningAsOf(spendEventsAll, asOfDate));
   const netSeries = incomeSeries.map((v, i) => v - spendSeries[i]);
-  const balanceLabels = axisLabels;
-
-  charts.cum = new Chart(document.getElementById("cumChart"), {
+  const balEl = document.getElementById("atBalanceChart");
+  if (balEl) charts.atBalance = new Chart(balEl, {
     type: "line",
     data: {
-      labels: balanceLabels,
+      labels: axisLabels,
       datasets: [
         { label: "Cumulative income", data: incomeSeries, borderColor: "#8A9A5B", backgroundColor: "#8A9A5B22", tension: 0.2, pointRadius: 2 },
         { label: "Cumulative spend", data: spendSeries, borderColor: "#C1502E", backgroundColor: "#C1502E22", tension: 0.2, pointRadius: 2 },
@@ -5678,21 +5739,6 @@ function drawCharts() {
       ...chartOpts((v) => fmtMoney(v)),
       plugins: { legend: { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } }, tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${fmtMoney(ctx.parsed.y)}` } } },
     }
-  });
-
-  // Cumulative meat produced (lbs) — processing happens rarely (maybe once or twice a year for a
-  // home flock), so a running total that steps up on each batch tells the story better than a bar
-  // chart full of empty buckets would. Plotted on the shared axis with a true running total (all
-  // batches on or before each bucket's date), so it lines up with every other chart.
-  const meatEventsAll = STATE.birds
-    .filter(b => b.status === "Processed" && b.harvest_date && b.harvest_weight)
-    .map(b => ({ date: b.harvest_date, amount: Number(b.harvest_weight) || 0 }))
-    .sort((a, b) => a.date.localeCompare(b.date));
-  const meatSeries = sharedBuckets.map(({ asOfDate }) => runningAsOf(meatEventsAll, asOfDate));
-  charts.meat = new Chart(document.getElementById("meatChart"), {
-    type: "line",
-    data: { labels: axisLabels, datasets: [{ label: "Dressed weight", data: meatSeries, borderColor: "#C1502E", backgroundColor: "#C1502E22", stepped: true, pointRadius: 2 }] },
-    options: { ...chartOpts((v) => `${displayWeight(v)} ${getWeightUnit()}`) },
   });
 }
 
