@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-172";
+const APP_VERSION = "2026.07.13-173";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -4512,84 +4512,82 @@ function feedBeddingUsageInRange(supplies, days) {
 const STATUS_USED_FRACTION = { "Full": 0, "3/4": 0.25, "1/2": 0.5, "1/4": 0.75, "Empty": 1 };
 
 function feedBeddingCumulativeSeries(supplies, days) {
-  const mode = pickBucketMode(days);
-  const emptiedEvents = supplies.filter(s => s.date_emptied).sort((a, b) => a.date_emptied.localeCompare(b.date_emptied));
-  const emptiedInRange = days ? emptiedEvents.filter(s => withinRange(s.date_emptied, days)) : emptiedEvents;
-
-  // Spread each emptied bag's quantity linearly across the days it was
-  // actually in use -- from opened_at (0 used) to date_emptied (full
-  // quantity used) -- rather than dumping the whole amount on the emptied
-  // date as one vertical jump. We DON'T invent per-quarter timestamps we
-  // never recorded; a straight ramp between the two dates we DID record is
-  // an honest "this bag was consumed steadily over this window," and its
-  // endpoints are exactly right (0 when opened, full when emptied). A bag
-  // with no opened_at (opened and emptied same day, or legacy data) still
-  // lands as a single step on its emptied date -- there's no window to
-  // spread it over, and pretending otherwise would be the blurry guess.
+  // Build each emptied bag's consumption as a per-day amount, spread linearly
+  // across its open->emptied window (opened_at = 0 used, date_emptied = full
+  // quantity used). A bag with no opened_at, or opened and emptied the same
+  // day, lands as a single step on its emptied date -- there's no window to
+  // ramp over, and inventing one would be a guess.
   const perDay = { "Layer Feed": {}, "Meat Feed": {}, "Bedding": {} };
   const addOnDay = (cat, dayStr, amount) => { perDay[cat][dayStr] = (perDay[cat][dayStr] || 0) + amount; };
 
-  emptiedInRange.forEach(s => {
+  supplies.filter(s => s.date_emptied).forEach(s => {
     const qty = Number(s.quantity) || 0;
     const cat = s.category;
     if (!perDay[cat]) return;
     const end = s.date_emptied;
     const start = s.opened_at && s.opened_at < end ? s.opened_at : null;
-    if (!start) { addOnDay(cat, end, qty); return; } // same-day or unknown open -> single step, as before
-    // Whole days in [start, end]; qty/span consumed each day, so the
-    // cumulative line rises evenly and reaches exactly qty on the end date.
-    const spanDays = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
+    if (!start) { addOnDay(cat, end, qty); return; }
+    const spanDays = Math.round((new Date(end + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000) + 1;
     const perDayQty = qty / spanDays;
-    for (let i = 0; i < spanDays; i++) {
-      const d = new Date(start); d.setDate(d.getDate() + i);
-      addOnDay(cat, d.toISOString().slice(0, 10), perDayQty);
+    for (let i = 0; i < spanDays; i++) addOnDay(cat, addDays(start, i), perDayQty);
+  });
+
+  // The chart is CUMULATIVE, so every plotted point must show the true total
+  // consumed up to and including that day -- including consumption from before
+  // the visible window began. The previous version summed only the days inside
+  // the window, which made the same bag show a different final total at 7 vs 90
+  // days, and (because week buckets were labeled by their Monday) could plot a
+  // week's usage on a date before the bag was even opened. Walking real
+  // calendar days and carrying a genuine running total fixes both: the total is
+  // range-independent, and each point sits on its own real date.
+  const cats = ["Layer Feed", "Meat Feed", "Bedding"];
+  const allDays = [...new Set(cats.flatMap(c => Object.keys(perDay[c])))].sort();
+  if (allDays.length === 0) return { labels: [], layer: [], meat: [], bedding: [] };
+
+  // Window bounds: earliest visible day is max(first-consumption, today-days).
+  const today = todayStr();
+  const windowStart = days ? addDays(today, -(days - 1)) : allDays[0];
+  const firstDay = allDays[0] < windowStart ? windowStart : allDays[0];
+
+  // Running totals BEFORE the window starts -- the baseline the visible line
+  // begins from, so a partly-consumed-before-window bag isn't undercounted.
+  const runBefore = { "Layer Feed": 0, "Meat Feed": 0, "Bedding": 0 };
+  cats.forEach(c => {
+    for (const [day, amt] of Object.entries(perDay[c])) {
+      if (day < firstDay) runBefore[c] += amt;
     }
   });
 
-  // Roll the per-day amounts up into the chart's buckets, then accumulate.
-  const bucketSums = (cat) => {
-    const out = {};
-    for (const [day, amt] of Object.entries(perDay[cat])) {
-      if (days && !withinRange(day, days)) continue; // a ramp can start before the visible window; only count the days inside it
-      const k = bucketLabel(day, mode);
-      out[k] = (out[k] || 0) + amt;
-    }
-    return out;
-  };
-  const layerByBucket = bucketSums("Layer Feed");
-  const meatByBucket = bucketSums("Meat Feed");
-  const beddingByBucket = bucketSums("Bedding");
+  // Emit one point per calendar day from firstDay through today, each the true
+  // cumulative-to-date. Flat stretches (no consumption that day) simply repeat
+  // the previous total, which is the correct cumulative shape.
+  const labels = [], layer = [], meat = [], bedding = [];
+  const run = { "Layer Feed": runBefore["Layer Feed"], "Meat Feed": runBefore["Meat Feed"], "Bedding": runBefore["Bedding"] };
+  let cursor = firstDay;
+  // Safety bound: never loop more than ~2 years of days.
+  for (let guard = 0; guard < 800 && cursor <= today; guard++) {
+    cats.forEach(c => { if (perDay[c][cursor]) run[c] += perDay[c][cursor]; });
+    labels.push(cursor.slice(5)); // MM-DD; full ISO not needed for the axis
+    layer.push(run["Layer Feed"]);
+    meat.push(run["Meat Feed"]);
+    bedding.push(run["Bedding"]);
+    cursor = addDays(cursor, 1);
+  }
 
-  const accumulate = (byBucket, sortedLabels) => {
-    let run = 0; const out = {};
-    sortedLabels.forEach(k => { if (byBucket[k] !== undefined) run += byBucket[k]; out[k] = run; });
-    return out;
-  };
-  const allBucketKeys = [...new Set([...Object.keys(layerByBucket), ...Object.keys(meatByBucket), ...Object.keys(beddingByBucket)])].sort();
-  const layerSparse = accumulate(layerByBucket, allBucketKeys);
-  const meatSparse = accumulate(meatByBucket, allBucketKeys);
-  const beddingSparse = accumulate(beddingByBucket, allBucketKeys);
-  const runningLayer = allBucketKeys.length ? layerSparse[allBucketKeys[allBucketKeys.length - 1]] : 0;
-  const runningMeat = allBucketKeys.length ? meatSparse[allBucketKeys[allBucketKeys.length - 1]] : 0;
-  const runningBedding = allBucketKeys.length ? beddingSparse[allBucketKeys[allBucketKeys.length - 1]] : 0;
-
-  // Partial consumption from bags that are open right now but not yet fully
-  // emptied -- there's no history of exactly when a bag's status changed
-  // from Full to 3/4 to 1/2 etc, only what it currently is, so this can't
-  // be placed accurately anywhere earlier on the timeline. The honest thing
-  // is one "as of today" point that includes it on top of the confirmed
-  // total, rather than either undercounting real usage by ignoring it, or
-  // faking a smooth historical ramp that was never actually observed.
+  // Bags open right now but not yet emptied: their partial consumption (from
+  // the status slider) can't be dated to any earlier day, so it's added onto
+  // today's point as a single "as of now" increment on top of the confirmed
+  // total -- better than showing zero usage from an obviously-being-eaten bag.
   const activeSum = (cat) => supplies.filter(s => s.category === cat && !s.date_emptied)
     .reduce((sum, s) => sum + (Number(s.quantity) || 0) * (STATUS_USED_FRACTION[s.status] ?? 0), 0);
-  const todayKey = bucketLabel(todayStr(), mode);
-  layerSparse[todayKey] = runningLayer + activeSum("Layer Feed");
-  meatSparse[todayKey] = runningMeat + activeSum("Meat Feed");
-  beddingSparse[todayKey] = runningBedding + activeSum("Bedding");
+  if (labels.length) {
+    const last = labels.length - 1;
+    layer[last] += activeSum("Layer Feed");
+    meat[last] += activeSum("Meat Feed");
+    bedding[last] += activeSum("Bedding");
+  }
 
-  const labels = [...new Set([...Object.keys(layerSparse), ...Object.keys(meatSparse), ...Object.keys(beddingSparse)])].sort();
-  const fillForward = (sparse) => { let last = 0; return labels.map(l => { if (sparse[l] !== undefined) last = sparse[l]; return last; }); };
-  return { labels, layer: fillForward(layerSparse), meat: fillForward(meatSparse), bedding: fillForward(beddingSparse) };
+  return { labels, layer, meat, bedding };
 }
 /** Which of Layer Feed / Meat Feed / Bedding are actually running low right
  * now -- "low" means the best (fullest) currently-active supply item for
@@ -5689,7 +5687,10 @@ function chartOpts(yFormatter) {
     interaction: { mode: "index", intersect: false },
     plugins: { legend: { display: false }, tooltip: { callbacks: yFormatter ? { label: (ctx) => yFormatter(ctx.parsed.y) } : undefined } },
     scales: {
-      x: { ticks: { color: "#C7B9A6", font: { size: 10 } }, grid: { color: "#5A4B3C40" } },
+      // autoSkip + a tick cap keeps the axis readable now that the feed/bedding
+      // charts plot one point per day (up to ~90 on the 90-day view, more on
+      // all-time) -- without it every date would try to render and collide.
+      x: { ticks: { color: "#C7B9A6", font: { size: 10 }, autoSkip: true, maxTicksLimit: 8, maxRotation: 0 }, grid: { color: "#5A4B3C40" } },
       y: { ticks: { color: "#C7B9A6", font: { size: 10 } }, grid: { color: "#5A4B3C40" }, beginAtZero: true }
     }
   };
