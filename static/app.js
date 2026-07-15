@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-178";
+const APP_VERSION = "2026.07.13-179";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5519,11 +5519,12 @@ function renderCoopOverview() {
         </div>
 
         <div class="chart-grid">
-          <div class="card"><div class="chart-head"><div class="card-title">🥚 Eggs collected</div></div><div class="chart-box"><canvas id="dashEggChart"></canvas></div></div>
-          <div class="card"><div class="chart-head"><div class="card-title">🌾 Feed used, month-to-date (lbs)</div></div><div class="chart-box"><canvas id="dashFeedChart"></canvas></div></div>
+          <div class="card"><div class="chart-head"><div class="card-title">🥚 Eggs collected</div>${dashTotalBlock(sum(eggsDailyForMonth(dashMonthKey)), dashCompareKey ? sum(eggsDailyForMonth(dashCompareKey)) : 0, (v) => `${Math.round(v)} egg${Math.round(v) === 1 ? "" : "s"}`)}</div><div class="chart-box"><canvas id="dashEggChart"></canvas></div></div>
+          <div class="card"><div class="chart-head"><div class="card-title">🌾 Feed used, month-to-date (lbs)</div>${dashTotalBlock(feedTotalForMonth(dashMonthKey), dashCompareKey ? feedTotalForMonth(dashCompareKey) : 0, (v) => `${v.toFixed(1)} lb`)}</div><div class="chart-box"><canvas id="dashFeedChart"></canvas></div></div>
           <div class="card" style="grid-column:1/-1">
             <div class="chart-head chart-head-grow">
-              <div class="card-title">💵 Spending</div>
+              <div class="card-title">💵 Spending${dashSpendCategory ? ` — ${esc(dashSpendCategory)}` : ""}</div>
+              ${dashTotalBlock(sum(spendDailyForMonth(dashMonthKey, dashSpendCategory)), dashCompareKey ? sum(spendDailyForMonth(dashCompareKey, dashSpendCategory)) : 0, (v) => fmtMoney(v), { invertColors: true })}
               <div class="pill-row" id="dashSpendCats">
                 <button class="pill-btn ${!dashSpendCategory ? "range-btn active" : ""}" data-spend-cat="">All</button>
                 ${spendCategoriesPresent().map(c => `<button class="pill-btn ${dashSpendCategory === c ? "range-btn active" : ""}" data-spend-cat="${esc(c)}">${(CATEGORY_ICONS[c] || CATEGORY_ICONS["Other"]).emoji} ${esc(c)}</button>`).join("")}
@@ -5594,6 +5595,40 @@ function allBucketsInRange(mode, days) {
     guard++;
   }
   return order.map(key => ({ key, asOfDate: asOf[key] }));
+}
+
+const sum = (arr) => arr.reduce((a, b) => a + (Number(b) || 0), 0);
+/** Feed used total for a month: the last value of its cumulative series, which
+ * is the month-to-date total for the current month and the full-month total
+ * for a past month (and correctly includes an open bag's used-so-far portion). */
+function feedTotalForMonth(key) {
+  const series = feedCumulativeForMonth(key);
+  return series.length ? series[series.length - 1] : 0;
+}
+
+/** A clean "this month vs comparison" total for a dashboard card header.
+ * `fmt` formats the raw number (eggs → plain count, feed → "X lb", spend →
+ * money). Shows the shown-month total prominently, the comparison-month total
+ * dim beside it, and a small up/down delta so you don't have to subtract in
+ * your head. When there's no comparison month, just the one total. */
+function dashTotalBlock(shownTotal, compareTotal, fmt, { invertColors = false } = {}) {
+  const main = `<span class="dash-total-main">${fmt(shownTotal)}</span>`;
+  if (dashCompareKey == null) return `<div class="dash-total">${main}</div>`;
+  const diff = shownTotal - compareTotal;
+  // For spend, up is "bad" (red) and down is "good" (green); for eggs/feed
+  // it's neutral -- we just color the direction, not judge it, except spend.
+  const good = invertColors ? diff < 0 : diff > 0;
+  const cls = diff === 0 ? "flat" : good ? "up-good" : "up-bad";
+  const arrow = diff > 0 ? "▲" : diff < 0 ? "▼" : "–";
+  const deltaLabel = diff === 0 ? "same as" : `${arrow} ${fmt(Math.abs(diff))} vs`;
+  return `<div class="dash-total">
+    ${main}
+    <span class="dash-total-compare"><span class="dash-delta ${cls}">${deltaLabel}</span> ${fmt(compareTotal)} <span class="dim">(${monthLabelShort(dashCompareKey)})</span></span>
+  </div>`;
+}
+function monthLabelShort(key) {
+  const [y, m] = key.split("-").map(Number);
+  return `${MONTH_NAMES_SHORT[m - 1]} ${y}`;
 }
 
 /** Months offered in the dashboard picker: every month that has any data,

@@ -198,6 +198,15 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 .pill-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .pill-row .pill-btn { flex: 0 0 auto; white-space: nowrap; }
 .chart-head.chart-head-grow { min-height: 0; }
+/* Dashboard card total: the shown-month figure prominent, the comparison
+   month + delta smaller beneath. Sits in the chart header under the title. */
+.dash-total { margin: 2px 0 4px; line-height: 1.25; }
+.dash-total-main { font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 700; color: var(--text); }
+.dash-total-compare { display: block; font-size: 11px; color: var(--text-dim); margin-top: 1px; }
+.dash-delta { font-weight: 700; }
+.dash-delta.up-good { color: var(--sage); }
+.dash-delta.up-bad { color: var(--rust); }
+.dash-delta.flat { color: var(--text-dim); }
 .chart-box { position: relative; height: 260px; flex: 0 0 260px; }
 .chart-box canvas { width: 100% !important; height: 100% !important; }
 
