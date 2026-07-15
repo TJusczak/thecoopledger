@@ -460,6 +460,11 @@ tr:hover td { background: var(--surface-raised); }
    only exists on an Active bird, a harvest date only on a Processed one. */
 .flock-grid.view-list .flock-card-photo { position: static; }
 .flock-grid.view-list .flock-card-info { padding-right: 104px; } /* keep text clear of the badge gutter */
+/* Active birds have no status badge now, so there's no gutter to reserve --
+   let the name/details use the full width instead of sitting oddly indented
+   next to empty space. A countdown badge (grow-out birds) still needs room. */
+.flock-grid.view-list .flock-card.no-status-badge .flock-card-info { padding-right: 12px; }
+.flock-grid.view-list .flock-card.no-status-badge:has(.flock-card-countdown-badge) .flock-card-info { padding-right: 92px; }
 
 .flock-grid.view-list .flock-card-status-badge {
   position: absolute; top: 10px; right: 10px; left: auto; bottom: auto;

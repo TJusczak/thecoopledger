@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-164";
+const APP_VERSION = "2026.07.13-167";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -1928,6 +1928,13 @@ function daysSinceLastBackup() {
   if (!raw) return Infinity;
   return (Date.now() - Number(raw)) / (24 * 60 * 60 * 1000);
 }
+/** Human-readable "when did I last export" for the App settings card. */
+function lastBackupLabel() {
+  const raw = localStorage.getItem(LAST_BACKUP_KEY);
+  if (!raw) return "never from this device";
+  const iso = new Date(Number(raw)).toISOString();
+  return `${new Date(Number(raw)).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })} (${relativeTimeLong(iso)})`;
+}
 
 
 
@@ -2364,14 +2371,29 @@ function updateHeader() {
  * this stays up as a constant, honest reminder rather than a one-time
  * warning that's easy to not think about again. Tapping it jumps straight
  * to Settings, where the actual backup (export) options live. */
-const BACKUP_REMINDER_DAYS = 14;
+// Was a hardcoded 14 days. Now a per-device setting (App tab): the right
+// nag interval depends on how often you actually use the app, and whether
+// you want to be nagged at all is a preference, not a policy.
+const BACKUP_REMINDER_ENABLED_KEY = "coop_backup_reminder_enabled";
+const BACKUP_REMINDER_DAYS_KEY = "coop_backup_reminder_days";
+function getBackupReminderEnabled() { return localStorage.getItem(BACKUP_REMINDER_ENABLED_KEY) !== "0"; } // default on
+function setBackupReminderEnabled(on) { localStorage.setItem(BACKUP_REMINDER_ENABLED_KEY, on ? "1" : "0"); }
+function getBackupReminderDays() {
+  const v = Number(localStorage.getItem(BACKUP_REMINDER_DAYS_KEY));
+  return Number.isFinite(v) && v >= 1 ? v : 14; // default: two weeks
+}
+function setBackupReminderDays(d) { localStorage.setItem(BACKUP_REMINDER_DAYS_KEY, String(d)); }
+/** True when a backup is overdue AND the user wants to hear about it. */
+function backupReminderOverdue() {
+  return getBackupReminderEnabled() && daysSinceLastBackup() > getBackupReminderDays();
+}
 function renderLocalOnlyBadge() {
   let badge = document.getElementById("localOnlyBadge");
   if (!localOnlyMode) {
     if (badge) badge.remove();
     return;
   }
-  const overdue = daysSinceLastBackup() > BACKUP_REMINDER_DAYS;
+  const overdue = backupReminderOverdue();
   if (!badge) {
     badge = document.createElement("div");
     badge.id = "localOnlyBadge";
@@ -2559,6 +2581,12 @@ function renderServerSection() {
     <div class="dim" style="font-size:12px;margin-bottom:14px">Admin-only: everything about the server this coop is synced to -- backups, security, disk usage, and database stats, alongside this device's own connection diagnostics.</div>
 
     <div class="card" style="margin-bottom:14px">
+      <div class="card-title" style="font-size:14px">⚙️ Server settings</div>
+      <div class="dim" style="font-size:12px;margin-bottom:12px">Applies to the server itself, for everyone connected to it. Each of these can also be set with an environment variable in your Docker setup -- changing one here overrides that until you reset it back.</div>
+      <div id="serverSettingsArea" class="dim" style="font-size:12px">Loading...</div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
       <div class="card-title" style="font-size:14px">Server backups</div>
       <div class="dim" style="font-size:12px;margin-bottom:10px">The server automatically keeps a rolling set of daily backups (everything, plus every photo), no action needed. Download any of them below as an extra copy of your own.</div>
       <div id="backupsListArea" class="dim" style="font-size:12px">Loading...</div>
@@ -2572,9 +2600,84 @@ function renderServerSection() {
 
     <div id="serverInfoArea" class="dim" style="font-size:12px">Loading...</div>
   `;
+  loadServerSettings();
   loadServerBackupsList();
   loadFailedLoginsList();
   loadServerInfo();
+}
+
+const SERVER_SETTING_LABELS = {
+  session_max_idle_days: { label: "Log out inactive devices after", unit: "days", hint: "0 keeps everyone logged in indefinitely -- right for a kitchen tablet you never want to re-authenticate.", zeroLabel: "Never log out" },
+  backups_enabled: { label: "Automatic backups", hint: "The server keeps its own rolling backups of everything, including photos." },
+  backup_interval_hours: { label: "Take a backup every", unit: "hours" },
+  max_backups_to_keep: { label: "Keep this many backups", unit: "backups", hint: "Backups hard-link photos, so keeping more costs very little disk." },
+  activity_log_retention_days: { label: "Keep activity history for", unit: "days" },
+};
+
+async function loadServerSettings() {
+  const area = document.getElementById("serverSettingsArea");
+  if (!area) return;
+  try {
+    const { settings } = await apiGet("/api/admin/server-settings");
+    area.innerHTML = Object.entries(settings).map(([key, s]) => {
+      const meta = SERVER_SETTING_LABELS[key] || { label: key };
+      const overridden = s.overridden
+        ? `<button class="btn ghost small" data-reset-setting="${key}" title="Go back to the value from your environment / compose file (${s.type === "bool" ? (s.env_default ? "on" : "off") : s.env_default})">↺ Reset</button>`
+        : `<span class="dim" style="font-size:10px">from environment</span>`;
+      const control = s.type === "bool"
+        ? `<input type="checkbox" data-setting="${key}" ${s.value ? "checked" : ""} style="width:auto">`
+        : `<input type="number" data-setting="${key}" value="${s.value}" min="${s.min ?? 0}" max="${s.max ?? 9999}" style="width:90px">`;
+      return `
+        <div style="border-top:1px solid var(--border);padding:10px 0">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <div style="color:var(--text);font-size:13px">${meta.label}${meta.unit ? ` <span class="dim">(${meta.unit})</span>` : ""}</div>
+            <div style="display:flex;align-items:center;gap:8px">${control}${overridden}</div>
+          </div>
+          ${meta.hint ? `<div class="dim" style="font-size:11px;margin-top:3px">${meta.hint}</div>` : ""}
+          ${key === "session_max_idle_days" && s.value === 0 ? `<div class="dim" style="font-size:11px;margin-top:3px;color:var(--gold)">Currently: ${meta.zeroLabel}</div>` : ""}
+        </div>`;
+    }).join("") + `<div style="margin-top:12px"><button class="btn btn-confirm" id="saveServerSettings">✓ Save server settings</button></div>`;
+
+    document.getElementById("saveServerSettings").addEventListener("click", async () => {
+      const body = {};
+      area.querySelectorAll("[data-setting]").forEach(inp => {
+        body[inp.dataset.setting] = inp.type === "checkbox" ? inp.checked : Number(inp.value);
+      });
+      try {
+        await apiPutJson("/api/admin/server-settings", body);
+        showToast("Server settings saved -- they take effect right away", "update");
+        loadServerSettings();
+      } catch (err) {
+        showToast(err.message || "Couldn't save server settings", "delete");
+      }
+    });
+    area.querySelectorAll("[data-reset-setting]").forEach(btn => btn.addEventListener("click", async () => {
+      // null tells the server to drop the override and fall back to the env
+      // value, rather than freezing whatever number happens to be in the box.
+      await apiPutJson("/api/admin/server-settings", { [btn.dataset.resetSetting]: null });
+      showToast("Reset to the value from your environment", "update");
+      loadServerSettings();
+    }));
+  } catch (err) {
+    area.innerHTML = `<div class="dim">Couldn't load server settings right now.</div>`;
+  }
+}
+
+/** PUT with a JSON body that surfaces the server's error message, so a
+ * rejected value (out of range, unknown key) says why instead of failing
+ * silently. */
+async function apiPutJson(path, body) {
+  const res = await fetch(apiUrl(path), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let msg = "Request failed";
+    try { msg = (await res.json()).detail || msg; } catch (e) { /* non-JSON error body */ }
+    throw new Error(msg);
+  }
+  return res.json();
 }
 
 async function loadServerBackupsList() {
@@ -2588,15 +2691,18 @@ async function loadServerBackupsList() {
       area.innerHTML = `<div class="dim">No backups yet -- the first one is created automatically within a day of the server starting up.</div>`;
       return;
     }
-    area.innerHTML = backups.map(b => `
+    // The keep-count can be set as high as 365, so this list gets long. Show
+    // the most recent handful (the ones you'd actually reach for) and tuck
+    // the rest behind a toggle so the Server page stays scannable.
+    const row = (b) => `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">
         <div>
           <div style="color:var(--text);font-size:13px">${esc(new Date(b.created_at).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }))}</div>
           <div class="dim" style="font-size:11px">${fmtBytes(b.size_bytes)}</div>
         </div>
         <a class="btn ghost small" href="${apiUrl(`/api/backups/${encodeURIComponent(b.filename)}`)}?token=${encodeURIComponent(getAuthToken())}" download>⬇ Download</a>
-      </div>
-    `).join("");
+      </div>`;
+    renderCollapsibleList(area, backups, row, 5, "backups");
   } catch (err) {
     area.innerHTML = `<div class="dim">Couldn't load the backup list right now.</div>`;
   }
@@ -2607,14 +2713,37 @@ async function loadFailedLoginsList() {
   if (!area) return;
   try {
     const attempts = await apiGet("/api/auth/failed-logins");
-    area.innerHTML = attempts.length === 0 ? "None" : attempts.map(a => `
+    if (attempts.length === 0) { area.textContent = "None"; return; }
+    const row = (a) => `
       <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
         <span>${esc(a.name_attempted || "(no name)")} <span class="mono dim" style="font-size:11px">${esc(a.code_attempted || "")}</span></span>
         <span class="dim" style="font-size:11px;text-align:right">${esc(a.ip)}<br>${relativeTime(a.attempted_at)}</span>
-      </div>`).join("");
+      </div>`;
+    renderCollapsibleList(area, attempts, row, 5, "attempts");
   } catch (err) {
     area.textContent = "Couldn't load -- offline?";
   }
+}
+
+/** Renders the first `collapsedCount` rows, hiding the rest behind a
+ * show-all/show-fewer toggle. Shared by the backup and failed-login lists
+ * so both long lists on the Server page behave identically. `rowFn` maps
+ * one item to its HTML string; `noun` is the plural label in the button. */
+function renderCollapsibleList(area, items, rowFn, collapsedCount, noun) {
+  const recent = items.slice(0, collapsedCount).map(rowFn).join("");
+  const rest = items.slice(collapsedCount).map(rowFn).join("");
+  const restId = `collapse-rest-${Math.random().toString(36).slice(2, 8)}`; // unique so two lists on one page don't collide
+  area.innerHTML = recent + (rest
+    ? `<div id="${restId}" style="display:none">${rest}</div>
+       <button class="btn ghost small collapse-toggle" style="margin-top:10px">Show all ${items.length} ${noun}</button>`
+    : "");
+  const toggle = area.querySelector(".collapse-toggle");
+  if (toggle) toggle.addEventListener("click", () => {
+    const restEl = document.getElementById(restId);
+    const open = restEl.style.display !== "none";
+    restEl.style.display = open ? "none" : "block";
+    toggle.textContent = open ? `Show all ${items.length} ${noun}` : "Show fewer";
+  });
 }
 
 async function loadServerInfo() {
@@ -3200,6 +3329,22 @@ function renderAppSection() {
       </div>
     </div>
 
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">🔔 Backup reminder</div>
+      <div class="dim" style="font-size:12px;margin-bottom:12px">How long the app waits before reminding you to export a backup. Per-device. ${localOnlyMode ? "You're running local-only, so this data exists on this device and nowhere else -- the reminder is the only thing standing between a lost phone and a lost flock record." : "You're synced to a server, which already keeps its own backups, so this is just an extra prompt to keep a copy of your own."}</div>
+      <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:10px;cursor:pointer;margin:0 0 12px">
+        <input type="checkbox" id="backupReminderEnabled" ${getBackupReminderEnabled() ? "checked" : ""} style="width:auto">
+        <span style="color:var(--text)">Remind me to back up</span>
+      </label>
+      <label class="field" id="backupReminderDaysField" style="${getBackupReminderEnabled() ? "" : "opacity:0.45;pointer-events:none"}">
+        <span>Remind me after this many days without a backup</span>
+        <select id="backupReminderDays">
+          ${[3, 7, 14, 30, 60, 90].map(d => `<option value="${d}" ${getBackupReminderDays() === d ? "selected" : ""}>${d} days${d === 14 ? " (default)" : ""}</option>`).join("")}
+        </select>
+      </label>
+      <div class="dim" style="font-size:11px;margin-top:8px">Last backup: ${lastBackupLabel()}</div>
+    </div>
+
     ${SYNC_FOLDER_SUPPORTED ? `
     <div class="card" style="margin-top:16px" id="syncFolderCard">
       <div class="card-title">Local backup -- synced folder</div>
@@ -3260,6 +3405,16 @@ function renderAppSection() {
     setPhotoQualityTier(e.target.value);
     showToast(`Photo quality set to ${PHOTO_QUALITY_TIERS[e.target.value].label} -- applies to new photos from here on`, "update");
   }));
+  document.getElementById("backupReminderEnabled").addEventListener("change", (e) => {
+    setBackupReminderEnabled(e.target.checked);
+    renderAppSection();       // re-render so the days field enables/disables with it
+    renderLocalOnlyBadge();   // the corner tag's overdue state depends on this
+  });
+  document.getElementById("backupReminderDays").addEventListener("change", (e) => {
+    setBackupReminderDays(Number(e.target.value));
+    showToast(`Backup reminder set to ${e.target.value} days`, "update");
+    renderLocalOnlyBadge();
+  });
   if (SYNC_FOLDER_SUPPORTED) refreshSyncFolderUi();
   document.getElementById("clearLocalDataBtn").addEventListener("click", async () => {
     const confirmed = await showTypeToConfirmDialog(
@@ -6021,11 +6176,11 @@ function birdCardHtml(b) {
   const nameHtml = accent
     ? `<div class="flock-card-name-ribbon" style="background:color-mix(in srgb, ${esc(accent)} 55%, var(--surface))"><div class="flock-card-name">${displayName}</div></div>`
     : `<div class="flock-card-name">${displayName}</div>`;
-  return `<div class="flock-card${accent ? " custom-color" : ""}${selectedBirdIds.has(b.id) ? " card-selected" : ""}" data-edit="${b.id}" data-id="${b.id}" style="${cardStyle}">
+  return `<div class="flock-card${accent ? " custom-color" : ""}${selectedBirdIds.has(b.id) ? " card-selected" : ""}${(!b.status || b.status === "Active") ? " no-status-badge" : ""}" data-edit="${b.id}" data-id="${b.id}" style="${cardStyle}">
     <div class="flock-card-photo">
       ${selectionState.birds.mode ? `<input type="checkbox" class="flock-card-check bird-check" data-id="${b.id}" ${selectedBirdIds.has(b.id) ? "checked" : ""} onclick="event.stopPropagation()">` : ""}
       ${birdPhotoUrl(b) ? `<img src="${birdPhotoUrl(b)}" style="object-position:${photoPosition(b)};${photoTransformStyle(b)}">` : "🐔"}
-      <span class="stamp stamp-lg stamp-on-photo tone-${statusTone(b.status)} flock-card-status-badge">${esc(b.status)}</span>
+      ${b.status && b.status !== "Active" ? `<span class="stamp stamp-lg stamp-on-photo tone-${statusTone(b.status)} flock-card-status-badge">${esc(b.status)}</span>` : ""}
       ${b.status === "Processed" && b.harvest_date ? `<div class="flock-card-harvest-badge">Harvested ${fmtDate(b.harvest_date)}</div>` : ""}
       ${showCountdown ? `<div class="flock-card-countdown-badge">${harvestCountdownHtml(b.target_harvest_date, "stamp-on-photo")}</div>` : ""}
     </div>
@@ -9561,7 +9716,7 @@ async function init() {
   startBackgroundSyncTimer();
   startEventStream();
 
-  if (localOnlyMode && currentCoopId && daysSinceLastBackup() > BACKUP_REMINDER_DAYS) {
+  if (localOnlyMode && currentCoopId && backupReminderOverdue()) {
     (async () => {
       const handle = SYNC_FOLDER_SUPPORTED ? await getSyncFolderHandle() : null;
       if (handle && (await syncFolderHasWriteAccess(handle))) {

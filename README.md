@@ -130,6 +130,17 @@ all is a fully working, safe setup. The commented `environment:` block in
 change. A malformed value falls back to its default with a warning in the
 logs rather than refusing to start.
 
+Several of these can also be changed **from the app**, by an admin, under
+Settings → Server — session expiry, the four backup settings, and activity
+log retention. An override set there takes effect immediately (no restart)
+and wins over the environment variable until you hit **Reset**, which drops
+the override and returns to whatever your environment says. This means you
+can either drive everything from `docker-compose.yml` as config-as-code, or
+adjust day-to-day settings from the app without redeploying — whichever you
+prefer. Deployment-critical values (`DATA_DIR`, `PUID`/`PGID`,
+`CORS_ALLOWED_ORIGINS`, `TRUST_PROXY_HEADERS`) are environment-only, since a
+bad value typed into a web form shouldn't be able to lock you out.
+
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `DATA_DIR` | `/data` (in Docker) | Where the database, photos, and backups live. Map a volume here. |

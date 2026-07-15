@@ -58,7 +58,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.13-164"
+SERVER_VERSION = "2026.07.13-167"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
@@ -84,6 +84,43 @@ SESSION_MAX_IDLE_DAYS = _env_int("SESSION_MAX_IDLE_DAYS", 0, minimum=0)
 # box. Lock it down (e.g. "https://coop.example.com") if your frontend
 # only ever lives at one origin.
 CORS_ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "*").split(",") if o.strip()] or ["*"]
+
+# Which settings an admin can override from the app (Settings -> Server), and
+# the env-derived default each falls back to when they haven't. Kept to the
+# ones that are genuinely operational policy rather than deployment plumbing:
+# CORS origins and the data directory, for instance, stay env-only, since
+# getting those wrong from a web form could lock you out of your own server.
+OVERRIDABLE_SETTINGS = {
+    "session_max_idle_days": {"type": "int", "min": 0, "max": 3650, "env_default": lambda: SESSION_MAX_IDLE_DAYS},
+    "backups_enabled": {"type": "bool", "env_default": lambda: BACKUPS_ENABLED},
+    "backup_interval_hours": {"type": "int", "min": 1, "max": 24 * 30, "env_default": lambda: BACKUP_INTERVAL_HOURS},
+    "max_backups_to_keep": {"type": "int", "min": 1, "max": 365, "env_default": lambda: MAX_BACKUPS_TO_KEEP},
+    "activity_log_retention_days": {"type": "int", "min": 1, "max": 3650, "env_default": lambda: ACTIVITY_LOG_RETENTION_DAYS},
+}
+
+
+def _get_setting(key: str):
+    """The value actually in force: an admin's override if one exists,
+    otherwise the environment default. Every consumer below reads through
+    this rather than the module-level constant, so a change in the app
+    takes effect on the next maintenance pass without a restart."""
+    spec = OVERRIDABLE_SETTINGS[key]
+    with get_db() as conn:
+        row = conn.execute("SELECT value FROM server_settings WHERE key = ?", (key,)).fetchone()
+    if row is None:
+        return spec["env_default"]()
+    raw = row["value"]
+    if spec["type"] == "bool":
+        return raw == "1"
+    try:
+        return int(raw)
+    except ValueError:  # shouldn't happen (writes are validated), but never crash the server over a bad row
+        return spec["env_default"]()
+
+
+def _setting_is_overridden(key: str) -> bool:
+    with get_db() as conn:
+        return conn.execute("SELECT 1 FROM server_settings WHERE key = ?", (key,)).fetchone() is not None
 
 DEFAULT_SETTINGS = {
     "bedding_thresholds": {
@@ -306,6 +343,21 @@ def init_db():
                 code_attempted TEXT,
                 ip TEXT,
                 attempted_at TEXT NOT NULL
+            )
+        ''')
+
+        # Admin-editable overrides for the settings that otherwise come from
+        # environment variables. A key is only present here if an admin has
+        # actually changed it in the app; absent means "use the env default."
+        # That ordering matters: it keeps a bare `docker compose up` working
+        # exactly as before, lets an operator who prefers config-as-code keep
+        # driving everything from compose, and still means nobody has to
+        # redeploy a container just to change how long a login lasts.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS server_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )
         ''')
 
@@ -1061,14 +1113,70 @@ def get_server_info(request: Request):
         "backups": {
             "count": len(backups),
             "most_recent": most_recent_backup,
-            "max_kept": MAX_BACKUPS_TO_KEEP,
-            "interval_hours": BACKUP_INTERVAL_HOURS,
+            "max_kept": _get_setting("max_backups_to_keep"),
+            "interval_hours": _get_setting("backup_interval_hours"),
         },
         "auth": {
             "active_sessions": active_session_count,
             "active_invite_codes": invite_code_count,
         },
     }
+
+
+@app.get("/api/admin/server-settings")
+def get_server_settings(request: Request):
+    _require_admin(request)
+    out = {}
+    for key, spec in OVERRIDABLE_SETTINGS.items():
+        out[key] = {
+            "value": _get_setting(key),
+            "env_default": spec["env_default"](),
+            "overridden": _setting_is_overridden(key),  # lets the UI show "set in the app" vs "from your compose file"
+            "type": spec["type"],
+            "min": spec.get("min"),
+            "max": spec.get("max"),
+        }
+    return {"settings": out}
+
+
+@app.put("/api/admin/server-settings")
+async def update_server_settings(request: Request):
+    _require_admin(request)
+    body = await request.json()
+    now = _now_iso()
+    with get_db() as conn:
+        for key, raw in body.items():
+            if key not in OVERRIDABLE_SETTINGS:
+                raise HTTPException(400, f"Unknown setting: {key}")
+            spec = OVERRIDABLE_SETTINGS[key]
+            # A null means "stop overriding this -- go back to whatever the
+            # environment says." That's the escape hatch that keeps the env
+            # var meaningful instead of being silently shadowed forever by a
+            # value someone typed once.
+            if raw is None:
+                conn.execute("DELETE FROM server_settings WHERE key = ?", (key,))
+                continue
+            if spec["type"] == "bool":
+                value = "1" if raw in (True, "1", "true", 1) else "0"
+            else:
+                try:
+                    n = int(raw)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, f"{key} must be a whole number")
+                lo, hi = spec.get("min"), spec.get("max")
+                if (lo is not None and n < lo) or (hi is not None and n > hi):
+                    raise HTTPException(400, f"{key} must be between {lo} and {hi}")
+                value = str(n)
+            conn.execute(
+                "INSERT INTO server_settings (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (key, value, now),
+            )
+    # Apply anything time-based immediately rather than waiting for the next
+    # hourly maintenance tick -- shortening the session window should log out
+    # stale sessions now, not up to an hour from now.
+    _prune_idle_sessions()
+    return {"ok": True, "settings": get_server_settings(request)["settings"]}
 
 
 @app.get("/api/backups")
@@ -1601,7 +1709,7 @@ def _maybe_auto_rotate_invite_code():
 
 
 def _prune_old_activity_log():
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=ACTIVITY_LOG_RETENTION_DAYS)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=_get_setting("activity_log_retention_days"))).isoformat()
     now = _now_iso()
     with get_db() as conn:
         conn.execute(
@@ -1622,13 +1730,14 @@ def _prune_old_failed_logins():
 
 
 def _prune_idle_sessions():
-    """Drops sessions that haven't been used in SESSION_MAX_IDLE_DAYS.
+    """Drops sessions that haven't been used in the configured idle window.
     Disabled entirely at the default of 0 -- a household server where
     logging in once on the kitchen tablet is meant to stick forever is
     a perfectly reasonable setup, so expiry is strictly opt-in."""
-    if SESSION_MAX_IDLE_DAYS <= 0:
+    days = _get_setting("session_max_idle_days")
+    if days <= 0:
         return
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=SESSION_MAX_IDLE_DAYS)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     with get_db() as conn:
         # COALESCE: sessions from before last_activity existed have only
         # created_at to judge idleness by -- better than never expiring them.
@@ -1637,7 +1746,7 @@ def _prune_idle_sessions():
             (cutoff,),
         )
         if cur.rowcount:
-            print(f"Pruned {cur.rowcount} session(s) idle for over {SESSION_MAX_IDLE_DAYS} days")
+            print(f"Pruned {cur.rowcount} session(s) idle for over {days} days")
 
 
 BACKUP_DIR = DATA_DIR / "backups"
@@ -1648,7 +1757,7 @@ def _create_full_backup():
     SQLite's online backup API -- safe against a live database, correctly
     captures WAL-mode state with nothing paused) plus every photo on disk,
     hard-linked rather than copied since photos are effectively immutable
-    once uploaded. Rotates out anything past MAX_BACKUPS_TO_KEEP."""
+    once uploaded. Rotates out anything past the configured keep count."""
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     backup_folder = BACKUP_DIR / f"backup-{timestamp}"
@@ -1676,13 +1785,13 @@ def _create_full_backup():
                 shutil.copy2(photo_file, dest_path)  # different filesystem or link limit hit -- fall back to a real copy
 
     existing = sorted([p for p in BACKUP_DIR.glob("backup-*") if p.is_dir()], key=lambda p: p.name, reverse=True)
-    for old in existing[MAX_BACKUPS_TO_KEEP:]:
+    for old in existing[_get_setting("max_backups_to_keep"):]:
         shutil.rmtree(old, ignore_errors=True)  # removes this backup's links; each photo's actual data survives as long as the live copy or any other backup still references it
     print(f"Automatic backup created: {backup_folder.name}")
 
 
 def _maybe_run_scheduled_backup():
-    if not BACKUPS_ENABLED:
+    if not _get_setting("backups_enabled"):
         return
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     existing = sorted([p for p in BACKUP_DIR.glob("backup-*") if p.is_dir()], key=lambda p: p.name, reverse=True)
@@ -1694,7 +1803,7 @@ def _maybe_run_scheduled_backup():
         try:
             ts_str = existing[0].name.replace("backup-", "")
             last_backup_time = datetime.strptime(ts_str, "%Y%m%d-%H%M%S-%f").replace(tzinfo=timezone.utc)
-            if (datetime.now(timezone.utc) - last_backup_time).total_seconds() < BACKUP_INTERVAL_HOURS * 3600:
+            if (datetime.now(timezone.utc) - last_backup_time).total_seconds() < _get_setting("backup_interval_hours") * 3600:
                 return
         except ValueError:
             pass  # malformed folder name somehow -- just proceed with a fresh backup
