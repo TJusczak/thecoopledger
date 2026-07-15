@@ -53,7 +53,6 @@
       <nav class="topnav">
         <a href="#what-it-tracks">What it tracks</a>
         <a href="#how-it-works">How it works</a>
-        <a href="#android">Android</a>
         <a href="#self-host">Self-host</a>
         <a href="#support">Support</a>
         <a href="#faq">FAQ</a>
@@ -85,7 +84,7 @@
           <a href="/app/" class="btn btn-primary">Open the app →</a>
           <a href="#self-host" class="btn btn-ghost">Self-host it instead</a>
         </div>
-        <div class="hero-fineprint">No account for local use. Works offline once loaded. Install it like a real app on desktop or Android.</div>
+        <div class="hero-fineprint">No account for local use. Works offline once loaded. Install it like a real app on your phone or desktop.</div>
         <div class="dev-notice">🚧 <strong>Actively in development.</strong> Features and behavior are still changing, and while care is taken to avoid it, bugs happen — <a href="#faq">back up your data regularly</a> (Export from Settings → Coops takes a few seconds).</div>
       </div>
 
@@ -149,7 +148,7 @@
         <div class="path-card">
           <span class="stamp stamp-gold">No setup</span>
           <h3>Just open it</h3>
-          <p>Tap "Open the app," choose local use, and start entering data immediately. Everything lives in your own browser, on your own device — nothing is sent anywhere. Works offline once it's loaded, and can be installed like a real app on desktop or Android for its own icon and window.</p>
+          <p>Tap "Open the app," choose local use, and start entering data immediately. Everything lives in your own browser, on your own device — nothing is sent anywhere. Works offline once it's loaded, and can be installed like a real app on your phone or desktop for its own icon and window.</p>
           <p class="path-note">Export a backup anytime, from a menu right in the app. Switch to a synced server later without losing anything you've already entered.</p>
         </div>
         <div class="path-card">
@@ -158,22 +157,6 @@
           <p>Run your own copy on a home server or NAS with a single Docker command, then connect any device to it with an invite code. Data lives on your server, syncs automatically in the background, and keeps working offline in between — changes push out the next time a connection's available.</p>
           <p class="path-note">Nobody's server but your own. Self-hosting is free, and covered below.</p>
         </div>
-      </div>
-    </div>
-  </section>
-
-  <div class="divider" aria-hidden="true"></div>
-
-  <section class="section" id="android">
-    <div class="section-inner">
-      <div class="eyebrow">Android</div>
-      <h2>A direct-download Android app, if you'd rather not use the browser</h2>
-      <div class="android-card">
-        <div class="android-card-main">
-          <p>This is the same app, wrapped as a standalone Android package (built with Bubblewrap) instead of something you install from a browser tab. It points at <code>thecoopledger.com</code> just like the web app does, so it works the same way — local-only or synced, your choice.</p>
-          <p class="section-lede" style="margin:10px 0 0">Since it isn't distributed through the Play Store, Android will show an "unknown source" warning during install — that's expected for any app installed this way, not a sign something's wrong. You'll need to allow it explicitly to continue. <strong style="color:var(--text)">Google Play, F-Droid, and other stores are planned</strong> for a more familiar install path down the road.</p>
-        </div>
-        <a href="TheCoopLedger.apk" class="btn btn-primary android-download" download>⬇ Download APK</a>
       </div>
     </div>
   </section>
@@ -260,7 +243,7 @@
         </div>
         <div class="faq-item">
           <div class="faq-q">What devices does it work on?</div>
-          <div class="faq-a">Any modern browser, desktop or mobile. It can also be installed as a standalone app on desktop (Chrome/Edge) or Android, for its own icon and window instead of a browser tab.</div>
+          <div class="faq-a">Any modern browser, desktop or mobile. It can also be installed as a standalone app on your phone (Chrome → Add to Home Screen) or desktop (Chrome/Edge), for its own icon and window instead of a browser tab.</div>
         </div>
       </div>
     </div>
@@ -467,7 +450,6 @@
   if (!isBeta) return; // stable build -- the regular logo and links already in the markup are correct as-is
   if (wrap) { wrap.classList.remove("channel-__BUILD_CHANNEL__"); wrap.classList.add("channel-beta"); } // ensure the badge's CSS shows it
   document.querySelectorAll(".brand-logo").forEach(function (img) { img.src = "logo-inline-beta.png"; });
-  document.querySelectorAll(".android-download").forEach(function (a) { a.href = "TheCoopLedgerBeta.apk"; });
 })();
 </script>
 

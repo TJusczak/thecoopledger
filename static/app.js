@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-171";
+const APP_VERSION = "2026.07.13-172";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -44,6 +44,33 @@ let charts = {};
 const BIRD_TYPES = ["Layer", "Meat", "Dual Purpose"];
 const BIRD_STATUSES = ["Active", "Processed", "Sold", "Deceased", "Retired"];
 const EXPENSE_CATEGORIES = ["Layer Feed", "Meat Feed", "Treats", "Bedding", "Building Materials", "Equipment", "Birds/Chicks", "Medical/Health", "Other"];
+
+// Emoji + a two-stop gradient per category, so each finance row leads with a
+// small colored icon tile instead of a text stamp -- readable at a glance and
+// far more compact, leaving the row's width for the actual description. The two
+// hex stops give the tile a slight top-lit gradient for depth. Colors follow
+// the category's meaning (feed golds, meat rust, bedding autumn, etc.).
+const CATEGORY_ICONS = {
+  "Layer Feed":         { emoji: "🌾", from: "#E4B62C", to: "#B4860E" }, // yellow/gold
+  "Meat Feed":          { emoji: "🌾", from: "#D0623C", to: "#9E3E20" }, // meat red
+  "Treats":             { emoji: "🌻", from: "#9DAE68", to: "#6E7E45" }, // green
+  "Bedding":            { emoji: "🍂", from: "#D08A3C", to: "#A85E22" }, // rust/orange
+  "Building Materials": { emoji: "🔨", from: "#8C8074", to: "#5E544A" }, // grey/brown
+  "Equipment":          { emoji: "📦", from: "#9A7B54", to: "#6E5233" }, // brown
+  "Birds/Chicks":       { emoji: "🐤", from: "#E4B62C", to: "#C08A12" }, // gold
+  "Medical/Health":     { emoji: "🩺", from: "#8AA0B4", to: "#5E7488" }, // slate blue
+  "Other":              { emoji: "🏷️", from: "#6E6258", to: "#463E38" }, // dark slate/brown
+  // Income categories reuse a neutral sage tile -- income rows don't need a
+  // spending-category icon, but should still render something rather than break.
+  "_income":            { emoji: "💰", from: "#9DAE68", to: "#6E7E45" },
+};
+
+/** A rounded, gradient icon tile for a finance category. Falls back to the
+ * "Other" tile for any unmapped/custom category so a row never renders blank. */
+function categoryIconTile(category, isIncome) {
+  const spec = isIncome ? CATEGORY_ICONS["_income"] : (CATEGORY_ICONS[category] || CATEGORY_ICONS["Other"]);
+  return `<div class="cat-icon" title="${esc(category || "")}" style="background:linear-gradient(145deg, ${spec.from}, ${spec.to})"><span>${spec.emoji}</span></div>`;
+}
 const INCOME_CATEGORIES = ["Egg Sale", "Meat Sale", "Bird Sale", "Other Income"];
 // Egg Sale and Meat Sale get their quantity/unit locked, same idea as feed
 // categories -- this is what lets the wash-out math work out how many eggs
@@ -8385,7 +8412,7 @@ function renderExpenses() {
     ${navHtml}
 
     <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin-bottom:12px">
-      ${sortedCats.map(cat => `<button class="pill-btn ${expenseFilters.category === cat ? "range-btn active" : ""}" data-cat-pill="${esc(cat)}">${esc(cat)}: ${fmtMoney(categoryTotals[cat])}${quantityLabel(cat)}</button>`).join("")}
+      ${sortedCats.map(cat => `<button class="pill-btn ${expenseFilters.category === cat ? "range-btn active" : ""}" data-cat-pill="${esc(cat)}">${(CATEGORY_ICONS[cat] || CATEGORY_ICONS["Other"]).emoji} ${esc(cat)}: ${fmtMoney(categoryTotals[cat])}${quantityLabel(cat)}</button>`).join("")}
     </div>
     ${sortedCats.length > 0 ? `
     <div class="dim" style="text-align:center;font-size:11px;margin-bottom:4px">${esc(periodLabel)}</div>
@@ -8422,13 +8449,14 @@ function renderExpenses() {
       ${visibleRows.map(({ x, running }) => {
         const isIncome = x.entry_type === "income";
         return `
-        <div class="list-card${selectedExpenseIds.has(x.id) ? " card-selected" : ""}" data-edit="${x.id}" data-id="${x.id}" style="cursor:pointer">
+        <div class="list-card expense-row${selectedExpenseIds.has(x.id) ? " card-selected" : ""}" data-edit="${x.id}" data-id="${x.id}" style="cursor:pointer">
           ${selectionState.expenses.mode ? `<input type="checkbox" class="list-card-check expense-check" data-id="${x.id}" ${selectedExpenseIds.has(x.id) ? "checked" : ""} onclick="event.stopPropagation()">` : ""}
           <div class="timeline-total" style="${running >= 0 ? "color:var(--sage);border-color:var(--sage)" : "color:var(--danger);border-color:var(--danger)"}">${running >= 0 ? "+" : ""}${fmtMoney(running)}</div>
+          ${categoryIconTile(x.category, isIncome)}
           <div class="list-card-main">
-            <div style="display:flex;gap:6px;flex-wrap:wrap">
-              <span class="stamp tone-${isIncome ? "sage" : "slate"}">${esc(x.category)}</span>
-              ${!isIncome ? `<span class="stamp tone-${x.for_type === "Meat Birds Only" ? "rust" : x.for_type === "Layers Only" ? "gold" : "sage"}">${esc(x.for_type || "All Birds")}</span>` : ""}
+            <div class="expense-row-title">
+              <span class="expense-cat-name">${esc(x.category)}</span>
+              ${!isIncome && x.for_type && x.for_type !== "All Birds" ? `<span class="audience-dot tone-${x.for_type === "Meat Birds Only" ? "rust" : "gold"}" title="${esc(x.for_type)}"></span><span class="audience-label">${x.for_type === "Meat Birds Only" ? "Meat" : "Layers"}</span>` : ""}
             </div>
             <div class="list-card-desc dim">${fmtDate(x.date)}${x.quantity ? ` · ${x.quantity} ${esc(x.unit || "")}` : ""}${x.description ? " · " + esc(x.description) : ""}</div>
             ${isIncome && QUANTITY_RELEVANT_INCOME.has(x.category) ? (() => { const rate = saleRateLabel(x.amount, x.quantity, x.category); return rate ? `<div class="list-card-desc dim">${rate}</div>` : ""; })() : ""}

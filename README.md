@@ -10,7 +10,7 @@ Self-hosted flock tracker: birds (including batches for meat birds), egg
 production, an income/expense ledger, supply inventory with photos, egg
 incubation/hatching, and bedding freshness tracking. FastAPI + SQLite on
 the backend, a local-first vanilla-JS PWA on the front — installable as a
-standalone app on desktop and Android, and works fully offline once loaded.
+standalone app on any phone or desktop, and works fully offline once loaded.
 
 > 🚧 **Actively in development.** This is a one-person project under active,
 > ongoing development — features and behavior are still changing, and
@@ -97,12 +97,12 @@ available" prompts in that situation, since they'd only reflect
 thecoopledger.com's own version rather than anything meaningful about
 your server, and shows an explanation instead if you check manually.
 
-**On Android:** the published app is a wrapped copy of thecoopledger.com,
-fixed to that address the same way a browser tab there would be. For a
-self-hosted server, installing directly from your own server's address in
-your phone's browser (Chrome → menu → **Add to Home Screen**) gets you an
-equivalent icon and standalone window, with the same guaranteed frontend/
-backend pairing as above.
+**Installed PWA:** installing from a given address (Chrome → menu → **Add
+to Home Screen**, or the install icon in a desktop address bar) fixes the
+app to that origin the same way a browser tab there would be. For a
+self-hosted server, install directly from your own server's address to get
+an icon and standalone window with the same guaranteed frontend/backend
+pairing as above.
 
 ### Building from source instead
 
@@ -152,7 +152,7 @@ bad value typed into a web form shouldn't be able to lock you out.
 | `MAX_BACKUPS_TO_KEEP` | `14` | Older backups are rotated out past this count. Backups hard-link photos, so keeping many is nearly free on disk. |
 | `SESSION_MAX_IDLE_DAYS` | `0` | `0` = logins never expire (the kitchen-tablet default). Set to e.g. `90` to automatically log out sessions idle that long. |
 | `ACTIVITY_LOG_RETENTION_DAYS` | `7` | How much history the activity feed keeps. |
-| `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed origins for the API. The permissive default is what lets the Android app / a CDN-hosted frontend talk to your server out of the box; set e.g. `https://coop.example.com` to lock it to one origin. |
+| `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed origins for the API. The permissive default is what lets an installed PWA / a CDN-hosted frontend talk to your server out of the box; set e.g. `https://coop.example.com` to lock it to one origin. |
 
 The container reports its health at `/api/health` and carries a Docker
 `HEALTHCHECK`, so `docker ps`, Portainer, Uptime Kuma, and
@@ -222,23 +222,8 @@ Pages-only pipeline. This is checked into the repo, so there's nothing to
 configure for it in the dashboard.
 
 Note the `/.` (not `/*`) at the end of each source path — a trailing `/*`
-is a shell glob that silently skips hidden files and folders, which was
-quietly dropping `.well-known/assetlinks.json` (needed for the Android
-app's domain verification) from every deploy without any error. `/.`
-copies everything, hidden or not.
-
-Separately, Cloudflare's own asset upload step has a known, longstanding
-issue where hidden folders like `.well-known/` sometimes don't survive
-being uploaded at all, independent of the build command above. Rather
-than depend on that being fixed, `landing/assetlinks.json` (no leading
-dot) is the real source of truth for the Android app tied to this
-domain, and `landing/_redirects` rewrites `/.well-known/assetlinks.json`
-to it at request time -- a 200 rewrite, not an HTTP redirect, since
-Android's verifier won't follow a redirect for this check. If you ever
-need to update the Android app's fingerprint, edit
-`landing/assetlinks.json`. This is unrelated to `static/.well-known/`,
-which is a separate file for anyone self-hosting `static/` directly at
-their own domain and wanting their own Android build to verify there.
+is a shell glob that silently skips hidden files and folders. `/.` copies
+everything, hidden or not, so any dot-prefixed files stay in the deploy.
 
 ### Beta channel for the website
 
@@ -319,15 +304,14 @@ folder" option (desktop Chrome/Edge only) that can save a backup straight
 into a Dropbox/Drive/OneDrive-watched folder automatically, and a manual
 "Export (.zip)" that always works regardless of browser.
 
-## Installable app (PWA + Android)
+## Installable app (PWA)
 
 The app is a full PWA — install it from the browser (look for an install
-icon in the address bar, or the option in Settings → App) for its
-own window, icon, and Start Menu / home screen presence, with the app
-shell cached for offline use. There's also a wrapped Android APK (a
-Trusted Web Activity) for a proper Play-Store-style install without a
-browser wrapper at all — see **[ANDROID_BUILD.md](ANDROID_BUILD.md)** for
-the full Bubblewrap setup, covering both the production and beta builds.
+icon in the address bar, or the option in Settings → App) for its own
+window, icon, and Start Menu / home screen presence, with the app shell
+cached for offline use. This works the same on phones (Chrome → **Add to
+Home Screen**) and desktops, with no separate download or app store
+needed.
 
 ## Coops (profiles)
 

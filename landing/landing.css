@@ -213,16 +213,6 @@ h1, h2, h3 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
   .gallery-close { top: 12px; right: 12px; }
 }
 
-/* ---------- android ---------- */
-
-.android-card {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-  padding: 24px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
-}
-.android-card-main { flex: 1 1 380px; }
-.android-card-main p { font-size: 14px; color: var(--text-dim); margin: 0; }
-.android-download { flex: 0 0 auto; }
-
 .support-card {
   background: var(--surface); border: 1px solid rgba(212, 160, 23, 0.35); border-radius: 12px;
   padding: 24px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
