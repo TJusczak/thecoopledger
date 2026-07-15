@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-167";
+const APP_VERSION = "2026.07.13-168";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -48,6 +48,11 @@ const FLOCK_DATE_FIELDS = [
 let flockFilters = { status: "Active", type: "", dateField: "", year: "", location: "" };
 let flockFiltersOpen = false;
 let flockSort = "name"; // "name" | "age" | "target"
+// Health log scope. Defaults to active birds only -- once a bird is
+// processed or lost, its old health notes are history that would otherwise
+// pile up at the bottom of the list and bury the entries you'd actually act
+// on. "all" brings them back when you want the full record.
+let healthLogScope = "active"; // "active" | "all"
 // Per-device, not synced -- the right density on a phone isn't the right
 // density on a desktop, so this is a device preference the way photo
 // quality is. "grid" + "cozy" reproduces the layout that existed before.
@@ -333,6 +338,30 @@ function fmtBytes(bytes) {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 const fmtMoney = (n) => `$${(Number(n) || 0).toFixed(2)}`;
+/** Splits an amount into the pieces a finance-app-style figure needs:
+ * sign, whole dollars (with thousands separators), and cents. Kept
+ * separate from fmtMoney so the plain string version still exists for
+ * toasts, summaries, and the activity log. */
+function fmtMoneyParts(n) {
+  const v = Number(n) || 0;
+  const abs = Math.abs(v);
+  const dollars = Math.floor(abs);
+  const cents = Math.round((abs - dollars) * 100).toString().padStart(2, "0");
+  return { sign: v < 0 ? "-" : "", dollars: dollars.toLocaleString(), cents };
+}
+/** The big right-aligned amount used on finance line items: dollars carry
+ * the weight, cents are smaller and dimmer so the figure reads at a glance
+ * and the decimal places line up down the column. `dir` ("income" |
+ * "expense") sets the +/− prefix and color. */
+function moneyFigureHtml(amount, dir) {
+  const { dollars, cents } = fmtMoneyParts(amount);
+  const income = dir === "income";
+  return `<div class="money-figure ${income ? "money-income" : "money-expense"}">`
+    + `<span class="money-sign">${income ? "+" : "−"}</span>`
+    + `<span class="money-dollars">$${dollars}</span>`
+    + `<span class="money-cents">.${cents}</span>`
+    + `</div>`;
+}
 
 function ageFromDate(dateStr) {
   if (!dateStr) return "Unknown";
@@ -5659,14 +5688,18 @@ let modalContentClearTimeout = null;
  * matching or ranking) so results are predictable. */
 function performGlobalSearch(query) {
   const q = query.trim().toLowerCase();
-  const empty = { birds: [], notes: [], supplies: [], products: [] };
+  const empty = { birds: [], notes: [], supplies: [], products: [], health: [] };
   if (!q) return empty;
   const has = (...fields) => fields.some(f => (f || "").toLowerCase().includes(q));
+  const birdName = (id) => { const b = STATE.birds.find(x => x.id === id); return b ? b.name : ""; };
   return {
     birds: STATE.birds.filter(b => has(b.name, b.breed, b.type)),
     notes: STATE.notes.filter(n => has(n.title, n.body, n.category)),
     supplies: STATE.supplies.filter(s => has(s.brand, s.description, s.category)),
     products: STATE.supplyProducts.filter(p => has(p.brand, p.category, p.description)),
+    // Match the note text OR the bird's name -- searching "mites" finds the
+    // entry, and searching a bird's name finds all its health history.
+    health: STATE.birdLogs.filter(l => has(l.note, birdName(l.bird_id))),
   };
 }
 
@@ -5674,7 +5707,7 @@ function openGlobalSearchModal() {
   if (!currentCoopId) { showToast("Pick a coop first", "delete"); return; }
   const html = `
     <div class="form-head">🔍 Search</div>
-    <input type="text" id="globalSearchInput" placeholder="Search birds, notes, supplies, products..." autocomplete="off"
+    <input type="text" id="globalSearchInput" placeholder="Search birds, health, notes, supplies..." autocomplete="off"
       style="width:100%;padding:11px 12px;font-size:16px;border-radius:8px;border:1px solid var(--border);background:var(--surface-raised);color:var(--text);margin-bottom:14px;box-sizing:border-box">
     <div id="globalSearchResults"></div>
   `;
@@ -5710,11 +5743,11 @@ function openGlobalSearchModal() {
 function renderGlobalSearchResults(query, resultsEl) {
   const q = query.trim();
   if (!q) {
-    resultsEl.innerHTML = `<div class="dim" style="font-size:12px;text-align:center;padding:24px 0">Start typing to search birds, notes, supplies, and products.</div>`;
+    resultsEl.innerHTML = `<div class="dim" style="font-size:12px;text-align:center;padding:24px 0">Start typing to search birds, health logs, notes, supplies, and products.</div>`;
     return;
   }
-  const { birds, notes, supplies, products } = performGlobalSearch(q);
-  const total = birds.length + notes.length + supplies.length + products.length;
+  const { birds, notes, supplies, products, health } = performGlobalSearch(q);
+  const total = birds.length + notes.length + supplies.length + products.length + health.length;
   if (total === 0) {
     resultsEl.innerHTML = `<div class="dim" style="font-size:12px;text-align:center;padding:24px 0">No results for "${esc(q)}".</div>`;
     return;
@@ -5728,6 +5761,7 @@ function renderGlobalSearchResults(query, resultsEl) {
   resultsEl.innerHTML = [
     section("🐔 Birds", birds, b => `<div class="list-card" data-search-bird="${b.id}" style="cursor:pointer"><div class="list-card-main"><div style="font-weight:700">${esc(b.name || "Unnamed")}</div><div class="list-card-desc dim">${esc(b.breed || "")}${b.type ? ` · ${esc(b.type)}` : ""}</div></div></div>`),
     section("📝 Notes", notes, n => `<div class="list-card" data-search-note="${n.id}" style="cursor:pointer"><div class="list-card-main"><div style="font-weight:700">${esc(n.title || "Untitled")}</div><div class="list-card-desc dim">${esc(n.category || "")}</div></div></div>`),
+    section("🩺 Health log", health, l => { const b = STATE.birds.find(x => x.id === l.bird_id); return `<div class="list-card" data-search-health="${l.bird_id}" style="cursor:pointer"><div class="list-card-main"><div style="font-weight:700">${esc(b ? b.name : "(deleted bird)")}</div><div class="list-card-desc dim">${fmtDate(l.date)} · ${esc((l.note || "").slice(0, 80))}${(l.note || "").length > 80 ? "…" : ""}</div></div></div>`; }),
     section("📦 Supplies", supplies, s => `<div class="list-card" data-search-supply="${s.id}" style="cursor:pointer"><div class="list-card-main"><div style="font-weight:700">${esc(s.brand || s.description || s.category)}</div><div class="list-card-desc dim">${esc(s.category || "")}</div></div></div>`),
     section("🏷️ Products", products, p => `<div class="list-card" data-search-product="${p.id}" style="cursor:pointer"><div class="list-card-main"><div style="font-weight:700">${esc(p.brand || p.category)}</div><div class="list-card-desc dim">${esc(p.category || "")}</div></div></div>`),
   ].join("");
@@ -5743,6 +5777,14 @@ function renderGlobalSearchResults(query, resultsEl) {
     if (!note) return;
     closeModal();
     setTimeout(() => { switchTab("flock"); flockSubTab = "notes"; renderActiveTab(); openNoteModal(note); }, 80);
+  }));
+  resultsEl.querySelectorAll("[data-search-health]").forEach(el => el.addEventListener("click", () => {
+    // Health entries are edited on their bird's screen, so land there --
+    // opening the bird whose log matched, same as tapping the bird itself.
+    const bird = STATE.birds.find(b => b.id === el.dataset.searchHealth);
+    if (!bird) return;
+    closeModal();
+    setTimeout(() => { switchTab("flock"); showBirdForm(bird); }, 80);
   }));
   resultsEl.querySelectorAll("[data-search-supply]").forEach(el => el.addEventListener("click", () => {
     const supply = STATE.supplies.find(s => s.id === el.dataset.searchSupply);
@@ -6645,26 +6687,42 @@ function openBatchEditModal(batchName) {
 function renderFlockHealthSection() {
   const el = document.getElementById("flockSubContent");
   if (!currentCoopId) { el.innerHTML = noCoopMessage(); return; }
-  const logs = [...STATE.birdLogs].sort((a, b) => b.date.localeCompare(a.date));
-  const birdNameOf = (id) => { const b = STATE.birds.find(x => x.id === id); return b ? b.name : "(deleted bird)"; };
+  const birdById = new Map(STATE.birds.map(b => [b.id, b]));
+  const birdNameOf = (id) => { const b = birdById.get(id); return b ? b.name : "(deleted bird)"; };
+  // A log belongs to an "active" bird only if that bird still exists and is
+  // Active -- entries for processed, deceased, or deleted birds fall out of
+  // the default view. The count of what's hidden is shown so it's never a
+  // mystery why an old entry isn't there.
+  const isActiveBirdsLog = (l) => { const b = birdById.get(l.bird_id); return b && b.status === "Active"; };
+  const allLogs = [...STATE.birdLogs].sort((a, b) => b.date.localeCompare(a.date));
+  const hiddenCount = allLogs.filter(l => !isActiveBirdsLog(l)).length;
+  const logs = healthLogScope === "active" ? allLogs.filter(isActiveBirdsLog) : allLogs;
   el.innerHTML = `
     <div class="form-block">
       <div class="form-head"><span>Flock health &amp; notes log</span></div>
-      <div class="dim" style="font-size:12px;margin-bottom:12px">Every log entry across every bird, most recent first. Add or remove entries from an individual bird's edit screen.</div>
-      ${logs.length === 0 ? `<div class="empty">No log entries yet.</div>` : `
+      <div class="dim" style="font-size:12px;margin-bottom:10px">Every log entry, most recent first. Add or remove entries from an individual bird's edit screen.</div>
+      <div class="range-select" style="margin-bottom:12px">
+        <button class="range-btn ${healthLogScope === "active" ? "active" : ""}" data-health-scope="active">Active birds</button>
+        <button class="range-btn ${healthLogScope === "all" ? "active" : ""}" data-health-scope="all">All birds${hiddenCount ? ` (+${hiddenCount})` : ""}</button>
+      </div>
+      ${logs.length === 0 ? `<div class="empty">${healthLogScope === "active" && hiddenCount ? "No log entries for active birds. Tap “All birds” to see entries for processed or past birds." : "No log entries yet."}</div>` : `
       <div style="display:flex;flex-direction:column;gap:8px;max-height:520px;overflow-y:auto">
-        ${logs.map(l => `
+        ${logs.map(l => { const b = birdById.get(l.bird_id); const inactive = !b || b.status !== "Active"; return `
           <div style="display:flex;justify-content:space-between;gap:10px;align-items:start;font-size:13px;border-bottom:1px solid #5A4B3C30;padding-bottom:8px">
             <div>
               <span class="mono dim" style="font-size:11px">${fmtDate(l.date)}</span>
-              <span class="stamp tone-slate" style="margin-left:6px">${esc(birdNameOf(l.bird_id))}</span>
+              <span class="stamp tone-${inactive ? "rust" : "slate"}" style="margin-left:6px">${esc(birdNameOf(l.bird_id))}${b && b.status && b.status !== "Active" ? ` · ${esc(b.status)}` : ""}</span>
               <div style="margin-top:4px">${esc(l.note)}</div>
             </div>
             <button class="icon-btn" data-del-flock-log="${l.id}">🗑</button>
-          </div>`).join("")}
+          </div>`; }).join("")}
       </div>`}
     </div>
   `;
+  el.querySelectorAll("[data-health-scope]").forEach(b => b.addEventListener("click", () => {
+    healthLogScope = b.dataset.healthScope;
+    renderFlockHealthSection();
+  }));
   el.querySelectorAll("[data-del-flock-log]").forEach(b => b.addEventListener("click", async () => {
     await localBirdLogDelete(b.dataset.delFlockLog, currentCoopId);
     STATE.birdLogs = await localGetAll("bird_logs", currentCoopId);
@@ -8306,8 +8364,8 @@ function renderExpenses() {
             <div class="list-card-desc dim">${fmtDate(x.date)}${x.quantity ? ` · ${x.quantity} ${esc(x.unit || "")}` : ""}${x.description ? " · " + esc(x.description) : ""}</div>
             ${isIncome && QUANTITY_RELEVANT_INCOME.has(x.category) ? (() => { const rate = saleRateLabel(x.amount, x.quantity, x.category); return rate ? `<div class="list-card-desc dim">${rate}</div>` : ""; })() : ""}
           </div>
-          <div class="list-card-side">
-            <span class="stamp stamp-lg tone-${isIncome ? "sage" : "rust"}">${isIncome ? "+" : "−"}${fmtMoney(x.amount)}</span>
+          <div class="list-card-side list-card-side-amount">
+            ${moneyFigureHtml(x.amount, isIncome ? "income" : "expense")}
           </div>
         </div>`;
       }).join("")}
