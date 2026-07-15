@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-168";
+const APP_VERSION = "2026.07.13-169";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -4473,16 +4473,62 @@ function feedBeddingCumulativeSeries(supplies, days) {
   const emptiedEvents = supplies.filter(s => s.date_emptied).sort((a, b) => a.date_emptied.localeCompare(b.date_emptied));
   const emptiedInRange = days ? emptiedEvents.filter(s => withinRange(s.date_emptied, days)) : emptiedEvents;
 
-  let runningLayer = 0, runningMeat = 0, runningBedding = 0;
-  const layerSparse = {}, meatSparse = {}, beddingSparse = {};
+  // Spread each emptied bag's quantity linearly across the days it was
+  // actually in use -- from opened_at (0 used) to date_emptied (full
+  // quantity used) -- rather than dumping the whole amount on the emptied
+  // date as one vertical jump. We DON'T invent per-quarter timestamps we
+  // never recorded; a straight ramp between the two dates we DID record is
+  // an honest "this bag was consumed steadily over this window," and its
+  // endpoints are exactly right (0 when opened, full when emptied). A bag
+  // with no opened_at (opened and emptied same day, or legacy data) still
+  // lands as a single step on its emptied date -- there's no window to
+  // spread it over, and pretending otherwise would be the blurry guess.
+  const perDay = { "Layer Feed": {}, "Meat Feed": {}, "Bedding": {} };
+  const addOnDay = (cat, dayStr, amount) => { perDay[cat][dayStr] = (perDay[cat][dayStr] || 0) + amount; };
+
   emptiedInRange.forEach(s => {
     const qty = Number(s.quantity) || 0;
-    if (s.category === "Layer Feed") runningLayer += qty;
-    else if (s.category === "Meat Feed") runningMeat += qty;
-    else if (s.category === "Bedding") runningBedding += qty;
-    const k = bucketLabel(s.date_emptied, mode);
-    layerSparse[k] = runningLayer; meatSparse[k] = runningMeat; beddingSparse[k] = runningBedding;
+    const cat = s.category;
+    if (!perDay[cat]) return;
+    const end = s.date_emptied;
+    const start = s.opened_at && s.opened_at < end ? s.opened_at : null;
+    if (!start) { addOnDay(cat, end, qty); return; } // same-day or unknown open -> single step, as before
+    // Whole days in [start, end]; qty/span consumed each day, so the
+    // cumulative line rises evenly and reaches exactly qty on the end date.
+    const spanDays = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
+    const perDayQty = qty / spanDays;
+    for (let i = 0; i < spanDays; i++) {
+      const d = new Date(start); d.setDate(d.getDate() + i);
+      addOnDay(cat, d.toISOString().slice(0, 10), perDayQty);
+    }
   });
+
+  // Roll the per-day amounts up into the chart's buckets, then accumulate.
+  const bucketSums = (cat) => {
+    const out = {};
+    for (const [day, amt] of Object.entries(perDay[cat])) {
+      if (days && !withinRange(day, days)) continue; // a ramp can start before the visible window; only count the days inside it
+      const k = bucketLabel(day, mode);
+      out[k] = (out[k] || 0) + amt;
+    }
+    return out;
+  };
+  const layerByBucket = bucketSums("Layer Feed");
+  const meatByBucket = bucketSums("Meat Feed");
+  const beddingByBucket = bucketSums("Bedding");
+
+  const accumulate = (byBucket, sortedLabels) => {
+    let run = 0; const out = {};
+    sortedLabels.forEach(k => { if (byBucket[k] !== undefined) run += byBucket[k]; out[k] = run; });
+    return out;
+  };
+  const allBucketKeys = [...new Set([...Object.keys(layerByBucket), ...Object.keys(meatByBucket), ...Object.keys(beddingByBucket)])].sort();
+  const layerSparse = accumulate(layerByBucket, allBucketKeys);
+  const meatSparse = accumulate(meatByBucket, allBucketKeys);
+  const beddingSparse = accumulate(beddingByBucket, allBucketKeys);
+  const runningLayer = allBucketKeys.length ? layerSparse[allBucketKeys[allBucketKeys.length - 1]] : 0;
+  const runningMeat = allBucketKeys.length ? meatSparse[allBucketKeys[allBucketKeys.length - 1]] : 0;
+  const runningBedding = allBucketKeys.length ? beddingSparse[allBucketKeys[allBucketKeys.length - 1]] : 0;
 
   // Partial consumption from bags that are open right now but not yet fully
   // emptied -- there's no history of exactly when a bag's status changed
@@ -5437,15 +5483,15 @@ function drawCharts() {
     data: {
       labels: feedBedding.labels,
       datasets: [
-        { label: "Layer Feed", data: feedBedding.layer, borderColor: "#D4A017", backgroundColor: "#D4A01722", stepped: true, pointRadius: 3 },
-        { label: "Meat Feed", data: feedBedding.meat, borderColor: "#C1502E", backgroundColor: "#C1502E22", stepped: true, pointRadius: 3 },
+        { label: "Layer Feed", data: feedBedding.layer, borderColor: "#D4A017", backgroundColor: "#D4A01722", tension: 0.15, pointRadius: 2 },
+        { label: "Meat Feed", data: feedBedding.meat, borderColor: "#C1502E", backgroundColor: "#C1502E22", tension: 0.15, pointRadius: 2 },
       ]
     },
     options: { ...chartOpts((v) => `${v.toFixed(1)} lb`), plugins: { legend: { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } } } },
   });
   charts.beddingUsed = new Chart(document.getElementById("beddingUsedChart"), {
     type: "line",
-    data: { labels: feedBedding.labels, datasets: [{ label: "Bedding (cu ft)", data: feedBedding.bedding, borderColor: "#7A8FA6", backgroundColor: "#7A8FA622", stepped: true, pointRadius: 3 }] },
+    data: { labels: feedBedding.labels, datasets: [{ label: "Bedding (cu ft)", data: feedBedding.bedding, borderColor: "#7A8FA6", backgroundColor: "#7A8FA622", tension: 0.15, pointRadius: 2 }] },
     options: chartOpts((v) => `${v.toFixed(1)} cu ft`),
   });
 
