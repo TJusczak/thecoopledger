@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-177";
+const APP_VERSION = "2026.07.13-178";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -4584,31 +4584,47 @@ function spendDailyForMonth(key, category) {
   return arr;
 }
 
-/** Feed used (lb) per day for a month, layer + meat combined. Reuses the same
- * open->emptied ramp as the cumulative chart: each emptied bag's quantity is
- * spread evenly across the days it was in use, and we keep only the portion of
- * that ramp that lands inside the target month. A bag with no opened date (or
- * opened & emptied same day) drops its whole amount on its emptied day. */
-function feedDailyForMonth(key) {
-  const arr = Array(daysInMonthKey(key)).fill(0);
-  supplies_feedOnly().forEach(s => {
-    const qty = Number(s.quantity) || 0;
-    const end = s.date_emptied;
-    if (!end) return;
-    const start = s.opened_at && s.opened_at < end ? s.opened_at : null;
-    if (!start) { const d = dayInMonth(end, key); if (d > 0) arr[d - 1] += qty; return; }
-    const spanDays = Math.round((new Date(end + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000) + 1;
-    const perDay = qty / spanDays;
-    for (let i = 0; i < spanDays; i++) {
-      const day = addDays(start, i);
-      const d = dayInMonth(day, key);
-      if (d > 0) arr[d - 1] += perDay;
-    }
-  });
-  return arr;
-}
 function supplies_feedOnly() {
   return STATE.supplies.filter(s => s.category === "Layer Feed" || s.category === "Meat Feed");
+}
+
+/** Cumulative feed used (lb) through each day of a month -- a running total,
+ * not a per-day amount. Feed usage is estimated from bag open/empty dates, so
+ * a per-day line drops to 0 between bags and reads as "no feed used" even
+ * though birds are eating the whole time. A within-month running total climbs
+ * on consumption and holds flat between it, which is the honest shape.
+ *
+ * Emptied bags contribute their open->emptied ramp (spread across the days
+ * they were in use). A bag that's currently OPEN but not yet emptied has no
+ * per-day history -- we only know how much is gone RIGHT NOW (its status
+ * slider) -- so its used portion is added as a single step on today's date,
+ * the only date we can honestly attribute it to. That's also what makes a
+ * "used 3/4 of a bag this month" case actually show up, instead of staying
+ * invisible until the bag is finally marked empty. */
+function feedCumulativeForMonth(key) {
+  const n = daysInMonthKey(key);
+  const perDay = Array(n).fill(0);
+  const today = todayStr();
+  supplies_feedOnly().forEach(s => {
+    const qty = Number(s.quantity) || 0;
+    if (s.date_emptied) {
+      const end = s.date_emptied;
+      const start = s.opened_at && s.opened_at < end ? s.opened_at : null;
+      if (!start) { const d = dayInMonth(end, key); if (d > 0) perDay[d - 1] += qty; return; }
+      const spanDays = Math.round((new Date(end + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000) + 1;
+      const per = qty / spanDays;
+      for (let i = 0; i < spanDays; i++) { const d = dayInMonth(addDays(start, i), key); if (d > 0) perDay[d - 1] += per; }
+    } else {
+      // Open bag: attribute its used-so-far portion to today (if today is in
+      // this month). For a past month, an open bag contributes nothing --
+      // there's no honest date within a past month to place it.
+      const usedNow = qty * (STATUS_USED_FRACTION[s.status] ?? 0);
+      if (usedNow > 0) { const d = dayInMonth(today, key); if (d > 0) perDay[d - 1] += usedNow; }
+    }
+  });
+  // Turn per-day into a within-month running total.
+  let run = 0;
+  return perDay.map(v => (run += v));
 }
 
 /** Spend categories that actually have expenses, for the category pill picker. */
@@ -5504,9 +5520,9 @@ function renderCoopOverview() {
 
         <div class="chart-grid">
           <div class="card"><div class="chart-head"><div class="card-title">🥚 Eggs collected</div></div><div class="chart-box"><canvas id="dashEggChart"></canvas></div></div>
-          <div class="card"><div class="chart-head"><div class="card-title">🌾 Feed used (lbs)</div></div><div class="chart-box"><canvas id="dashFeedChart"></canvas></div></div>
+          <div class="card"><div class="chart-head"><div class="card-title">🌾 Feed used, month-to-date (lbs)</div></div><div class="chart-box"><canvas id="dashFeedChart"></canvas></div></div>
           <div class="card" style="grid-column:1/-1">
-            <div class="chart-head">
+            <div class="chart-head chart-head-grow">
               <div class="card-title">💵 Spending</div>
               <div class="pill-row" id="dashSpendCats">
                 <button class="pill-btn ${!dashSpendCategory ? "range-btn active" : ""}" data-spend-cat="">All</button>
@@ -5618,21 +5634,31 @@ function drawDashboardCharts() {
     options: monthChartOpts(compareOn),
   });
 
-  // ---- Feed ----
-  const feedMain = feedDailyForMonth(dashMonthKey);
-  const feedDatasets = [{ label: mainLabel, data: feedMain, borderColor: "#C1502E", backgroundColor: "#C1502E33", tension: 0.2, pointRadius: 2, fill: true }];
-  if (compareOn) feedDatasets.push({ label: compLabel, data: alignCompare(feedDailyForMonth(dashCompareKey)), ...dashLine("#C7B9A6") });
+  // ---- Feed (cumulative within the month) ----
+  const feedMain = feedCumulativeForMonth(dashMonthKey);
+  // For the CURRENT month, don't draw a flat line stretching to the end of the
+  // month past today -- cut the series off at today so it doesn't imply "no
+  // more feed forecast." Past months show the whole month.
+  const isCurrentMonth = dashMonthKey === monthKeyOf(todayStr());
+  const todayDom = Number(todayStr().slice(8, 10));
+  const truncateToToday = (arr) => isCurrentMonth ? arr.map((v, i) => (i < todayDom ? v : null)) : arr;
+  const feedDatasets = [{ label: mainLabel, data: truncateToToday(feedMain), borderColor: "#C1502E", backgroundColor: "#C1502E33", tension: 0.2, pointRadius: 2, fill: true, spanGaps: false }];
+  if (compareOn) feedDatasets.push({ label: compLabel, data: alignCompare(feedCumulativeForMonth(dashCompareKey)), ...dashLine("#C7B9A6") });
   charts.dashFeed = new Chart(document.getElementById("dashFeedChart"), {
     type: "line", data: { labels, datasets: feedDatasets },
     options: monthChartOpts(compareOn, (v) => `${v.toFixed(2)} lb`),
   });
 
   // ---- Spend (optionally filtered to one category) ----
+  // A line, like eggs and feed -- makes month-over-month comparison legible
+  // (which line sits higher on which days) and keeps all three dashboard
+  // charts visually consistent. As a bar chart the dotted comparison series
+  // rendered as invisible transparent bars.
   const spendMain = spendDailyForMonth(dashMonthKey, dashSpendCategory);
   const spendDatasets = [{ label: mainLabel, data: spendMain, borderColor: "#8A9A5B", backgroundColor: "#8A9A5B33", tension: 0.2, pointRadius: 2, fill: true }];
   if (compareOn) spendDatasets.push({ label: compLabel, data: alignCompare(spendDailyForMonth(dashCompareKey, dashSpendCategory)), ...dashLine("#C7B9A6") });
   charts.dashSpend = new Chart(document.getElementById("dashSpendChart"), {
-    type: "bar", data: { labels, datasets: spendDatasets.map((d, i) => i === 0 ? { ...d, type: "bar", backgroundColor: "#8A9A5B" } : d) },
+    type: "line", data: { labels, datasets: spendDatasets },
     options: monthChartOpts(compareOn, (v) => fmtMoney(v)),
   });
 }
