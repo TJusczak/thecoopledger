@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-179";
+const APP_VERSION = "2026.07.13-180";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5027,6 +5027,14 @@ function renderYearReviewSection() {
   reviewYear = selectedYear;
   const s = computeYearStats(selectedYear);
   const tm = monthlyTrends(selectedYear); // per-month series for the card sparklines
+  // Prior year's stats for year-over-year deltas, but only when we actually
+  // have data for that year (a coop's first year has nothing to compare to).
+  const prevYear = String(Number(selectedYear) - 1);
+  const hasPrev = years.includes(prevYear);
+  const sp = hasPrev ? computeYearStats(prevYear) : null;
+  // A delta chip comparing this year's value to last year's, labeled with the
+  // actual year. goodUp=false for things where more is worse (losses, spend).
+  const yoy = (cur, prev, goodUp = true) => hasPrev ? deltaChipHtml(cur, prev, { goodUp, label: prevYear }) : "";
 
   el.innerHTML = `
     <div class="toolbar">
@@ -5035,17 +5043,17 @@ function renderYearReviewSection() {
     </div>
 
     <div class="grid-stats-2" style="margin-bottom:16px">
-      <div class="stat tone-gold"><div class="stat-label">Eggs collected</div><div class="stat-value">${s.eggCount}</div><div class="stat-sub">${(s.eggCount / 12).toFixed(1)} dozen · ${valueBreakdownHtml(s.eggValue, s.eggActualIncome)}</div>${statSpark(tm.eggs)}</div>
-      <div class="stat tone-sage"><div class="stat-label">Meat processed</div><div class="stat-value">${meatProcessedValue(s.processedCount, s.processedWeight, s.meatTotalValue)}</div><div class="stat-sub">${s.processedCount > 0 ? `${s.processedCount} bird${s.processedCount !== 1 ? "s" : ""} · ${valueBreakdownHtml(s.meatValue, s.meatActualIncome)}` : ""}</div>${statSpark(tm.meatLb)}</div>
-      <div class="stat" style="${s.lossesInYear ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Losses</div><div class="stat-value">${s.lossesInYear}</div><div class="stat-sub">${s.newBirds} new bird${s.newBirds !== 1 ? "s" : ""} added</div>${statSpark(tm.losses)}</div>
-      <div class="stat tone-slate"><div class="stat-label">Total spent</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${Object.keys(s.categoryBreakdown).length} categories</div>${statSpark(tm.spent)}</div>
-      <div class="stat tone-gold"><div class="stat-label">Value produced</div><div class="stat-value">${fmtMoney(s.income)}</div><div class="stat-sub">eggs + meat</div>${statSpark(tm.value)}</div>
-      <div class="stat ${s.net >= 0 ? "tone-sage" : ""}" style="${s.net < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net for ${selectedYear}</div><div class="stat-value">${fmtMoney(s.net)}</div><div class="stat-sub">value − spend</div>${statSpark(tm.net)}</div>
-      <div class="stat tone-gold"><div class="stat-label">Layer feed used</div><div class="stat-value">${s.layerFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbLayerFeed !== null ? fmtMoney(s.costPerLbLayerFeed) + "/lb" : "no cost data yet"}</div>${statSpark(tm.layerFeed)}</div>
-      <div class="stat tone-rust"><div class="stat-label">Meat feed used</div><div class="stat-value">${s.meatFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbMeatFeed !== null ? fmtMoney(s.costPerLbMeatFeed) + "/lb" : "no cost data yet"}</div>${statSpark(tm.meatFeed)}</div>
-      <div class="stat tone-slate"><div class="stat-label">Bedding used</div><div class="stat-value">${s.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">bags emptied this year</div>${statSpark(tm.bedding)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Eggs collected</div><div class="stat-value">${s.eggCount}</div><div class="stat-sub">${(s.eggCount / 12).toFixed(1)} dozen · ${valueBreakdownHtml(s.eggValue, s.eggActualIncome)}</div>${statSpark(tm.eggs)}${yoy(s.eggCount, sp && sp.eggCount)}</div>
+      <div class="stat tone-sage"><div class="stat-label">Meat processed</div><div class="stat-value">${meatProcessedValue(s.processedCount, s.processedWeight, s.meatTotalValue)}</div><div class="stat-sub">${s.processedCount > 0 ? `${s.processedCount} bird${s.processedCount !== 1 ? "s" : ""} · ${valueBreakdownHtml(s.meatValue, s.meatActualIncome)}` : ""}</div>${statSpark(tm.meatLb)}${yoy(s.processedWeight, sp && sp.processedWeight)}</div>
+      <div class="stat" style="${s.lossesInYear ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Losses</div><div class="stat-value">${s.lossesInYear}</div><div class="stat-sub">${s.newBirds} new bird${s.newBirds !== 1 ? "s" : ""} added</div>${statSpark(tm.losses)}${yoy(s.lossesInYear, sp && sp.lossesInYear, false)}</div>
+      <div class="stat tone-slate"><div class="stat-label">Total spent</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${Object.keys(s.categoryBreakdown).length} categories</div>${statSpark(tm.spent)}${yoy(s.totalExpenses, sp && sp.totalExpenses, false)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Value produced</div><div class="stat-value">${fmtMoney(s.income)}</div><div class="stat-sub">eggs + meat</div>${statSpark(tm.value)}${yoy(s.income, sp && sp.income)}</div>
+      <div class="stat ${s.net >= 0 ? "tone-sage" : ""}" style="${s.net < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net for ${selectedYear}</div><div class="stat-value">${fmtMoney(s.net)}</div><div class="stat-sub">value − spend</div>${statSpark(tm.net)}${sp && sp.net > 0 && s.net > 0 ? yoy(s.net, sp.net) : ""}</div>
+      <div class="stat tone-gold"><div class="stat-label">Layer feed used</div><div class="stat-value">${s.layerFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbLayerFeed !== null ? fmtMoney(s.costPerLbLayerFeed) + "/lb" : "no cost data yet"}</div>${statSpark(tm.layerFeed)}${yoy(s.layerFeedLbs, sp && sp.layerFeedLbs, false)}</div>
+      <div class="stat tone-rust"><div class="stat-label">Meat feed used</div><div class="stat-value">${s.meatFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbMeatFeed !== null ? fmtMoney(s.costPerLbMeatFeed) + "/lb" : "no cost data yet"}</div>${statSpark(tm.meatFeed)}${yoy(s.meatFeedLbs, sp && sp.meatFeedLbs, false)}</div>
+      <div class="stat tone-slate"><div class="stat-label">Bedding used</div><div class="stat-value">${s.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">bags emptied this year</div>${statSpark(tm.bedding)}${yoy(s.beddingCuFt, sp && sp.beddingCuFt, false)}</div>
       ${(s.chicksHatched + s.hatchLoss) > 0 ? `
-      <div class="stat tone-gold"><div class="stat-label">Chicks hatched</div><div class="stat-value">${s.chicksHatched}</div><div class="stat-sub">from clutches started this year</div>${statSpark(tm.chicks)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Chicks hatched</div><div class="stat-value">${s.chicksHatched}</div><div class="stat-sub">from clutches started this year</div>${statSpark(tm.chicks)}${yoy(s.chicksHatched, sp && sp.chicksHatched)}</div>
       <div class="stat tone-rust"><div class="stat-label">Lost from hatching</div><div class="stat-value">${s.hatchLoss}</div><div class="stat-sub">${s.hatchClear} clear · ${s.hatchQuit} quit · ${s.hatchFailed} failed to hatch</div></div>
       ` : ""}
     </div>
@@ -5078,9 +5086,9 @@ function renderYearReviewSection() {
     </div>
 
     <div class="chart-grid" style="margin-top:16px">
-      <div class="card"><div class="card-title">Eggs by month — ${selectedYear}</div><div class="chart-box"><canvas id="reviewEggChart"></canvas></div></div>
-      <div class="card"><div class="card-title">Meat produced by month, lbs — ${selectedYear}</div><div class="chart-box"><canvas id="reviewMeatChart"></canvas></div></div>
-      <div class="card"><div class="card-title">Spend by month — ${selectedYear}</div><div class="chart-box"><canvas id="reviewExpenseChart"></canvas></div></div>
+      <div class="card"><div class="card-title">Eggs by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div><div class="chart-box"><canvas id="reviewEggChart"></canvas></div></div>
+      <div class="card"><div class="card-title">Meat produced by month, lbs — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div><div class="chart-box"><canvas id="reviewMeatChart"></canvas></div></div>
+      <div class="card"><div class="card-title">Spend by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div><div class="chart-box"><canvas id="reviewExpenseChart"></canvas></div></div>
       ${years.includes(String(Number(selectedYear) - 1)) ? `<div class="card"><div class="card-title">${selectedYear} vs ${Number(selectedYear) - 1}</div><div class="chart-box"><canvas id="reviewCompareChart"></canvas></div></div>` : ""}
     </div>
   `;
@@ -5104,32 +5112,44 @@ let reviewCharts = {};
 function drawYearReviewCharts(year) {
   Object.values(reviewCharts).forEach(c => c && c.destroy());
   const s = computeYearStats(year);
+  const lastYear = String(Number(year) - 1);
+  const hasPrev = allCoopYears().includes(lastYear);
+  // Dotted last-year overlay, matching the dashboard's month-comparison style,
+  // so each monthly chart shows this year solid vs last year dotted.
+  const prevDash = (color) => ({ borderColor: color, borderDash: [4, 4], backgroundColor: "transparent", pointRadius: 0, tension: 0.25, fill: false });
+  const withPrev = (mainDs, prevData, prevColor) => hasPrev
+    ? [mainDs, { label: lastYear, data: prevData, ...prevDash(prevColor) }]
+    : [mainDs];
 
   const eggMonthly = monthlyBuckets(STATE.eggs, year, e => Number(e.count) || 0);
+  const eggPrev = hasPrev ? monthlyBuckets(STATE.eggs, lastYear, e => Number(e.count) || 0) : null;
   reviewCharts.eggs = new Chart(document.getElementById("reviewEggChart"), {
-    type: "bar",
-    data: { labels: MONTH_LABELS, datasets: [{ label: "Eggs", data: eggMonthly, backgroundColor: "#D4A017" }] },
-    options: chartOpts()
+    type: "line",
+    data: { labels: MONTH_LABELS, datasets: withPrev({ label: year, data: eggMonthly, borderColor: "#D4A017", backgroundColor: "#D4A01733", tension: 0.25, pointRadius: 2, fill: true }, eggPrev, "#C7B9A6") },
+    options: yearChartOpts(hasPrev)
   });
 
   const processedBirds = STATE.birds.filter(b => b.status === "Processed" && b.harvest_date);
-  const meatMonthly = monthlyBuckets(processedBirds.map(b => ({ date: b.harvest_date, weight: Number(b.harvest_weight) || 0 })), year, (it) => it.weight);
+  const meatItems = processedBirds.map(b => ({ date: b.harvest_date, weight: Number(b.harvest_weight) || 0 }));
+  const meatMonthly = monthlyBuckets(meatItems, year, (it) => it.weight);
+  const meatPrev = hasPrev ? monthlyBuckets(meatItems, lastYear, (it) => it.weight) : null;
   reviewCharts.meat = new Chart(document.getElementById("reviewMeatChart"), {
-    type: "bar",
-    data: { labels: MONTH_LABELS, datasets: [{ label: "Lbs processed", data: meatMonthly, backgroundColor: "#C1502E" }] },
-    options: chartOpts((v) => `${displayWeight(v)} ${getWeightUnit()}`)
+    type: "line",
+    data: { labels: MONTH_LABELS, datasets: withPrev({ label: year, data: meatMonthly, borderColor: "#C1502E", backgroundColor: "#C1502E33", tension: 0.25, pointRadius: 2, fill: true }, meatPrev, "#C7B9A6") },
+    options: yearChartOpts(hasPrev, (v) => `${displayWeight(v)} ${getWeightUnit()}`)
   });
 
-  const expenseMonthly = monthlyBuckets(STATE.expenses.filter(x => x.entry_type !== "income"), year, x => Number(x.amount) || 0);
+  const expenseItems = STATE.expenses.filter(x => x.entry_type !== "income");
+  const expenseMonthly = monthlyBuckets(expenseItems, year, x => Number(x.amount) || 0);
+  const expensePrev = hasPrev ? monthlyBuckets(expenseItems, lastYear, x => Number(x.amount) || 0) : null;
   reviewCharts.expenses = new Chart(document.getElementById("reviewExpenseChart"), {
-    type: "bar",
-    data: { labels: MONTH_LABELS, datasets: [{ label: "Spend", data: expenseMonthly, backgroundColor: "#7A8FA6" }] },
-    options: chartOpts((v) => fmtMoney(v))
+    type: "line",
+    data: { labels: MONTH_LABELS, datasets: withPrev({ label: year, data: expenseMonthly, borderColor: "#7A8FA6", backgroundColor: "#7A8FA633", tension: 0.25, pointRadius: 2, fill: true }, expensePrev, "#C7B9A6") },
+    options: yearChartOpts(hasPrev, (v) => fmtMoney(v))
   });
 
   const compareCanvas = document.getElementById("reviewCompareChart");
   if (compareCanvas) {
-    const lastYear = String(Number(year) - 1);
     const prev = computeYearStats(lastYear);
     // Percentage change rather than raw numbers -- egg counts (hundreds)
     // and dollar amounts don't share a sensible axis, but "% change" puts
@@ -5152,6 +5172,24 @@ function drawYearReviewCharts(year) {
       options: { ...chartOpts((v) => `${v >= 0 ? "+" : ""}${v.toFixed(0)}%`), plugins: { legend: { display: false } } }
     });
   }
+}
+
+/** Year Review monthly chart options: legend shown only when a prior-year
+ * overlay is present, x-axis is the 12 month labels. */
+function yearChartOpts(showLegend, yFormatter) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: "index", intersect: false },
+    plugins: {
+      legend: showLegend ? { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } } : { display: false },
+      tooltip: { callbacks: yFormatter ? { label: (ctx) => `${ctx.dataset.label}: ${yFormatter(ctx.parsed.y)}` } : undefined },
+    },
+    scales: {
+      x: { ticks: { color: "#C7B9A6", font: { size: 10 }, maxRotation: 0 }, grid: { color: "#5A4B3C40" } },
+      y: { ticks: { color: "#C7B9A6", font: { size: 10 } }, grid: { color: "#5A4B3C40" }, beginAtZero: true }
+    }
+  };
 }
 
 function beddingStatsFor(area) {
@@ -5262,13 +5300,13 @@ function sparklineSvg(values) {
  * number of days into last month -- comparing 13 days of July against all
  * 31 of June would make every month look like a collapse until the 20th.
  * goodUp flips the coloring for numbers where rising is bad (spending). */
-function deltaChipHtml(current, previous, { goodUp = true } = {}) {
+function deltaChipHtml(current, previous, { goodUp = true, label = "last month" } = {}) {
   if (!(previous > 0)) return ""; // nothing meaningful to compare against yet
   const pct = Math.round(((current - previous) / previous) * 100);
-  if (Math.abs(pct) < 1) return `<span class="delta-chip tone-slate">≈ last month</span>`;
+  if (Math.abs(pct) < 1) return `<span class="delta-chip tone-slate">≈ ${label}</span>`;
   const up = pct > 0;
   const tone = up === goodUp ? "sage" : "rust";
-  return `<span class="delta-chip tone-${tone}">${up ? "▲" : "▼"} ${Math.abs(pct)}% vs last month</span>`;
+  return `<span class="delta-chip tone-${tone}">${up ? "▲" : "▼"} ${Math.abs(pct)}% vs ${label}</span>`;
 }
 
 /** Weekly trend series (oldest -> newest, 8 buckets) and month-over-month
