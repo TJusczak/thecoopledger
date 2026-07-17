@@ -176,6 +176,14 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 @media (max-width: 800px) { .grid-2 { grid-template-columns: 1fr; } }
 
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; align-items: start; }
+/* Dashboard grid: a taller fixed header zone (fits the eggs card's title +
+   total + averages line) above a fixed chart-box, so every card is the same
+   height AND every canvas is identical and top-aligned -- the extra averages
+   line on the eggs card sits in reserved space the feed card simply leaves
+   empty, rather than shrinking one canvas relative to the other. */
+.chart-grid-stretch > .card { display: flex; flex-direction: column; }
+.chart-grid-stretch > .card .chart-head { min-height: 96px; }
+.chart-grid-stretch > .card .chart-head.chart-head-grow { min-height: 96px; }
 /* Every chart card reserves the same fixed-height header zone above its
    canvas, whatever it contains -- a bare one-line title, or the feed card's
    title + description + per-bird tags. The chart-box itself is a fixed
@@ -207,6 +215,21 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 .dash-delta.up-good { color: var(--sage); }
 .dash-delta.up-bad { color: var(--rust); }
 .dash-delta.flat { color: var(--text-dim); }
+/* Small secondary stats under a dashboard total (e.g. avg eggs/day, feed cost
+   per dozen) -- honest derived numbers, kept visually quiet so the headline
+   total stays dominant. */
+.dash-substat { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+/* All-Time spend-by-category: a ranked list of proportion bars. Scales
+   gracefully with any number of categories and years (unlike a cumulative
+   chart), and reads as "where the money went" at a glance. */
+.cat-bar-row { display: flex; flex-direction: column; gap: 3px; }
+.cat-bar-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; }
+.cat-bar-label { font-weight: 600; color: var(--text); }
+.cat-bar-amt { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text); }
+.cat-bar-track { height: 8px; border-radius: 5px; background: color-mix(in srgb, var(--slate) 12%, transparent); overflow: hidden; }
+.cat-bar-fill { height: 100%; border-radius: 5px; min-width: 2px; }
+.cat-bar-total { margin-top: 12px; padding-top: 10px; border-top: 1px dotted var(--border); font-size: 13px; color: var(--text-dim); }
+.cat-bar-total strong { color: var(--text); font-family: 'JetBrains Mono', monospace; }
 .chart-box { position: relative; height: 260px; flex: 0 0 260px; }
 .chart-box canvas { width: 100% !important; height: 100% !important; }
 
