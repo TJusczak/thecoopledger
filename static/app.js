@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-183";
+const APP_VERSION = "2026.07.13-184";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -49,15 +49,24 @@ let charts = {};
 
 const BIRD_TYPES = ["Layer", "Meat", "Dual Purpose"];
 const BIRD_STATUSES = ["Active", "Processed", "Sold", "Deceased", "Retired"];
-const EXPENSE_CATEGORIES = ["Layer Feed", "Meat Feed", "Treats", "Bedding", "Building Materials", "Equipment", "Birds/Chicks", "Medical/Health", "Other"];
+const EXPENSE_CATEGORIES = ["Layer Feed", "Layer Supplements", "Meat Feed", "Treats", "Bedding", "Building Materials", "Equipment", "Birds/Chicks", "Medical/Health", "Other"];
 
 // Emoji + a two-stop gradient per category, so each finance row leads with a
 // small colored icon tile instead of a text stamp -- readable at a glance and
 // far more compact, leaving the row's width for the actual description. The two
 // hex stops give the tile a slight top-lit gradient for depth. Colors follow
 // the category's meaning (feed golds, meat rust, bedding autumn, etc.).
+// Icons for non-egg/meat income sources, for the value-by-source breakdown.
+const INCOME_ICONS = {
+  "Bird Sale":    { emoji: "🐔", from: "#C9A05B", to: "#9A7238" },
+  "Other Income": { emoji: "💰", from: "#9DAE68", to: "#6E7E45" },
+  "Egg Sale":     { emoji: "🥚", from: "#E4B62C", to: "#B4860E" },
+  "Meat Sale":    { emoji: "🍗", from: "#D0623C", to: "#9E3E20" },
+};
+
 const CATEGORY_ICONS = {
   "Layer Feed":         { emoji: "🌾", from: "#E4B62C", to: "#B4860E" }, // yellow/gold
+  "Layer Supplements":  { emoji: "🦪", from: "#C9CBD4", to: "#9195A6" }, // pale shell/calcium -- oyster shell, grit
   "Meat Feed":          { emoji: "🌾", from: "#D0623C", to: "#9E3E20" }, // meat red
   "Treats":             { emoji: "🌻", from: "#9DAE68", to: "#6E7E45" }, // green
   "Bedding":            { emoji: "🍂", from: "#D08A3C", to: "#A85E22" }, // rust/orange
@@ -3614,12 +3623,15 @@ function renderAllTimeStatsSection() {
       const cpLbMeat = costPerLbMeatIn(s.totalWeight, () => true);
       if (cpDozen === null && cpLbMeat === null) return "";
       return `<div class="note-box" style="margin-top:14px">
-        ${cpDozen !== null ? `Layer feed cost per dozen eggs: <strong style="color:var(--text)">${fmtMoney(cpDozen)}</strong><br>` : ""}
+        ${cpDozen !== null ? `Layer cost per dozen eggs (feed + supplements): <strong style="color:var(--text)">${fmtMoney(cpDozen)}</strong><br>` : ""}
         ${cpLbMeat !== null ? `Meat feed cost per ${getWeightUnit()} of meat: <strong style="color:var(--text)">${fmtMoney(displayPricePerLb(cpLbMeat))}</strong><br>` : ""}
         Based on feed actually consumed, valued at each bag's cost. Add a cost to inventory bags (auto-filled from their expense) to sharpen these.
       </div>`;
     })()}
-    ${Object.keys(catTotals).length > 0 ? `<div style="margin-top:16px">${spendCategoryBarsHtml(catTotals, { title: "Spending by category, all time", totalLabel: "Total spent, all time" })}</div>` : ""}
+    ${(Object.keys(catTotals).length > 0 || s.totalEggs > 0 || s.totalWeight > 0) ? `<div class="grid-2" style="margin-top:16px">
+      ${spendCategoryBarsHtml(catTotals, { title: "Spending by category, all time", totalLabel: "Total spent, all time" })}
+      ${valueSourceBarsHtml(valueBreakdownIn(() => true), { title: "Value by source, all time", totalLabel: "Total value, all time" })}
+    </div>` : ""}
   `;
 }
 
@@ -4604,31 +4616,80 @@ function feedCumulativeForMonth(key, feedType = "both") {
   return perDay.map(v => (run += v));
 }
 
-/** Ranked spend-by-category proportion bars with category icons -- shared by
- * the All-Time and Year Review pages so they look identical. `catTotals` is a
- * {category: dollars} map; renders highest-first with a percent, a gradient
- * bar in the category color, and a grand total. */
-function spendCategoryBarsHtml(catTotals, { title, totalLabel }) {
-  const entries = Object.entries(catTotals).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
-  if (!entries.length) return `<div class="card"><div class="card-title">${esc(title)}</div><div class="empty">No expenses logged.</div></div>`;
-  const grand = entries.reduce((sum, [, v]) => sum + v, 0);
+/** Ranked proportion bars with icons -- shared by spend and income breakdowns
+ * on the All-Time and Year Review pages. `rows` is [{label, amount, emoji,
+ * from, to}] (already the caller's choice of icon/colors); renders highest
+ * first with a percent, a gradient bar, and a grand total. */
+function proportionBarsHtml(rows, { title, totalLabel }) {
+  const entries = rows.filter(r => r.amount > 0).sort((a, b) => b.amount - a.amount);
+  if (!entries.length) return `<div class="card"><div class="card-title">${esc(title)}</div><div class="empty">Nothing logged yet.</div></div>`;
+  const grand = entries.reduce((sum, r) => sum + r.amount, 0);
   return `<div class="card">
     <div class="card-title" style="margin-bottom:10px">${esc(title)}</div>
     <div style="display:flex;flex-direction:column;gap:8px">
-      ${entries.map(([cat, amt]) => {
-        const pct = grand > 0 ? (amt / grand) * 100 : 0;
-        const spec = CATEGORY_ICONS[cat] || CATEGORY_ICONS["Other"];
+      ${entries.map(r => {
+        const pct = grand > 0 ? (r.amount / grand) * 100 : 0;
         return `<div class="cat-bar-row">
           <div class="cat-bar-head">
-            <span class="cat-bar-label">${spec.emoji} ${esc(cat)}</span>
-            <span class="cat-bar-amt">${fmtMoney(amt)} <span class="dim">(${pct.toFixed(0)}%)</span></span>
+            <span class="cat-bar-label">${r.emoji} ${esc(r.label)}</span>
+            <span class="cat-bar-amt">${fmtMoney(r.amount)} <span class="dim">(${pct.toFixed(0)}%)</span></span>
           </div>
-          <div class="cat-bar-track"><div class="cat-bar-fill" style="width:${pct.toFixed(1)}%;background:linear-gradient(90deg, ${spec.from}, ${spec.to})"></div></div>
+          <div class="cat-bar-track"><div class="cat-bar-fill" style="width:${pct.toFixed(1)}%;background:linear-gradient(90deg, ${r.from}, ${r.to})"></div></div>
         </div>`;
       }).join("")}
     </div>
     <div class="cat-bar-total">${esc(totalLabel)}: <strong>${fmtMoney(grand)}</strong></div>
   </div>`;
+}
+
+/** Spend-by-category bars (wraps proportionBarsHtml with category icons). */
+function spendCategoryBarsHtml(catTotals, opts) {
+  const rows = Object.entries(catTotals).map(([cat, amt]) => {
+    const spec = CATEGORY_ICONS[cat] || CATEGORY_ICONS["Other"];
+    return { label: cat, amount: amt, emoji: spec.emoji, from: spec.from, to: spec.to };
+  });
+  return proportionBarsHtml(rows, opts);
+}
+
+/** Value-by-source bars: egg value + meat value (estimated, at their prices)
+ * plus any other income categories (bird sales, other income) actually logged.
+ * Answers "where does my value come from," mirroring the spend breakdown. */
+function valueSourceBarsHtml({ eggValue, meatValue, otherIncomeByCat }, opts) {
+  const rows = [
+    { label: "Egg value", amount: eggValue || 0, emoji: BIRD_TYPE_ICONS.layer.emoji, from: BIRD_TYPE_ICONS.layer.from, to: BIRD_TYPE_ICONS.layer.to },
+    { label: "Meat value", amount: meatValue || 0, emoji: BIRD_TYPE_ICONS.meat.emoji, from: BIRD_TYPE_ICONS.meat.from, to: BIRD_TYPE_ICONS.meat.to },
+  ];
+  Object.entries(otherIncomeByCat || {}).forEach(([cat, amt]) => {
+    const spec = INCOME_ICONS[cat] || INCOME_ICONS["Other Income"];
+    rows.push({ label: cat, amount: amt, emoji: spec.emoji, from: spec.from, to: spec.to });
+  });
+  return proportionBarsHtml(rows, opts);
+}
+
+/** Value-by-source breakdown for a date window: estimated egg value, estimated
+ * meat value, and actual "other" income (bird sales, other income) logged.
+ * Egg/meat sale income is NOT added separately -- it's already reflected in the
+ * egg/meat value estimates, so counting it again would double it. */
+function valueBreakdownIn(inWindow) {
+  const d = getCoopDefaults();
+  const eggFallback = Number(d.eggPrice) || 0, meatFallback = Number(d.pricePerLb) || 0;
+  let eggValue = 0, meatValue = 0;
+  STATE.eggs.forEach(e => { if (inWindow(e.date)) eggValue += (Number(e.count) || 0) * (Number(e.price_per_egg) || eggFallback); });
+  STATE.birds.forEach(b => {
+    if (b.status === "Processed" && b.harvest_date && inWindow(b.harvest_date)) {
+      meatValue += (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || meatFallback);
+    }
+  });
+  const otherIncomeByCat = {};
+  STATE.expenses.forEach(x => {
+    if (x.entry_type !== "income" || !inWindow(x.date)) return;
+    // Egg/meat sales already counted in the value estimates above; only the
+    // OTHER income categories (bird sales, misc) add new value here.
+    if (x.category === "Egg Sale" || x.category === "Meat Sale") return;
+    const cat = x.category || "Other Income";
+    otherIncomeByCat[cat] = (otherIncomeByCat[cat] || 0) + (Number(x.amount) || 0);
+  });
+  return { eggValue, meatValue, otherIncomeByCat };
 }
 
 /** Spend categories that actually have expenses, for the category pill picker. */
@@ -4696,8 +4757,20 @@ function pricedFeedConsumed(category, inWindow) {
  * priced feed eaten or no eggs -- never a misleading 0. */
 function costPerDozenIn(eggCount, inWindow) {
   if (!(eggCount > 0)) return null;
-  const { cost, lbs } = pricedFeedConsumed("Layer Feed", inWindow);
-  return lbs > 0 ? cost / (eggCount / 12) : null;
+  const { cost: feedCost, lbs } = pricedFeedConsumed("Layer Feed", inWindow);
+  // Layer supplements (oyster shell, grit) are things ONLY layers ingest that
+  // help produce eggs, so they belong in cost-per-egg. Unlike feed they're not
+  // consumption-tracked (no bags/ramp) -- we just use the expenses in the
+  // window, which the user opted into for simplicity. Bedding, treats, and
+  // shelter costs are deliberately excluded: bedding/building are shelter, and
+  // treats get shared with meat birds, so neither cleanly attributes to eggs.
+  const supplementCost = STATE.expenses
+    .filter(x => x.entry_type !== "income" && x.category === "Layer Supplements" && inWindow(x.date))
+    .reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  // Need at least priced feed consumed to anchor the figure; supplements add on
+  // top. (Supplements alone, with no feed cost data, would be an odd partial.)
+  if (!(lbs > 0)) return null;
+  return (feedCost + supplementCost) / (eggCount / 12);
 }
 
 /** True meat-feed cost per lb of dressed weight in a window: cost of meat feed
@@ -5152,7 +5225,7 @@ function renderYearReviewSection() {
       const cpLbMeat = costPerLbMeatIn(s.processedWeight, yearTest);
       if (cpDozen === null && cpLbMeat === null) return "";
       return `<div class="note-box" style="margin-bottom:16px">
-        ${cpDozen !== null ? `Layer feed cost per dozen eggs, ${selectedYear}: <strong style="color:var(--text)">${fmtMoney(cpDozen)}</strong><br>` : ""}
+        ${cpDozen !== null ? `Layer cost per dozen eggs (feed + supplements), ${selectedYear}: <strong style="color:var(--text)">${fmtMoney(cpDozen)}</strong><br>` : ""}
         ${cpLbMeat !== null ? `Meat feed cost per ${getWeightUnit()} of meat, ${selectedYear}: <strong style="color:var(--text)">${fmtMoney(displayPricePerLb(cpLbMeat))}</strong><br>` : ""}
         Based on feed actually consumed this year, valued at each bag's cost.
       </div>`;
@@ -5160,6 +5233,9 @@ function renderYearReviewSection() {
 
     <div class="grid-2">
       ${spendCategoryBarsHtml(s.categoryBreakdown, { title: `Spending by category — ${selectedYear}`, totalLabel: `Total spent in ${selectedYear}` })}
+      ${valueSourceBarsHtml(valueBreakdownIn((d) => d && d.slice(0, 4) === selectedYear), { title: `Value by source — ${selectedYear}`, totalLabel: `Total value in ${selectedYear}` })}
+    </div>
+    <div class="grid-2" style="margin-top:16px">
       <div class="card">
         <div class="card-title">Bedding clean-outs — ${selectedYear}</div>
         ${Object.keys(s.cleanoutsByArea).length === 0 ? `<div class="empty">No full clean-outs logged this year.</div>` : `
