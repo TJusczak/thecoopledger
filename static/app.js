@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-188";
+const APP_VERSION = "2026.07.13-189";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5434,10 +5434,12 @@ function moneyMonthlyForYear(year, mode, pill) {
     if (pill) return otherIncome(pill);
     return add(eggVal, meatVal, otherIncome(null));
   }
-  // net = all income value − all spend
+  // net = running total of (income value − spend) across the months, so the
+  // line ends at the year's net and a zero-crossing marks break-even.
   const income = add(eggVal, meatVal, otherIncome(null));
   const sp = spend(null);
-  return income.map((v, i) => v - sp[i]);
+  let run = 0;
+  return income.map((v, i) => (run += v - sp[i]));
 }
 
 function drawYearReviewCharts(year) {
@@ -5479,7 +5481,7 @@ function drawYearReviewCharts(year) {
   const isNet = reviewMoneyMode === "net";
   const moneyColor = reviewMoneyMode === "income" ? "#8A9A5B" : reviewMoneyMode === "net" ? "#8A9A5B" : "#7A8FA6";
   const mainDs = { label: year, data: moneyData, borderColor: moneyColor, backgroundColor: moneyColor + "33", tension: 0.25, pointRadius: 2, fill: !isNet };
-  if (isNet) mainDs.segment = { borderColor: (ctx) => (ctx.p1.parsed.y < 0 ? "#B84C3E" : "#8A9A5B") };
+  if (isNet) mainDs.segment = { borderColor: (ctx) => (ctx.p1.parsed.y != null && ctx.p1.parsed.y < 0 ? "#B84C3E" : "#8A9A5B") };
   const moneyOpts = yearChartOpts(hasPrev, (v) => fmtMoney(v));
   if (isNet) moneyOpts.scales.y.beginAtZero = false;
   reviewCharts.expenses = new Chart(document.getElementById("reviewExpenseChart"), {
@@ -6079,13 +6081,25 @@ function dashboardMonthOptions() {
 function dashMoneySeries(key) {
   if (dashMoneyMode === "income") return incomeDailyForMonth(key, dashIncomePill);
   if (dashMoneyMode === "net") {
+    // Net is a RUNNING total through the month: start at 0, each day add that
+    // day's income and subtract that day's spend. The line's endpoint equals
+    // the month's net total, and a zero-crossing marks the day the month got
+    // back to break-even -- unlike isolated per-day values, which jump around
+    // and never match the headline total.
     const inc = incomeDailyForMonth(key, null);
     const spend = spendDailyForMonth(key, null);
-    return inc.map((v, i) => v - spend[i]);
+    let run = 0;
+    return inc.map((v, i) => (run += v - spend[i]));
   }
   return spendDailyForMonth(key, dashSpendPill);
 }
-function dashMoneySeriesTotal(key) { return sum(dashMoneySeries(key)); }
+/** Money total for a card header. Net is a running total, so its "total" is
+ * the final running value; spend/income are per-day, so we sum them. */
+function dashMoneySeriesTotal(key) {
+  const series = dashMoneySeries(key);
+  if (dashMoneyMode === "net") return series.length ? series[series.length - 1] : 0;
+  return sum(series);
+}
 
 function drawDashboardCharts() {
   Object.values(charts).forEach(c => c && c.destroy());
@@ -6142,14 +6156,21 @@ function drawDashboardCharts() {
   // ---- Money mega chart (spend / income / net) ----
   const moneyEl = document.getElementById("dashMoneyChart");
   if (moneyEl) {
-    const moneyMain = dashMoneySeries(dashMonthKey);
+    let moneyMain = dashMoneySeries(dashMonthKey);
     const isNet = dashMoneyMode === "net";
+    // A running total (net) shouldn't draw a flat line from today to month-end;
+    // cut it off at today for the current month, same as the feed chart.
+    if (isNet) {
+      const isCurrentM = dashMonthKey === monthKeyOf(todayStr());
+      const todayD = Number(todayStr().slice(8, 10));
+      if (isCurrentM) moneyMain = moneyMain.map((v, i) => (i < todayD ? v : null));
+    }
     // Color: spend slate, income sage, net split by sign per segment (green
     // above zero, red below) via a segment callback that looks at each point.
     const baseColor = dashMoneyMode === "income" ? "#8A9A5B" : dashMoneyMode === "spend" ? "#7A8FA6" : "#D4A017";
     const mainDs = {
       label: mainLabel, data: moneyMain, borderColor: baseColor, backgroundColor: baseColor + "22",
-      tension: 0.2, pointRadius: 2, fill: !isNet,
+      tension: 0.2, pointRadius: 2, fill: !isNet, spanGaps: false,
     };
     if (isNet) {
       // Per-segment coloring: a segment is green if it ends non-negative, red
@@ -6157,7 +6178,7 @@ function drawDashboardCharts() {
       // zero between two days.
       mainDs.borderColor = "#8A9A5B";
       mainDs.segment = {
-        borderColor: (ctx) => (ctx.p1.parsed.y < 0 ? "#B84C3E" : "#8A9A5B"),
+        borderColor: (ctx) => (ctx.p1.parsed.y != null && ctx.p1.parsed.y < 0 ? "#B84C3E" : "#8A9A5B"),
       };
       mainDs.fill = false;
     }

@@ -221,8 +221,14 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 .dash-substat { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
 /* Money mega-chart head: title on the left, the spend/income/net mode pills on
    the right, wrapping on narrow screens. */
-.money-mega-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
-.money-mode-pills { flex: 0 0 auto; }
+/* Money mega-chart head: title on the left, spend/income/net mode pills
+   anchored to the right. The title takes the remaining space (flex:1) and the
+   pills use margin-left:auto, so the pills stay put regardless of how long the
+   current mode's title is -- no jumping when switching to the shorter
+   "Spending" title. On narrow screens the pills wrap below. */
+.money-mega-head { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.money-mega-head .card-title { flex: 1 1 auto; min-width: 0; }
+.money-mode-pills { flex: 0 0 auto; margin-left: auto; }
 /* Headline feed-cost cards (Year Review + All-Time): the true cost-to-produce
    figures, given prominence -- big number, icon tile, caption. Two-up on wide
    screens, stacked on narrow. */
