@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-182";
+const APP_VERSION = "2026.07.13-183";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -44,6 +44,7 @@ let activeTab = "dashboard";
 let dashMonthKey = null;       // set on first render to current month
 let dashCompareKey = null;     // set to previous month
 let dashSpendCategory = null;  // null = all categories combined
+let dashFeedType = "both";     // dashboard feed chart: "layer" | "meat" | "both"
 let charts = {};
 
 const BIRD_TYPES = ["Layer", "Meat", "Dual Purpose"];
@@ -3605,35 +3606,20 @@ function renderAllTimeStatsSection() {
       <div class="stat tone-rust"><div class="stat-label">Lost from hatching, all time</div><div class="stat-value">${s.hatchLossAll}</div><div class="stat-sub">${s.hatchClearAll} clear · ${s.hatchQuitAll} quit · ${s.hatchFailedAll} failed to hatch</div></div>
       ` : ""}
     </div>
-    ${(s.costPerDozenLayers !== null || s.costPerLbMeat !== null) ? `<div class="note-box" style="margin-top:14px">
-      ${s.costPerDozenLayers !== null ? `Feed cost per dozen eggs: <strong style="color:var(--text)">${fmtMoney(s.costPerDozenLayers)}</strong><br>` : ""}
-      ${s.costPerLbMeat !== null ? `Feed cost per ${getWeightUnit()} of meat: <strong style="color:var(--text)">${fmtMoney(displayPricePerLb(s.costPerLbMeat))}</strong><br>` : ""}
-      Tag Feed expenses by flock in the Finances tab to sharpen these.
-    </div>` : ""}
-    ${Object.keys(catTotals).length > 0 ? (() => {
-      // Spend by category as a raw ranked list with proportion bars -- reads at
-      // a glance, and unlike the old cumulative line charts it doesn't degrade
-      // as years pile up (it's always just "where the money went, all time").
-      const entries = Object.entries(catTotals).sort((a, b) => b[1] - a[1]);
-      const grand = entries.reduce((sum, [, v]) => sum + v, 0);
-      return `<div class="card" style="margin-top:16px">
-        <div class="card-title" style="margin-bottom:10px">Spending by category, all time</div>
-        <div style="display:flex;flex-direction:column;gap:8px">
-          ${entries.map(([cat, amt]) => {
-            const pct = grand > 0 ? (amt / grand) * 100 : 0;
-            const spec = CATEGORY_ICONS[cat] || CATEGORY_ICONS["Other"];
-            return `<div class="cat-bar-row">
-              <div class="cat-bar-head">
-                <span class="cat-bar-label">${spec.emoji} ${esc(cat)}</span>
-                <span class="cat-bar-amt">${fmtMoney(amt)} <span class="dim">(${pct.toFixed(0)}%)</span></span>
-              </div>
-              <div class="cat-bar-track"><div class="cat-bar-fill" style="width:${pct.toFixed(1)}%;background:linear-gradient(90deg, ${spec.from}, ${spec.to})"></div></div>
-            </div>`;
-          }).join("")}
-        </div>
-        <div class="cat-bar-total">Total spent, all time: <strong>${fmtMoney(grand)}</strong></div>
+    ${(() => {
+      // Consumption-based feed cost: layer feed eaten -> per dozen eggs, meat
+      // feed eaten -> per lb of meat, each valued at what the bags actually
+      // cost. More honest than dividing total feed spend by total output.
+      const cpDozen = costPerDozenIn(s.totalEggs, () => true);
+      const cpLbMeat = costPerLbMeatIn(s.totalWeight, () => true);
+      if (cpDozen === null && cpLbMeat === null) return "";
+      return `<div class="note-box" style="margin-top:14px">
+        ${cpDozen !== null ? `Layer feed cost per dozen eggs: <strong style="color:var(--text)">${fmtMoney(cpDozen)}</strong><br>` : ""}
+        ${cpLbMeat !== null ? `Meat feed cost per ${getWeightUnit()} of meat: <strong style="color:var(--text)">${fmtMoney(displayPricePerLb(cpLbMeat))}</strong><br>` : ""}
+        Based on feed actually consumed, valued at each bag's cost. Add a cost to inventory bags (auto-filled from their expense) to sharpen these.
       </div>`;
-    })() : ""}
+    })()}
+    ${Object.keys(catTotals).length > 0 ? `<div style="margin-top:16px">${spendCategoryBarsHtml(catTotals, { title: "Spending by category, all time", totalLabel: "Total spent, all time" })}</div>` : ""}
   `;
 }
 
@@ -4578,10 +4564,6 @@ function spendDailyForMonth(key, category) {
   return arr;
 }
 
-function supplies_feedOnly() {
-  return STATE.supplies.filter(s => s.category === "Layer Feed" || s.category === "Meat Feed");
-}
-
 /** Cumulative feed used (lb) through each day of a month -- a running total,
  * not a per-day amount. Feed usage is estimated from bag open/empty dates, so
  * a per-day line drops to 0 between bags and reads as "no feed used" even
@@ -4595,11 +4577,12 @@ function supplies_feedOnly() {
  * the only date we can honestly attribute it to. That's also what makes a
  * "used 3/4 of a bag this month" case actually show up, instead of staying
  * invisible until the bag is finally marked empty. */
-function feedCumulativeForMonth(key) {
+function feedCumulativeForMonth(key, feedType = "both") {
   const n = daysInMonthKey(key);
   const perDay = Array(n).fill(0);
   const today = todayStr();
-  supplies_feedOnly().forEach(s => {
+  const cats = feedType === "layer" ? ["Layer Feed"] : feedType === "meat" ? ["Meat Feed"] : ["Layer Feed", "Meat Feed"];
+  STATE.supplies.filter(s => cats.includes(s.category)).forEach(s => {
     const qty = Number(s.quantity) || 0;
     if (s.date_emptied) {
       const end = s.date_emptied;
@@ -4619,6 +4602,33 @@ function feedCumulativeForMonth(key) {
   // Turn per-day into a within-month running total.
   let run = 0;
   return perDay.map(v => (run += v));
+}
+
+/** Ranked spend-by-category proportion bars with category icons -- shared by
+ * the All-Time and Year Review pages so they look identical. `catTotals` is a
+ * {category: dollars} map; renders highest-first with a percent, a gradient
+ * bar in the category color, and a grand total. */
+function spendCategoryBarsHtml(catTotals, { title, totalLabel }) {
+  const entries = Object.entries(catTotals).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return `<div class="card"><div class="card-title">${esc(title)}</div><div class="empty">No expenses logged.</div></div>`;
+  const grand = entries.reduce((sum, [, v]) => sum + v, 0);
+  return `<div class="card">
+    <div class="card-title" style="margin-bottom:10px">${esc(title)}</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${entries.map(([cat, amt]) => {
+        const pct = grand > 0 ? (amt / grand) * 100 : 0;
+        const spec = CATEGORY_ICONS[cat] || CATEGORY_ICONS["Other"];
+        return `<div class="cat-bar-row">
+          <div class="cat-bar-head">
+            <span class="cat-bar-label">${spec.emoji} ${esc(cat)}</span>
+            <span class="cat-bar-amt">${fmtMoney(amt)} <span class="dim">(${pct.toFixed(0)}%)</span></span>
+          </div>
+          <div class="cat-bar-track"><div class="cat-bar-fill" style="width:${pct.toFixed(1)}%;background:linear-gradient(90deg, ${spec.from}, ${spec.to})"></div></div>
+        </div>`;
+      }).join("")}
+    </div>
+    <div class="cat-bar-total">${esc(totalLabel)}: <strong>${fmtMoney(grand)}</strong></div>
+  </div>`;
 }
 
 /** Spend categories that actually have expenses, for the category pill picker. */
@@ -4645,55 +4655,71 @@ function avgEggsPerDay(key) {
   return days > 0 ? total / days : 0;
 }
 
-/** True feed cost to produce a dozen eggs in a month: the cost of the layer
- * feed actually EATEN that month (each bag's lbs-consumed-this-month x that
- * bag's real cost per lb) ÷ dozens collected. This is far more honest than
- * "layer-feed expenses logged this month ÷ dozens" -- a bulk-buy no longer
- * spikes one month, because we count consumption, not purchases, and value it
- * at what each bag actually cost.
- *
- * A bag's cost per lb comes from its `cost` field (auto-filled from its
- * expense, or entered manually) ÷ its quantity. Bags with no cost recorded
- * contribute their lbs but no dollars -- so the figure is only as complete as
- * the cost data. Returns null when there's nothing to work with (no eggs, or
- * no priced feed consumed), rather than a misleading 0. */
-function feedCostPerDozenForMonth(key) {
-  const eggs = sum(eggsDailyForMonth(key));
-  if (eggs <= 0) return null;
-
-  // Layer-feed lbs consumed this month, per bag, valued at the bag's cost/lb.
-  let pricedCost = 0;
-  let pricedLbs = 0;
-  STATE.supplies.filter(s => s.category === "Layer Feed").forEach(s => {
-    const qty = Number(s.quantity) || 0;
-    const cost = Number(s.cost);
-    if (!(qty > 0) || !(cost > 0)) return; // no cost/lb we can trust -> skip
-    const costPerLb = cost / qty;
-    const lbsThisMonth = layerBagLbsUsedInMonth(s, key);
-    if (lbsThisMonth > 0) { pricedCost += lbsThisMonth * costPerLb; pricedLbs += lbsThisMonth; }
-  });
-  if (pricedLbs <= 0) return null; // no priced feed was eaten this month
-  return pricedCost / (eggs / 12);
-}
-
-/** Lbs of a single feed bag consumed within a given month, using the same
- * open->emptied ramp the charts use (emptied bags spread across their window;
- * an open bag's used-so-far portion attributed to today). */
-function layerBagLbsUsedInMonth(s, key) {
+/** Lbs of a single feed bag consumed within a date window, using the same
+ * open->emptied ramp the charts use. `inWindow(dateStr)` decides which days
+ * count -- pass a month test, a year test, or `() => true` for all-time. */
+function feedBagLbsUsed(s, inWindow) {
   const qty = Number(s.quantity) || 0;
   if (s.date_emptied) {
     const end = s.date_emptied;
     const start = s.opened_at && s.opened_at < end ? s.opened_at : null;
-    if (!start) return dayInMonth(end, key) > 0 ? qty : 0;
+    if (!start) return inWindow(end) ? qty : 0;
     const spanDays = Math.round((new Date(end + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000) + 1;
     const per = qty / spanDays;
     let lbs = 0;
-    for (let i = 0; i < spanDays; i++) if (dayInMonth(addDays(start, i), key) > 0) lbs += per;
+    for (let i = 0; i < spanDays; i++) if (inWindow(addDays(start, i))) lbs += per;
     return lbs;
   }
-  // Open bag: its used-so-far portion lands on today (if today is in the month).
+  // Open bag: used-so-far portion is attributed to today.
   const usedNow = qty * (STATUS_USED_FRACTION[s.status] ?? 0);
-  return (usedNow > 0 && dayInMonth(todayStr(), key) > 0) ? usedNow : 0;
+  return (usedNow > 0 && inWindow(todayStr())) ? usedNow : 0;
+}
+
+/** Cost of the feed of one category actually EATEN in a window, and the priced
+ * lbs behind it. Only bags with a real cost contribute dollars (and only their
+ * lbs count toward the priced total), so the figure is honest about what it
+ * knows -- unpriced feed is excluded rather than guessed. */
+function pricedFeedConsumed(category, inWindow) {
+  let cost = 0, lbs = 0;
+  STATE.supplies.filter(s => s.category === category).forEach(s => {
+    const qty = Number(s.quantity) || 0;
+    const c = Number(s.cost);
+    if (!(qty > 0) || !(c > 0)) return;
+    const used = feedBagLbsUsed(s, inWindow);
+    if (used > 0) { cost += used * (c / qty); lbs += used; }
+  });
+  return { cost, lbs };
+}
+
+/** True layer-feed cost per dozen eggs in a window: cost of layer feed eaten
+ * (each bag's lbs x its real cost/lb) / dozens collected. Null when there's no
+ * priced feed eaten or no eggs -- never a misleading 0. */
+function costPerDozenIn(eggCount, inWindow) {
+  if (!(eggCount > 0)) return null;
+  const { cost, lbs } = pricedFeedConsumed("Layer Feed", inWindow);
+  return lbs > 0 ? cost / (eggCount / 12) : null;
+}
+
+/** True meat-feed cost per lb of dressed weight in a window: cost of meat feed
+ * eaten / lbs of meat produced. Null when there's no priced feed eaten or no
+ * meat. Weight is in lb (the storage unit); callers convert for display. */
+function costPerLbMeatIn(meatWeightLb, inWindow) {
+  if (!(meatWeightLb > 0)) return null;
+  const { cost, lbs } = pricedFeedConsumed("Meat Feed", inWindow);
+  return lbs > 0 ? cost / meatWeightLb : null;
+}
+
+/** Feed cost per dozen eggs for a calendar month (consumption-based). */
+function feedCostPerDozenForMonth(key) {
+  const eggs = sum(eggsDailyForMonth(key));
+  return costPerDozenIn(eggs, (d) => monthKeyOf(d) === key);
+}
+/** Meat-feed cost per lb of dressed weight for a calendar month. */
+function meatFeedCostPerLbForMonth(key) {
+  const meatLb = STATE.birds
+    .filter(b => b.status === "Processed" && b.harvest_date && monthKeyOf(b.harvest_date) === key)
+    .reduce((s, b) => s + (Number(b.harvest_weight) || 0), 0);
+  return costPerLbMeatIn(meatLb, (d) => monthKeyOf(d) === key);
 }
 
 
@@ -5120,22 +5146,20 @@ function renderYearReviewSection() {
       ` : ""}
     </div>
 
-    ${(s.costPerDozenLayers !== null || s.costPerLbMeat !== null) ? `<div class="note-box" style="margin-bottom:16px">
-      ${s.costPerDozenLayers !== null ? `Feed cost per dozen eggs, ${selectedYear}: <strong style="color:var(--text)">${fmtMoney(s.costPerDozenLayers)}</strong><br>` : ""}
-      ${s.costPerLbMeat !== null ? `Feed cost per ${getWeightUnit()} of meat, ${selectedYear}: <strong style="color:var(--text)">${fmtMoney(displayPricePerLb(s.costPerLbMeat))}</strong><br>` : ""}
-      Tag Feed expenses by flock in the Finances tab to sharpen these.
-    </div>` : ""}
+    ${(() => {
+      const yearTest = (d) => d && d.slice(0, 4) === selectedYear;
+      const cpDozen = costPerDozenIn(s.eggCount, yearTest);
+      const cpLbMeat = costPerLbMeatIn(s.processedWeight, yearTest);
+      if (cpDozen === null && cpLbMeat === null) return "";
+      return `<div class="note-box" style="margin-bottom:16px">
+        ${cpDozen !== null ? `Layer feed cost per dozen eggs, ${selectedYear}: <strong style="color:var(--text)">${fmtMoney(cpDozen)}</strong><br>` : ""}
+        ${cpLbMeat !== null ? `Meat feed cost per ${getWeightUnit()} of meat, ${selectedYear}: <strong style="color:var(--text)">${fmtMoney(displayPricePerLb(cpLbMeat))}</strong><br>` : ""}
+        Based on feed actually consumed this year, valued at each bag's cost.
+      </div>`;
+    })()}
 
     <div class="grid-2">
-      <div class="card">
-        <div class="card-title">Spend by category — ${selectedYear}</div>
-        ${Object.keys(s.categoryBreakdown).length === 0 ? `<div class="empty">No expenses logged this year.</div>` : `
-        <div style="display:flex;flex-direction:column;gap:8px">
-          ${Object.entries(s.categoryBreakdown).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => `
-            <div style="display:flex;justify-content:space-between;font-size:13px"><span>${esc(cat)}</span><span class="mono">${fmtMoney(amt)}</span></div>
-          `).join("")}
-        </div>`}
-      </div>
+      ${spendCategoryBarsHtml(s.categoryBreakdown, { title: `Spending by category — ${selectedYear}`, totalLabel: `Total spent in ${selectedYear}` })}
       <div class="card">
         <div class="card-title">Bedding clean-outs — ${selectedYear}</div>
         ${Object.keys(s.cleanoutsByArea).length === 0 ? `<div class="empty">No full clean-outs logged this year.</div>` : `
@@ -5619,7 +5643,7 @@ function renderCoopOverview() {
         </div>
 
         <div class="chart-grid chart-grid-stretch">
-          <div class="card"><div class="chart-head"><div class="card-title">🥚 Eggs collected</div>${dashTotalBlock(sum(eggsDailyForMonth(dashMonthKey)), dashCompareKey ? sum(eggsDailyForMonth(dashCompareKey)) : 0, (v) => `${Math.round(v)} egg${Math.round(v) === 1 ? "" : "s"}`)}${(() => {
+          <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">🥚 Eggs collected</div>${dashTotalBlock(sum(eggsDailyForMonth(dashMonthKey)), dashCompareKey ? sum(eggsDailyForMonth(dashCompareKey)) : 0, (v) => `${Math.round(v)} egg${Math.round(v) === 1 ? "" : "s"}`)}${(() => {
             const avg = avgEggsPerDay(dashMonthKey);
             const cpd = feedCostPerDozenForMonth(dashMonthKey);
             const bits = [];
@@ -5627,7 +5651,18 @@ function renderCoopOverview() {
             if (cpd !== null) bits.push(`${fmtMoney(cpd)}/dozen feed cost`);
             return bits.length ? `<div class="dash-substat">${bits.join(" · ")}</div>` : "";
           })()}</div><div class="chart-box"><canvas id="dashEggChart"></canvas></div></div>
-          <div class="card"><div class="chart-head"><div class="card-title">🌾 Feed used, month-to-date (lbs)</div>${dashTotalBlock(feedTotalForMonth(dashMonthKey), dashCompareKey ? feedTotalForMonth(dashCompareKey) : 0, (v) => `${v.toFixed(1)} lb`)}</div><div class="chart-box"><canvas id="dashFeedChart"></canvas></div></div>
+          <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">🌾 Feed used, month-to-date${dashFeedType === "layer" ? " — layer" : dashFeedType === "meat" ? " — meat" : ""} (lbs)</div>${dashTotalBlock(feedTotalForMonth(dashMonthKey, dashFeedType), dashCompareKey ? feedTotalForMonth(dashCompareKey, dashFeedType) : 0, (v) => `${v.toFixed(1)} lb`, { invertColors: true })}${(() => {
+            // Cost readout matches the selected feed type: layer -> cost/dozen
+            // eggs, meat -> cost/lb of meat. "Both" shows whichever apply.
+            const bits = [];
+            if (dashFeedType !== "meat") { const cpd = feedCostPerDozenForMonth(dashMonthKey); if (cpd !== null) bits.push(`${fmtMoney(cpd)}/dozen eggs`); }
+            if (dashFeedType !== "layer") { const cpl = meatFeedCostPerLbForMonth(dashMonthKey); if (cpl !== null) bits.push(`${fmtMoney(displayPricePerLb(cpl))}/${getWeightUnit()} meat`); }
+            return bits.length ? `<div class="dash-substat">${bits.join(" · ")}</div>` : "";
+          })()}
+            <div class="pill-row" id="dashFeedType">
+              ${[["both", "Both"], ["layer", `${BIRD_TYPE_ICONS.layer.emoji} Layer`], ["meat", `${BIRD_TYPE_ICONS.meat.emoji} Meat`]].map(([v, label]) => `<button class="pill-btn ${dashFeedType === v ? "range-btn active" : ""}" data-feed-type="${v}">${label}</button>`).join("")}
+            </div>
+          </div><div class="chart-box"><canvas id="dashFeedChart"></canvas></div></div>
           <div class="card" style="grid-column:1/-1">
             <div class="chart-head chart-head-grow">
               <div class="card-title">💵 Spending${dashSpendCategory ? ` — ${esc(dashSpendCategory)}` : ""}</div>
@@ -5657,6 +5692,13 @@ function renderCoopOverview() {
     const btn = e.target.closest("[data-spend-cat]");
     if (!btn) return;
     dashSpendCategory = btn.dataset.spendCat || null;
+    renderCoopOverview();
+  });
+  const feedTypeToggle = document.getElementById("dashFeedType");
+  if (feedTypeToggle) feedTypeToggle.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-feed-type]");
+    if (!btn) return;
+    dashFeedType = btn.dataset.feedType;
     renderCoopOverview();
   });
   el.querySelectorAll("[data-goto-hatching]").forEach(row => row.addEventListener("click", () => {
@@ -5708,8 +5750,8 @@ const sum = (arr) => arr.reduce((a, b) => a + (Number(b) || 0), 0);
 /** Feed used total for a month: the last value of its cumulative series, which
  * is the month-to-date total for the current month and the full-month total
  * for a past month (and correctly includes an open bag's used-so-far portion). */
-function feedTotalForMonth(key) {
-  const series = feedCumulativeForMonth(key);
+function feedTotalForMonth(key, feedType = "both") {
+  const series = feedCumulativeForMonth(key, feedType);
   return series.length ? series[series.length - 1] : 0;
 }
 
@@ -5777,15 +5819,17 @@ function drawDashboardCharts() {
   });
 
   // ---- Feed (cumulative within the month) ----
-  const feedMain = feedCumulativeForMonth(dashMonthKey);
+  const feedMain = feedCumulativeForMonth(dashMonthKey, dashFeedType);
   // For the CURRENT month, don't draw a flat line stretching to the end of the
   // month past today -- cut the series off at today so it doesn't imply "no
   // more feed forecast." Past months show the whole month.
   const isCurrentMonth = dashMonthKey === monthKeyOf(todayStr());
   const todayDom = Number(todayStr().slice(8, 10));
   const truncateToToday = (arr) => isCurrentMonth ? arr.map((v, i) => (i < todayDom ? v : null)) : arr;
-  const feedDatasets = [{ label: mainLabel, data: truncateToToday(feedMain), borderColor: "#C1502E", backgroundColor: "#C1502E33", tension: 0.2, pointRadius: 2, fill: true, spanGaps: false }];
-  if (compareOn) feedDatasets.push({ label: compLabel, data: alignCompare(feedCumulativeForMonth(dashCompareKey)), ...dashLine("#C7B9A6") });
+  const feedColor = dashFeedType === "layer" ? "#D4A017" : dashFeedType === "meat" ? "#C1502E" : "#C1502E";
+  const feedFill = dashFeedType === "layer" ? "#D4A01733" : "#C1502E33";
+  const feedDatasets = [{ label: mainLabel, data: truncateToToday(feedMain), borderColor: feedColor, backgroundColor: feedFill, tension: 0.2, pointRadius: 2, fill: true, spanGaps: false }];
+  if (compareOn) feedDatasets.push({ label: compLabel, data: alignCompare(feedCumulativeForMonth(dashCompareKey, dashFeedType)), ...dashLine("#C7B9A6") });
   charts.dashFeed = new Chart(document.getElementById("dashFeedChart"), {
     type: "line", data: { labels, datasets: feedDatasets },
     options: monthChartOpts(compareOn, (v) => `${v.toFixed(2)} lb`),

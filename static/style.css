@@ -183,7 +183,7 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
    empty, rather than shrinking one canvas relative to the other. */
 .chart-grid-stretch > .card { display: flex; flex-direction: column; }
 .chart-grid-stretch > .card .chart-head { min-height: 96px; }
-.chart-grid-stretch > .card .chart-head.chart-head-grow { min-height: 96px; }
+.chart-grid-stretch > .card .chart-head.chart-head-grow { min-height: 130px; }
 /* Every chart card reserves the same fixed-height header zone above its
    canvas, whatever it contains -- a bare one-line title, or the feed card's
    title + description + per-bird tags. The chart-box itself is a fixed
