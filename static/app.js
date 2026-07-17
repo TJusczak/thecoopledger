@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-185";
+const APP_VERSION = "2026.07.13-186";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -4576,6 +4576,39 @@ function spendDailyForMonth(key, category) {
   return arr;
 }
 
+/** Dressed weight (lb) processed per day for a month, by harvest date. */
+function meatDailyForMonth(key) {
+  const arr = Array(daysInMonthKey(key)).fill(0);
+  STATE.birds.forEach(b => {
+    if (b.status !== "Processed" || !b.harvest_date) return;
+    const d = dayInMonth(b.harvest_date, key);
+    if (d > 0) arr[d - 1] += Number(b.harvest_weight) || 0;
+  });
+  return arr;
+}
+/** Count of birds processed in a month (for the "N birds -> X lb" readout). */
+function birdsProcessedInMonth(key) {
+  return STATE.birds.filter(b => b.status === "Processed" && b.harvest_date && monthKeyOf(b.harvest_date) === key).length;
+}
+
+/** Value produced per day for a month: egg value (count x price) on collection
+ * days + meat value (weight x price) on harvest days. Mirrors the "value
+ * produced" idea used elsewhere -- what the output was worth, at the recorded
+ * or default prices. Does not include misc income (bird sales etc.); this is
+ * production value, matching the eggs/meat sections it sits beside. */
+function valueDailyForMonth(key) {
+  const arr = Array(daysInMonthKey(key)).fill(0);
+  const d = getCoopDefaults();
+  const eggFallback = Number(d.eggPrice) || 0, meatFallback = Number(d.pricePerLb) || 0;
+  STATE.eggs.forEach(e => { const dm = dayInMonth(e.date, key); if (dm > 0) arr[dm - 1] += (Number(e.count) || 0) * (Number(e.price_per_egg) || eggFallback); });
+  STATE.birds.forEach(b => {
+    if (b.status !== "Processed" || !b.harvest_date) return;
+    const dm = dayInMonth(b.harvest_date, key);
+    if (dm > 0) arr[dm - 1] += (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || meatFallback);
+  });
+  return arr;
+}
+
 /** Cumulative feed used (lb) through each day of a month -- a running total,
  * not a per-day amount. Feed usage is estimated from bag open/empty dates, so
  * a per-day line drops to 0 between bags and reads as "no feed used" even
@@ -5673,32 +5706,34 @@ function renderCoopOverview() {
 
       <div class="card">
         <div class="card-title">Bedding freshness</div>
-        <div style="display:flex;gap:24px;flex-wrap:wrap;padding:6px 2px">
+        <div class="bedding-fresh-list">
           ${getBeddingAreas().map(area => {
             const bs = beddingStatsFor(area);
             const t = getBeddingThresholds(area);
             const daysSinceCleanout = bs.lastCleanout ? daysSince(bs.lastCleanout.date) : null;
-            const daysSinceActivity = bs.lastActivity ? daysSince(bs.lastActivity.date) : null;
             const daysSinceChurn = bs.lastChurn ? daysSince(bs.lastChurn.date) : null;
             const cleanoutToneInfo = cleanoutTone(daysSinceCleanout, area);
             const daysUntilCleanout = daysSinceCleanout !== null ? t.danger - daysSinceCleanout : null;
             const daysUntilChurn = daysSinceChurn !== null ? t.churn - daysSinceChurn : null;
-            const cleanoutLabel = daysUntilCleanout === null ? "no clean-out logged"
+            // Worst of the two schedules drives the row's status dot, so a
+            // glance down the list shows what needs attention.
+            const cleanoutState = daysUntilCleanout === null ? 0 : daysUntilCleanout < 0 ? 2 : daysUntilCleanout === 0 ? 1 : (cleanoutToneInfo.tone === "gold" ? 1 : 0);
+            const churnState = daysUntilChurn === null ? 0 : daysUntilChurn < 0 ? 2 : daysUntilChurn === 0 ? 1 : 0;
+            const worst = Math.max(cleanoutState, churnState);
+            const dotTone = worst === 2 ? "danger" : worst === 1 ? "gold" : "sage";
+            // Compact captions: clean-out is the headline, churn a secondary note.
+            const cleanoutTxt = daysUntilCleanout === null ? "no clean-out logged"
               : daysUntilCleanout < 0 ? `clean-out overdue ${-daysUntilCleanout}d`
               : daysUntilCleanout === 0 ? "clean-out due today"
               : `clean-out in ${daysUntilCleanout}d`;
-            const churnTone = daysUntilChurn === null ? "slate" : daysUntilChurn <= 0 ? "gold" : "sage";
-            const churnLabel = daysUntilChurn === null ? "no churn logged"
-              : daysUntilChurn < 0 ? `churn overdue ${-daysUntilChurn}d`
-              : daysUntilChurn === 0 ? "churn due today"
-              : `churn in ${daysUntilChurn}d`;
-            return `<div style="min-width:190px;display:flex;flex-direction:column;gap:4px">
-              <div style="font-weight:600">${esc(area)}</div>
-              <div class="dim" style="font-size:11px">Last activity: ${daysSinceActivity !== null ? daysSinceActivity + "d ago" : "never"}</div>
-              <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:2px">
-                <span class="stamp tone-${cleanoutToneInfo.tone}">${cleanoutLabel}</span>
-                <span class="stamp tone-${churnTone}">${churnLabel}</span>
-              </div>
+            const churnTxt = daysUntilChurn === null ? "" 
+              : daysUntilChurn < 0 ? ` · churn overdue ${-daysUntilChurn}d`
+              : daysUntilChurn === 0 ? " · churn due today"
+              : ` · churn in ${daysUntilChurn}d`;
+            return `<div class="bedding-fresh-row">
+              <span class="status-dot tone-${dotTone}" title="${dotTone === "danger" ? "Overdue" : dotTone === "gold" ? "Due soon" : "OK"}"></span>
+              <span class="bedding-fresh-area">${esc(area)}</span>
+              <span class="bedding-fresh-info dim">${cleanoutTxt}${churnTxt}</span>
             </div>`;
           }).join("")}
         </div>
@@ -5737,6 +5772,14 @@ function renderCoopOverview() {
               ${[["both", "Both"], ["layer", `${BIRD_TYPE_ICONS.layer.emoji} Layer`], ["meat", `${BIRD_TYPE_ICONS.meat.emoji} Meat`]].map(([v, label]) => `<button class="pill-btn ${dashFeedType === v ? "range-btn active" : ""}" data-feed-type="${v}">${label}</button>`).join("")}
             </div>
           </div><div class="chart-box"><canvas id="dashFeedChart"></canvas></div></div>
+          <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">🍗 Meat processed (lbs)</div>${dashTotalBlock(sum(meatDailyForMonth(dashMonthKey)), dashCompareKey ? sum(meatDailyForMonth(dashCompareKey)) : 0, (v) => `${displayWeight(v)} ${getWeightUnit()}`)}${(() => {
+            const shownBirds = birdsProcessedInMonth(dashMonthKey);
+            const compBirds = dashCompareKey ? birdsProcessedInMonth(dashCompareKey) : null;
+            if (!shownBirds && !compBirds) return "";
+            const shownTxt = shownBirds ? `${shownBirds} bird${shownBirds === 1 ? "" : "s"} processed` : "no birds processed";
+            return `<div class="dash-substat">${shownTxt}${compBirds !== null ? ` · ${compBirds} in ${monthLabelShort(dashCompareKey)}` : ""}</div>`;
+          })()}</div><div class="chart-box"><canvas id="dashMeatChart"></canvas></div></div>
+          <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">💰 Value produced</div>${dashTotalBlock(sum(valueDailyForMonth(dashMonthKey)), dashCompareKey ? sum(valueDailyForMonth(dashCompareKey)) : 0, (v) => fmtMoney(v))}<div class="dash-substat">egg + meat value at your prices</div></div><div class="chart-box"><canvas id="dashValueChart"></canvas></div></div>
           <div class="card" style="grid-column:1/-1">
             <div class="chart-head chart-head-grow">
               <div class="card-title">💵 Spending${dashSpendCategory ? ` — ${esc(dashSpendCategory)}` : ""}</div>
@@ -5921,6 +5964,30 @@ function drawDashboardCharts() {
     type: "line", data: { labels, datasets: spendDatasets },
     options: monthChartOpts(compareOn, (v) => fmtMoney(v)),
   });
+
+  // ---- Meat processed (per-day; sporadic, so bars read better than a line) ----
+  const meatEl = document.getElementById("dashMeatChart");
+  if (meatEl) {
+    const meatMain = meatDailyForMonth(dashMonthKey);
+    const meatDatasets = [{ label: mainLabel, data: meatMain, backgroundColor: "#C1502E", borderColor: "#C1502E", type: "bar" }];
+    if (compareOn) meatDatasets.push({ label: compLabel, data: alignCompare(meatDailyForMonth(dashCompareKey)), ...dashLine("#C7B9A6"), type: "line" });
+    charts.dashMeat = new Chart(meatEl, {
+      data: { labels, datasets: meatDatasets },
+      options: monthChartOpts(compareOn, (v) => `${displayWeight(v)} ${getWeightUnit()}`),
+    });
+  }
+
+  // ---- Value produced (per-day: eggs daily + meat on harvest days) ----
+  const valueEl = document.getElementById("dashValueChart");
+  if (valueEl) {
+    const valueMain = valueDailyForMonth(dashMonthKey);
+    const valueDatasets = [{ label: mainLabel, data: valueMain, borderColor: "#D4A017", backgroundColor: "#D4A01733", tension: 0.2, pointRadius: 2, fill: true }];
+    if (compareOn) valueDatasets.push({ label: compLabel, data: alignCompare(valueDailyForMonth(dashCompareKey)), ...dashLine("#C7B9A6") });
+    charts.dashValue = new Chart(valueEl, {
+      type: "line", data: { labels, datasets: valueDatasets },
+      options: monthChartOpts(compareOn, (v) => fmtMoney(v)),
+    });
+  }
 }
 
 /** Chart options for the month view: legend shown only when comparing, x-axis
