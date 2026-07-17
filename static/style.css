@@ -219,6 +219,10 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
    per dozen) -- honest derived numbers, kept visually quiet so the headline
    total stays dominant. */
 .dash-substat { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+/* Money mega-chart head: title on the left, the spend/income/net mode pills on
+   the right, wrapping on narrow screens. */
+.money-mega-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.money-mode-pills { flex: 0 0 auto; }
 /* Headline feed-cost cards (Year Review + All-Time): the true cost-to-produce
    figures, given prominence -- big number, icon tile, caption. Two-up on wide
    screens, stacked on narrow. */

@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-187";
+const APP_VERSION = "2026.07.13-188";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -43,9 +43,16 @@ let activeTab = "dashboard";
 // the current month vs the previous month.
 let dashMonthKey = null;       // set on first render to current month
 let dashCompareKey = null;     // set to previous month
-let dashSpendCategory = null;  // null = all categories combined
 let dashFeedType = "both";     // dashboard feed chart: "layer" | "meat" | "both"
 let reviewMoneyMode = "spend"; // Year Review money chart: "spend" | "income" | "net"
+// Dashboard "money" mega-chart: mode (spend/income/net) plus which pill is
+// selected within spend and income modes (null = all).
+let dashMoneyMode = "net";
+let dashSpendPill = null;   // an EXPENSE_CATEGORIES value, or null for all
+let dashIncomePill = null;  // "Egg value" | "Meat value" | an income category, or null
+// Year Review mega-chart pill selection (mode reuses reviewMoneyMode).
+let reviewSpendPill = null;
+let reviewIncomePill = null;
 let charts = {};
 
 const BIRD_TYPES = ["Layer", "Meat", "Dual Purpose"];
@@ -3630,7 +3637,7 @@ function renderAllTimeStatsSection() {
       const cards = feedCostHeadlineHtml(cpDozen, cpLbMeat, "all time");
       if (!cards) return "";
       return `<div style="margin-top:16px">${cards}
-        <div class="dim" style="font-size:11px;margin-top:8px">Based on feed actually consumed, valued at each bag's cost. Add a cost to inventory bags (auto-filled from their expense) to sharpen these.</div>
+        <div class="dim" style="font-size:11px;margin-top:8px">Based on feed actually consumed, valued at each bag's cost.</div>
       </div>`;
     })()}
     ${(Object.keys(catTotals).length > 0 || s.totalEggs > 0 || s.totalWeight > 0) ? `<div class="grid-2" style="margin-top:16px">
@@ -4596,22 +4603,73 @@ function birdsProcessedInMonth(key) {
   return STATE.birds.filter(b => b.status === "Processed" && b.harvest_date && monthKeyOf(b.harvest_date) === key).length;
 }
 
-/** Value produced per day for a month: egg value (count x price) on collection
- * days + meat value (weight x price) on harvest days. Mirrors the "value
- * produced" idea used elsewhere -- what the output was worth, at the recorded
- * or default prices. Does not include misc income (bird sales etc.); this is
- * production value, matching the eggs/meat sections it sits beside. */
-function valueDailyForMonth(key) {
+// ---- Money mega-chart series (spend / income / net, per day of a month) ----
+// Income "value" model: egg value = eggs collected x price; meat value =
+// dressed weight x price; plus other income entries (bird sales, etc.). Egg/
+// meat SALE income entries are excluded because that money is already captured
+// in egg/meat value -- selling an egg doesn't add value beyond having produced
+// it. This makes "income" a clean "what the operation produced/earned."
+
+/** Egg value produced per day in a month (count x price on collection days). */
+function eggValueDailyForMonth(key) {
   const arr = Array(daysInMonthKey(key)).fill(0);
-  const d = getCoopDefaults();
-  const eggFallback = Number(d.eggPrice) || 0, meatFallback = Number(d.pricePerLb) || 0;
+  const eggFallback = Number(getCoopDefaults().eggPrice) || 0;
   STATE.eggs.forEach(e => { const dm = dayInMonth(e.date, key); if (dm > 0) arr[dm - 1] += (Number(e.count) || 0) * (Number(e.price_per_egg) || eggFallback); });
+  return arr;
+}
+/** Meat value produced per day in a month (weight x price on harvest days). */
+function meatValueDailyForMonth(key) {
+  const arr = Array(daysInMonthKey(key)).fill(0);
+  const meatFallback = Number(getCoopDefaults().pricePerLb) || 0;
   STATE.birds.forEach(b => {
     if (b.status !== "Processed" || !b.harvest_date) return;
     const dm = dayInMonth(b.harvest_date, key);
     if (dm > 0) arr[dm - 1] += (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || meatFallback);
   });
   return arr;
+}
+/** Other-income (non egg/meat sale) per day for a given category, in a month. */
+function otherIncomeDailyForMonth(key, category) {
+  const arr = Array(daysInMonthKey(key)).fill(0);
+  STATE.expenses.forEach(x => {
+    if (x.entry_type !== "income") return;
+    if (x.category === "Egg Sale" || x.category === "Meat Sale") return; // already in egg/meat value
+    if (category && x.category !== category) return;
+    const dm = dayInMonth(x.date, key);
+    if (dm > 0) arr[dm - 1] += Number(x.amount) || 0;
+  });
+  return arr;
+}
+
+/** Total income value per day for a month, optionally filtered to one source
+ * ("Egg value", "Meat value", or an other-income category). */
+function incomeDailyForMonth(key, source) {
+  const n = daysInMonthKey(key);
+  if (source === "Egg value") return eggValueDailyForMonth(key);
+  if (source === "Meat value") return meatValueDailyForMonth(key);
+  if (source) return otherIncomeDailyForMonth(key, source);
+  // All sources combined.
+  const egg = eggValueDailyForMonth(key), meat = meatValueDailyForMonth(key), other = otherIncomeDailyForMonth(key, null);
+  return Array.from({ length: n }, (_, i) => egg[i] + meat[i] + other[i]);
+}
+
+/** Income sources present (for the income-mode pills): egg/meat value if any
+ * eggs/meat exist, plus each non-sale income category actually logged. */
+function incomeSourcesPresent() {
+  const out = [];
+  if (STATE.eggs.some(e => (Number(e.count) || 0) > 0)) out.push("Egg value");
+  if (STATE.birds.some(b => b.status === "Processed" && b.harvest_date)) out.push("Meat value");
+  const cats = new Set();
+  STATE.expenses.forEach(x => { if (x.entry_type === "income" && x.category && x.category !== "Egg Sale" && x.category !== "Meat Sale") cats.add(x.category); });
+  INCOME_CATEGORIES.forEach(c => { if (cats.has(c)) out.push(c); });
+  return out;
+}
+
+/** Icon spec for an income source (for pills), matching value-source bars. */
+function incomeSourceIcon(source) {
+  if (source === "Egg value") return BIRD_TYPE_ICONS.layer;
+  if (source === "Meat value") return BIRD_TYPE_ICONS.meat;
+  return INCOME_ICONS[source] || INCOME_ICONS["Other Income"];
 }
 
 /** Cumulative feed used (lb) through each day of a month -- a running total,
@@ -5303,10 +5361,17 @@ function renderYearReviewSection() {
     <div class="chart-grid chart-grid-stretch" style="margin-top:16px">
       <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">Eggs by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div></div><div class="chart-box"><canvas id="reviewEggChart"></canvas></div></div>
       <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">Meat produced by month, lbs — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div></div><div class="chart-box"><canvas id="reviewMeatChart"></canvas></div></div>
-      <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">${reviewMoneyMode === "income" ? "Income" : reviewMoneyMode === "net" ? "Net" : "Spend"} by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div>
-        <div class="pill-row" id="reviewMoneyMode">
+      <div class="card"><div class="chart-head chart-head-grow"><div class="money-mega-head"><div class="card-title">${reviewMoneyMode === "income" ? "💰 Income / value" : reviewMoneyMode === "net" ? "⚖️ Net" : "💵 Spend"} by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}${reviewMoneyMode === "spend" && reviewSpendPill ? ` · ${esc(reviewSpendPill)}` : reviewMoneyMode === "income" && reviewIncomePill ? ` · ${esc(reviewIncomePill)}` : ""}</div>
+        <div class="pill-row money-mode-pills" id="reviewMoneyMode">
           ${[["spend", "💵 Spend"], ["income", "💰 Income"], ["net", "⚖️ Net"]].map(([v, label]) => `<button class="pill-btn ${reviewMoneyMode === v ? "range-btn active" : ""}" data-money-mode="${v}">${label}</button>`).join("")}
-        </div>
+        </div></div>
+        ${reviewMoneyMode === "spend" ? `<div class="pill-row" id="reviewSpendPills">
+          <button class="pill-btn ${!reviewSpendPill ? "range-btn active" : ""}" data-spend-pill="">All</button>
+          ${spendCategoriesPresent().map(c => `<button class="pill-btn ${reviewSpendPill === c ? "range-btn active" : ""}" data-spend-pill="${esc(c)}">${(CATEGORY_ICONS[c] || CATEGORY_ICONS["Other"]).emoji} ${esc(c)}</button>`).join("")}
+        </div>` : reviewMoneyMode === "income" ? `<div class="pill-row" id="reviewIncomePills">
+          <button class="pill-btn ${!reviewIncomePill ? "range-btn active" : ""}" data-income-pill="">All</button>
+          ${incomeSourcesPresent().map(src => { const ic = incomeSourceIcon(src); return `<button class="pill-btn ${reviewIncomePill === src ? "range-btn active" : ""}" data-income-pill="${esc(src)}">${ic.emoji} ${esc(src)}</button>`; }).join("")}
+        </div>` : ""}
       </div><div class="chart-box"><canvas id="reviewExpenseChart"></canvas></div></div>
       ${years.includes(String(Number(selectedYear) - 1)) ? `<div class="card"><div class="chart-head chart-head-grow"><div class="card-title">${selectedYear} vs ${Number(selectedYear) - 1}</div></div><div class="chart-box"><canvas id="reviewCompareChart"></canvas></div></div>` : ""}
     </div>
@@ -5317,6 +5382,20 @@ function renderYearReviewSection() {
     const btn = e.target.closest("[data-money-mode]");
     if (!btn) return;
     reviewMoneyMode = btn.dataset.moneyMode;
+    renderYearReviewSection();
+  });
+  const reviewSpendPillsEl = document.getElementById("reviewSpendPills");
+  if (reviewSpendPillsEl) reviewSpendPillsEl.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-spend-pill]");
+    if (!btn) return;
+    reviewSpendPill = btn.dataset.spendPill || null;
+    renderYearReviewSection();
+  });
+  const reviewIncomePillsEl = document.getElementById("reviewIncomePills");
+  if (reviewIncomePillsEl) reviewIncomePillsEl.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-income-pill]");
+    if (!btn) return;
+    reviewIncomePill = btn.dataset.incomePill || null;
     renderYearReviewSection();
   });
   drawYearReviewCharts(selectedYear);
@@ -5335,6 +5414,32 @@ function monthlyBuckets(items, year, valueFn) {
 }
 
 let reviewCharts = {};
+
+/** 12-month array of money for a year, honoring mode (spend/income/net) and an
+ * optional pill. Income value = egg value + meat value + other income (egg/
+ * meat sales washed out); net = income − spend. Mirrors the dashboard's daily
+ * money series but bucketed by month. */
+function moneyMonthlyForYear(year, mode, pill) {
+  const eggFallback = Number(getCoopDefaults().eggPrice) || 0, meatFallback = Number(getCoopDefaults().pricePerLb) || 0;
+  const eggVal = monthlyBuckets(STATE.eggs.map(e => ({ date: e.date, v: (Number(e.count) || 0) * (Number(e.price_per_egg) || eggFallback) })), year, it => it.v);
+  const meatVal = monthlyBuckets(STATE.birds.filter(b => b.status === "Processed" && b.harvest_date).map(b => ({ date: b.harvest_date, v: (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || meatFallback) })), year, it => it.v);
+  const otherIncome = (cat) => monthlyBuckets(STATE.expenses.filter(x => x.entry_type === "income" && x.category !== "Egg Sale" && x.category !== "Meat Sale" && (!cat || x.category === cat)), year, x => Number(x.amount) || 0);
+  const spend = (cat) => monthlyBuckets(STATE.expenses.filter(x => x.entry_type !== "income" && (!cat || x.category === cat)), year, x => Number(x.amount) || 0);
+  const add = (...arrs) => arrs[0].map((_, i) => arrs.reduce((s, a) => s + a[i], 0));
+
+  if (mode === "spend") return spend(pill);
+  if (mode === "income") {
+    if (pill === "Egg value") return eggVal;
+    if (pill === "Meat value") return meatVal;
+    if (pill) return otherIncome(pill);
+    return add(eggVal, meatVal, otherIncome(null));
+  }
+  // net = all income value − all spend
+  const income = add(eggVal, meatVal, otherIncome(null));
+  const sp = spend(null);
+  return income.map((v, i) => v - sp[i]);
+}
+
 function drawYearReviewCharts(year) {
   Object.values(reviewCharts).forEach(c => c && c.destroy());
   const s = computeYearStats(year);
@@ -5365,24 +5470,22 @@ function drawYearReviewCharts(year) {
     options: yearChartOpts(hasPrev, (v) => `${displayWeight(v)} ${getWeightUnit()}`)
   });
 
-  // Money by month: spend, income, or net -- toggled by reviewMoneyMode. Spend
-  // and income are simple monthly sums; net is income - spend per month. Each
-  // shows the current year solid with last year dotted, same as the others.
-  const expenseItems = STATE.expenses.filter(x => x.entry_type !== "income");
-  const incomeItems = STATE.expenses.filter(x => x.entry_type === "income");
-  const spendMonthly = monthlyBuckets(expenseItems, year, x => Number(x.amount) || 0);
-  const incomeMonthly = monthlyBuckets(incomeItems, year, x => Number(x.amount) || 0);
-  const netMonthly = incomeMonthly.map((v, i) => v - spendMonthly[i]);
-  const spendPrev = hasPrev ? monthlyBuckets(expenseItems, lastYear, x => Number(x.amount) || 0) : null;
-  const incomePrev = hasPrev ? monthlyBuckets(incomeItems, lastYear, x => Number(x.amount) || 0) : null;
-  const netPrev = hasPrev ? incomePrev.map((v, i) => v - spendPrev[i]) : null;
-  const moneyPick = reviewMoneyMode === "income" ? { data: incomeMonthly, prev: incomePrev, color: "#8A9A5B" }
-    : reviewMoneyMode === "net" ? { data: netMonthly, prev: netPrev, color: "#D4A017" }
-    : { data: spendMonthly, prev: spendPrev, color: "#7A8FA6" };
+  // Money mega chart: spend/income/net (reviewMoneyMode) with an optional pill
+  // (category for spend, source for income). Income uses the value model (egg
+  // value + meat value + other income, egg/meat sales washed out). Net colors
+  // per segment -- green above zero, red below.
+  const moneyData = moneyMonthlyForYear(year, reviewMoneyMode, reviewMoneyMode === "spend" ? reviewSpendPill : reviewMoneyMode === "income" ? reviewIncomePill : null);
+  const moneyPrev = hasPrev ? moneyMonthlyForYear(lastYear, reviewMoneyMode, reviewMoneyMode === "spend" ? reviewSpendPill : reviewMoneyMode === "income" ? reviewIncomePill : null) : null;
+  const isNet = reviewMoneyMode === "net";
+  const moneyColor = reviewMoneyMode === "income" ? "#8A9A5B" : reviewMoneyMode === "net" ? "#8A9A5B" : "#7A8FA6";
+  const mainDs = { label: year, data: moneyData, borderColor: moneyColor, backgroundColor: moneyColor + "33", tension: 0.25, pointRadius: 2, fill: !isNet };
+  if (isNet) mainDs.segment = { borderColor: (ctx) => (ctx.p1.parsed.y < 0 ? "#B84C3E" : "#8A9A5B") };
+  const moneyOpts = yearChartOpts(hasPrev, (v) => fmtMoney(v));
+  if (isNet) moneyOpts.scales.y.beginAtZero = false;
   reviewCharts.expenses = new Chart(document.getElementById("reviewExpenseChart"), {
     type: "line",
-    data: { labels: MONTH_LABELS, datasets: withPrev({ label: year, data: moneyPick.data, borderColor: moneyPick.color, backgroundColor: moneyPick.color + "33", tension: 0.25, pointRadius: 2, fill: true }, moneyPick.prev, "#C7B9A6") },
-    options: yearChartOpts(hasPrev, (v) => fmtMoney(v))
+    data: { labels: MONTH_LABELS, datasets: withPrev(mainDs, moneyPrev, "#C7B9A6") },
+    options: moneyOpts
   });
 
   const compareCanvas = document.getElementById("reviewCompareChart");
@@ -5812,17 +5915,29 @@ function renderCoopOverview() {
             const shownTxt = shownBirds ? `${shownBirds} bird${shownBirds === 1 ? "" : "s"} processed` : "no birds processed";
             return `<div class="dash-substat">${shownTxt}${compBirds !== null ? ` · ${compBirds} in ${monthLabelShort(dashCompareKey)}` : ""}</div>`;
           })()}</div><div class="chart-box"><canvas id="dashMeatChart"></canvas></div></div>
-          <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">💰 Value produced</div>${dashTotalBlock(sum(valueDailyForMonth(dashMonthKey)), dashCompareKey ? sum(valueDailyForMonth(dashCompareKey)) : 0, (v) => fmtMoney(v))}<div class="dash-substat">egg + meat value at your prices</div></div><div class="chart-box"><canvas id="dashValueChart"></canvas></div></div>
           <div class="card" style="grid-column:1/-1">
             <div class="chart-head chart-head-grow">
-              <div class="card-title">💵 Spending${dashSpendCategory ? ` — ${esc(dashSpendCategory)}` : ""}</div>
-              ${dashTotalBlock(sum(spendDailyForMonth(dashMonthKey, dashSpendCategory)), dashCompareKey ? sum(spendDailyForMonth(dashCompareKey, dashSpendCategory)) : 0, (v) => fmtMoney(v), { invertColors: true })}
-              <div class="pill-row" id="dashSpendCats">
-                <button class="pill-btn ${!dashSpendCategory ? "range-btn active" : ""}" data-spend-cat="">All</button>
-                ${spendCategoriesPresent().map(c => `<button class="pill-btn ${dashSpendCategory === c ? "range-btn active" : ""}" data-spend-cat="${esc(c)}">${(CATEGORY_ICONS[c] || CATEGORY_ICONS["Other"]).emoji} ${esc(c)}</button>`).join("")}
+              <div class="money-mega-head">
+                <div class="card-title">${dashMoneyMode === "income" ? "💰 Income / value" : dashMoneyMode === "net" ? "⚖️ Net (value − spend)" : "💵 Spending"}${dashMoneyMode === "spend" && dashSpendPill ? ` — ${esc(dashSpendPill)}` : dashMoneyMode === "income" && dashIncomePill ? ` — ${esc(dashIncomePill)}` : ""}</div>
+                <div class="pill-row money-mode-pills" id="dashMoneyMode">
+                  ${[["spend", "💵 Spend"], ["income", "💰 Income"], ["net", "⚖️ Net"]].map(([v, label]) => `<button class="pill-btn ${dashMoneyMode === v ? "range-btn active" : ""}" data-money-mode="${v}">${label}</button>`).join("")}
+                </div>
               </div>
+              ${(() => {
+                const shown = dashMoneySeriesTotal(dashMonthKey);
+                const comp = dashCompareKey ? dashMoneySeriesTotal(dashCompareKey) : 0;
+                // Spend: less is good (invert). Income/net: more is good.
+                return dashTotalBlock(shown, comp, (v) => fmtMoney(v), { invertColors: dashMoneyMode === "spend" });
+              })()}
+              ${dashMoneyMode === "spend" ? `<div class="pill-row" id="dashSpendPills">
+                <button class="pill-btn ${!dashSpendPill ? "range-btn active" : ""}" data-spend-pill="">All</button>
+                ${spendCategoriesPresent().map(c => `<button class="pill-btn ${dashSpendPill === c ? "range-btn active" : ""}" data-spend-pill="${esc(c)}">${(CATEGORY_ICONS[c] || CATEGORY_ICONS["Other"]).emoji} ${esc(c)}</button>`).join("")}
+              </div>` : dashMoneyMode === "income" ? `<div class="pill-row" id="dashIncomePills">
+                <button class="pill-btn ${!dashIncomePill ? "range-btn active" : ""}" data-income-pill="">All</button>
+                ${incomeSourcesPresent().map(src => { const ic = incomeSourceIcon(src); return `<button class="pill-btn ${dashIncomePill === src ? "range-btn active" : ""}" data-income-pill="${esc(src)}">${ic.emoji} ${esc(src)}</button>`; }).join("")}
+              </div>` : `<div class="dash-substat">Value produced minus money spent, per day</div>`}
             </div>
-            <div class="chart-box"><canvas id="dashSpendChart"></canvas></div>
+            <div class="chart-box"><canvas id="dashMoneyChart"></canvas></div>
           </div>
         </div>`;
       })()}
@@ -5837,11 +5952,25 @@ function renderCoopOverview() {
   });
   const compareSel = document.getElementById("dashCompareSelect");
   if (compareSel) compareSel.addEventListener("change", (e) => { dashCompareKey = e.target.value || null; renderCoopOverview(); });
-  const spendCats = document.getElementById("dashSpendCats");
-  if (spendCats) spendCats.addEventListener("click", (e) => {
-    const btn = e.target.closest("[data-spend-cat]");
+  const moneyMode = document.getElementById("dashMoneyMode");
+  if (moneyMode) moneyMode.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-money-mode]");
     if (!btn) return;
-    dashSpendCategory = btn.dataset.spendCat || null;
+    dashMoneyMode = btn.dataset.moneyMode;
+    renderCoopOverview();
+  });
+  const spendPills = document.getElementById("dashSpendPills");
+  if (spendPills) spendPills.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-spend-pill]");
+    if (!btn) return;
+    dashSpendPill = btn.dataset.spendPill || null;
+    renderCoopOverview();
+  });
+  const incomePills = document.getElementById("dashIncomePills");
+  if (incomePills) incomePills.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-income-pill]");
+    if (!btn) return;
+    dashIncomePill = btn.dataset.incomePill || null;
     renderCoopOverview();
   });
   const feedTypeToggle = document.getElementById("dashFeedType");
@@ -5945,6 +6074,19 @@ function dashboardMonthOptions() {
  * selected month by day with an optional dotted overlay of the comparison
  * month. Comparison uses day-of-month alignment so different-length months
  * still line up. */
+/** Per-day money series for the dashboard mega chart, honoring the current
+ * mode (spend/income/net) and any selected pill. Net = income value − spend. */
+function dashMoneySeries(key) {
+  if (dashMoneyMode === "income") return incomeDailyForMonth(key, dashIncomePill);
+  if (dashMoneyMode === "net") {
+    const inc = incomeDailyForMonth(key, null);
+    const spend = spendDailyForMonth(key, null);
+    return inc.map((v, i) => v - spend[i]);
+  }
+  return spendDailyForMonth(key, dashSpendPill);
+}
+function dashMoneySeriesTotal(key) { return sum(dashMoneySeries(key)); }
+
 function drawDashboardCharts() {
   Object.values(charts).forEach(c => c && c.destroy());
   const shownDays = daysInMonthKey(dashMonthKey);
@@ -5985,19 +6127,6 @@ function drawDashboardCharts() {
     options: monthChartOpts(compareOn, (v) => `${v.toFixed(2)} lb`),
   });
 
-  // ---- Spend (optionally filtered to one category) ----
-  // A line, like eggs and feed -- makes month-over-month comparison legible
-  // (which line sits higher on which days) and keeps all three dashboard
-  // charts visually consistent. As a bar chart the dotted comparison series
-  // rendered as invisible transparent bars.
-  const spendMain = spendDailyForMonth(dashMonthKey, dashSpendCategory);
-  const spendDatasets = [{ label: mainLabel, data: spendMain, borderColor: "#8A9A5B", backgroundColor: "#8A9A5B33", tension: 0.2, pointRadius: 2, fill: true }];
-  if (compareOn) spendDatasets.push({ label: compLabel, data: alignCompare(spendDailyForMonth(dashCompareKey, dashSpendCategory)), ...dashLine("#C7B9A6") });
-  charts.dashSpend = new Chart(document.getElementById("dashSpendChart"), {
-    type: "line", data: { labels, datasets: spendDatasets },
-    options: monthChartOpts(compareOn, (v) => fmtMoney(v)),
-  });
-
   // ---- Meat processed (per-day; sporadic, so bars read better than a line) ----
   const meatEl = document.getElementById("dashMeatChart");
   if (meatEl) {
@@ -6010,15 +6139,34 @@ function drawDashboardCharts() {
     });
   }
 
-  // ---- Value produced (per-day: eggs daily + meat on harvest days) ----
-  const valueEl = document.getElementById("dashValueChart");
-  if (valueEl) {
-    const valueMain = valueDailyForMonth(dashMonthKey);
-    const valueDatasets = [{ label: mainLabel, data: valueMain, borderColor: "#D4A017", backgroundColor: "#D4A01733", tension: 0.2, pointRadius: 2, fill: true }];
-    if (compareOn) valueDatasets.push({ label: compLabel, data: alignCompare(valueDailyForMonth(dashCompareKey)), ...dashLine("#C7B9A6") });
-    charts.dashValue = new Chart(valueEl, {
-      type: "line", data: { labels, datasets: valueDatasets },
-      options: monthChartOpts(compareOn, (v) => fmtMoney(v)),
+  // ---- Money mega chart (spend / income / net) ----
+  const moneyEl = document.getElementById("dashMoneyChart");
+  if (moneyEl) {
+    const moneyMain = dashMoneySeries(dashMonthKey);
+    const isNet = dashMoneyMode === "net";
+    // Color: spend slate, income sage, net split by sign per segment (green
+    // above zero, red below) via a segment callback that looks at each point.
+    const baseColor = dashMoneyMode === "income" ? "#8A9A5B" : dashMoneyMode === "spend" ? "#7A8FA6" : "#D4A017";
+    const mainDs = {
+      label: mainLabel, data: moneyMain, borderColor: baseColor, backgroundColor: baseColor + "22",
+      tension: 0.2, pointRadius: 2, fill: !isNet,
+    };
+    if (isNet) {
+      // Per-segment coloring: a segment is green if it ends non-negative, red
+      // if it ends negative -- so the line visibly flips color as it crosses
+      // zero between two days.
+      mainDs.borderColor = "#8A9A5B";
+      mainDs.segment = {
+        borderColor: (ctx) => (ctx.p1.parsed.y < 0 ? "#B84C3E" : "#8A9A5B"),
+      };
+      mainDs.fill = false;
+    }
+    const moneyDatasets = [mainDs];
+    if (compareOn) moneyDatasets.push({ label: compLabel, data: alignCompare(dashMoneySeries(dashCompareKey)), ...dashLine("#C7B9A6") });
+    const opts = monthChartOpts(compareOn, (v) => fmtMoney(v));
+    if (isNet) opts.scales.y.beginAtZero = false; // let it show negative territory
+    charts.dashMoney = new Chart(moneyEl, {
+      type: "line", data: { labels, datasets: moneyDatasets }, options: opts,
     });
   }
 }
@@ -9683,7 +9831,7 @@ function supplyFormHtml(editingSupply) {
       <label class="field"><span>Description</span><input id="sp_desc" placeholder="e.g. large bag, opened" value="${editingSupply ? esc(editingSupply.description || "") : ""}"></label>
       <label class="field"><span>Quantity (per item)</span><input type="number" step="0.01" id="sp_qty" value="${editingSupply && editingSupply.quantity != null ? editingSupply.quantity : ""}"></label>
       <label class="field"><span>Unit</span><select id="sp_unit">${EXPENSE_UNITS.map(u => `<option ${editingSupply && editingSupply.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>
-      <label class="field"><span>Cost for this bag ${editingSupply && editingSupply.source_expense_id ? "(from its expense)" : "(optional)"}</span><input type="number" step="0.01" min="0" id="sp_cost" value="${(() => {
+      <label class="field"><span>Cost for this item ${editingSupply && editingSupply.source_expense_id ? "(from its expense)" : "*"}</span><input type="number" step="0.01" min="0" id="sp_cost" value="${(() => {
         if (!editingSupply) return "";
         if (editingSupply.cost != null) return editingSupply.cost;
         // Legacy bag created from an expense before costs were stored: derive
@@ -9697,7 +9845,7 @@ function supplyFormHtml(editingSupply) {
           }
         }
         return "";
-      })()}" placeholder="e.g. 22.50"><span class="dim" style="font-size:11px;margin-top:4px">Used to work out true feed cost per dozen eggs, from the feed actually eaten. Auto-filled from the linked expense when there is one; you can override it.</span></label>
+      })()}" placeholder="e.g. 22.50"><span class="dim" style="font-size:11px;margin-top:4px">Required. Auto-filled from the linked expense when there is one; you can override it. Powers the feed cost per lb, cost per dozen eggs, and cost per lb of meat figures.</span></label>
       <label class="field"><span>Status</span><select id="sp_status">${SUPPLY_STATUSES.map(s => `<option ${(editingSupply ? editingSupply.status === s : s === "Full") ? "selected" : ""}>${s}</option>`).join("")}</select></label>
       <label class="field"><span>Date added</span><input type="date" id="sp_date" value="${editingSupply ? (editingSupply.date_added || todayStr()) : todayStr()}"></label>
       ${editingSupply ? `<label class="field"><span>Date emptied${editingSupply.status !== "Empty" ? " (if applicable)" : ""}</span><input type="date" id="sp_date_emptied" value="${editingSupply.date_emptied || ""}"></label>` : ""}
@@ -9737,6 +9885,16 @@ function wireSupplyForm(editingSupply) {
   }
   document.getElementById("saveSupply").addEventListener("click", async () => {
     const status = document.getElementById("sp_status").value;
+    // Cost is required -- every bag needs a cost so feed cost-per-lb, cost per
+    // dozen, and cost per lb of meat are always complete (no unpriced feed
+    // silently dragging the figures down). Bags created from an expense get it
+    // auto-filled; a bag added directly must have one entered.
+    const costEl = document.getElementById("sp_cost");
+    if (costEl && (costEl.value === "" || !(Number(costEl.value) >= 0))) {
+      alert("Please enter the cost for this item. Every inventory item needs a cost so feed and production cost figures stay accurate.");
+      costEl.focus();
+      return;
+    }
     const dateEmptiedEl = document.getElementById("sp_date_emptied");
     const openedEl = document.getElementById("sp_opened");
     // Guard: an opened date after the emptied date would produce a negative
