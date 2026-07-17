@@ -219,6 +219,16 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
    per dozen) -- honest derived numbers, kept visually quiet so the headline
    total stays dominant. */
 .dash-substat { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+/* Headline feed-cost cards (Year Review + All-Time): the true cost-to-produce
+   figures, given prominence -- big number, icon tile, caption. Two-up on wide
+   screens, stacked on narrow. */
+.cost-headline-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.cost-headline { display: flex; align-items: center; gap: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; }
+.cost-headline-icon { flex: 0 0 auto; width: 46px; height: 46px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 24px; }
+.cost-headline-body { min-width: 0; }
+.cost-headline-value { font-family: 'JetBrains Mono', monospace; font-size: 26px; font-weight: 700; color: var(--text); line-height: 1.1; }
+.cost-headline-unit { font-size: 13px; font-weight: 400; color: var(--text-dim); margin-left: 3px; }
+.cost-headline-caption { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
 /* All-Time spend-by-category: a ranked list of proportion bars. Scales
    gracefully with any number of categories and years (unlike a cumulative
    chart), and reads as "where the money went" at a glance. */
