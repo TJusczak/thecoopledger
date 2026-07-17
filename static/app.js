@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-186";
+const APP_VERSION = "2026.07.13-187";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -45,6 +45,7 @@ let dashMonthKey = null;       // set on first render to current month
 let dashCompareKey = null;     // set to previous month
 let dashSpendCategory = null;  // null = all categories combined
 let dashFeedType = "both";     // dashboard feed chart: "layer" | "meat" | "both"
+let reviewMoneyMode = "spend"; // Year Review money chart: "spend" | "income" | "net"
 let charts = {};
 
 const BIRD_TYPES = ["Layer", "Meat", "Dual Purpose"];
@@ -3588,10 +3589,14 @@ function renderAllTimeStatsSection() {
   const catTotals = {};
   STATE.expenses.filter(x => x.entry_type !== "income").forEach(x => { catTotals[x.category] = (catTotals[x.category] || 0) + (Number(x.amount) || 0); });
   const usage = feedBeddingUsageInRange(STATE.supplies, null);
-  const layerFeedSpendAll = STATE.expenses.filter(x => x.category === "Layer Feed" && x.entry_type !== "income").reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
-  const meatFeedSpendAll = STATE.expenses.filter(x => x.category === "Meat Feed" && x.entry_type !== "income").reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
-  const costPerLbLayerFeed = usage.layerFeedLbs > 0 ? layerFeedSpendAll / usage.layerFeedLbs : null;
-  const costPerLbMeatFeed = usage.meatFeedLbs > 0 ? meatFeedSpendAll / usage.meatFeedLbs : null;
+  // Cost per lb of feed = cost of the feed actually CONSUMED, valued at each
+  // bag's real per-lb cost, divided by the lbs consumed. NOT total spend /
+  // consumption -- that inflates the figure whenever you've bought feed you
+  // haven't finished yet (a full bag's cost spread over a partial bag's use).
+  const layerConsumed = pricedFeedConsumed("Layer Feed", () => true);
+  const meatConsumed = pricedFeedConsumed("Meat Feed", () => true);
+  const costPerLbLayerFeed = layerConsumed.lbs > 0 ? layerConsumed.cost / layerConsumed.lbs : null;
+  const costPerLbMeatFeed = meatConsumed.lbs > 0 ? meatConsumed.cost / meatConsumed.lbs : null;
   const beddingSpendAll = STATE.expenses.filter(x => x.category === "Bedding" && x.entry_type !== "income").reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
   const costPerCuFtBedding = usage.beddingCuFt > 0 ? beddingSpendAll / usage.beddingCuFt : null;
   const ty = yearlyTrends(); // one bucket per calendar year with data
@@ -3607,8 +3612,8 @@ function renderAllTimeStatsSection() {
       <div class="stat tone-gold"><div class="stat-label">Value produced, all time</div><div class="stat-value">${fmtMoney(s.incomeAll)}</div><div class="stat-sub">eggs + meat + other income</div>${statSpark(ty.value)}</div>
       <div class="stat ${s.netAll >= 0 ? "tone-sage" : ""}" style="${s.netAll < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net savings, all time</div><div class="stat-value">${fmtMoney(s.netAll)}</div><div class="stat-sub">value − spend</div>${statSpark(ty.net)}</div>
       <div class="stat tone-gold"><div class="stat-label">Full clean-outs, all time</div><div class="stat-value">${totalCleanouts}</div><div class="stat-sub">across ${getBeddingAreas().length} tracked area${getBeddingAreas().length !== 1 ? "s" : ""}</div>${statSpark(ty.cleanouts)}</div>
-      <div class="stat tone-gold"><div class="stat-label">Layer feed used, all time</div><div class="stat-value">${usage.layerFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${costPerLbLayerFeed !== null ? fmtMoney(costPerLbLayerFeed) + "/lb" : "no cost data yet"}</div>${statSpark(ty.layerFeed)}</div>
-      <div class="stat tone-rust"><div class="stat-label">Meat feed used, all time</div><div class="stat-value">${usage.meatFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${costPerLbMeatFeed !== null ? fmtMoney(costPerLbMeatFeed) + "/lb" : "no cost data yet"}</div>${statSpark(ty.meatFeed)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Layer feed used, all time</div><div class="stat-value">${usage.layerFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${costPerLbLayerFeed !== null ? `${fmtMoney(layerConsumed.cost)} at ${fmtMoney(costPerLbLayerFeed)}/lb` : "no cost data yet"}</div>${statSpark(ty.layerFeed)}</div>
+      <div class="stat tone-rust"><div class="stat-label">Meat feed used, all time</div><div class="stat-value">${usage.meatFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${costPerLbMeatFeed !== null ? `${fmtMoney(meatConsumed.cost)} at ${fmtMoney(costPerLbMeatFeed)}/lb` : "no cost data yet"}</div>${statSpark(ty.meatFeed)}</div>
       <div class="stat tone-slate"><div class="stat-label">Bedding used, all time</div><div class="stat-value">${usage.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">${costPerCuFtBedding !== null ? fmtMoney(costPerCuFtBedding) + "/cu ft" : "no cost data yet"}</div>${statSpark(ty.bedding)}</div>
       ${STATE.hatches.length > 0 ? `
       <div class="stat tone-gold"><div class="stat-label">Chicks hatched, all time</div><div class="stat-value">${s.chicksHatchedAll}</div><div class="stat-sub">across ${STATE.hatches.length} clutch${STATE.hatches.length !== 1 ? "es" : ""}</div>${statSpark(ty.chicks)}</div>
@@ -5215,10 +5220,16 @@ function computeYearStats(year) {
     meatFeedLbs += activeSum("Meat Feed");
     beddingCuFt += activeSum("Bedding");
   }
-  const costPerLbLayerFeed = layerFeedLbs > 0 ? layerFeedAttributable / layerFeedLbs : null;
-  const costPerLbMeatFeed = meatFeedLbs > 0 ? meatFeedAttributable / meatFeedLbs : null;
+  // Consumption-based cost/lb: cost of feed actually eaten this year (each bag
+  // at its real per-lb cost) / lbs eaten. Not year's feed spend / consumption,
+  // which inflates when a bag is bought this year but not fully used.
+  const layerConsumedYr = pricedFeedConsumed("Layer Feed", inYear);
+  const meatConsumedYr = pricedFeedConsumed("Meat Feed", inYear);
+  const costPerLbLayerFeed = layerConsumedYr.lbs > 0 ? layerConsumedYr.cost / layerConsumedYr.lbs : null;
+  const costPerLbMeatFeed = meatConsumedYr.lbs > 0 ? meatConsumedYr.cost / meatConsumedYr.lbs : null;
+  const layerFeedCost = layerConsumedYr.cost, meatFeedCost = meatConsumedYr.cost;
 
-  return { eggCount, eggValue, totalExpenses, categoryBreakdown, processedCount: processedInYear.length, processedWeight, meatValue, lossesInYear, newBirds: newBirdIds.size, cleanoutsByArea, income, net, actualIncome, eggActualIncome, meatActualIncome, eggTotalValue, meatTotalValue, costPerDozenLayers, costPerLbMeat, layerFeedLbs, meatFeedLbs, beddingCuFt, costPerLbLayerFeed, costPerLbMeatFeed, chicksHatched, hatchClear, hatchQuit, hatchFailed, hatchLoss };
+  return { eggCount, eggValue, totalExpenses, categoryBreakdown, processedCount: processedInYear.length, processedWeight, meatValue, lossesInYear, newBirds: newBirdIds.size, cleanoutsByArea, income, net, actualIncome, eggActualIncome, meatActualIncome, eggTotalValue, meatTotalValue, costPerDozenLayers, costPerLbMeat, layerFeedLbs, meatFeedLbs, beddingCuFt, costPerLbLayerFeed, costPerLbMeatFeed, layerFeedCost, meatFeedCost, chicksHatched, hatchClear, hatchQuit, hatchFailed, hatchLoss };
 }
 
 function renderYearReviewSection() {
@@ -5253,8 +5264,8 @@ function renderYearReviewSection() {
       <div class="stat tone-slate"><div class="stat-label">Total spent</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${Object.keys(s.categoryBreakdown).length} categories</div>${statSpark(tm.spent)}${yoy(s.totalExpenses, sp && sp.totalExpenses, false)}</div>
       <div class="stat tone-gold"><div class="stat-label">Value produced</div><div class="stat-value">${fmtMoney(s.income)}</div><div class="stat-sub">eggs + meat</div>${statSpark(tm.value)}${yoy(s.income, sp && sp.income)}</div>
       <div class="stat ${s.net >= 0 ? "tone-sage" : ""}" style="${s.net < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net for ${selectedYear}</div><div class="stat-value">${fmtMoney(s.net)}</div><div class="stat-sub">value − spend</div>${statSpark(tm.net)}${sp && sp.net > 0 && s.net > 0 ? yoy(s.net, sp.net) : ""}</div>
-      <div class="stat tone-gold"><div class="stat-label">Layer feed used</div><div class="stat-value">${s.layerFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbLayerFeed !== null ? fmtMoney(s.costPerLbLayerFeed) + "/lb" : "no cost data yet"}</div>${statSpark(tm.layerFeed)}${yoy(s.layerFeedLbs, sp && sp.layerFeedLbs, false)}</div>
-      <div class="stat tone-rust"><div class="stat-label">Meat feed used</div><div class="stat-value">${s.meatFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbMeatFeed !== null ? fmtMoney(s.costPerLbMeatFeed) + "/lb" : "no cost data yet"}</div>${statSpark(tm.meatFeed)}${yoy(s.meatFeedLbs, sp && sp.meatFeedLbs, false)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Layer feed used</div><div class="stat-value">${s.layerFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbLayerFeed !== null ? `${fmtMoney(s.layerFeedCost)} at ${fmtMoney(s.costPerLbLayerFeed)}/lb` : "no cost data yet"}</div>${statSpark(tm.layerFeed)}${yoy(s.layerFeedLbs, sp && sp.layerFeedLbs, false)}</div>
+      <div class="stat tone-rust"><div class="stat-label">Meat feed used</div><div class="stat-value">${s.meatFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbMeatFeed !== null ? `${fmtMoney(s.meatFeedCost)} at ${fmtMoney(s.costPerLbMeatFeed)}/lb` : "no cost data yet"}</div>${statSpark(tm.meatFeed)}${yoy(s.meatFeedLbs, sp && sp.meatFeedLbs, false)}</div>
       <div class="stat tone-slate"><div class="stat-label">Bedding used</div><div class="stat-value">${s.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">bags emptied this year</div>${statSpark(tm.bedding)}${yoy(s.beddingCuFt, sp && sp.beddingCuFt, false)}</div>
       ${(s.chicksHatched + s.hatchLoss) > 0 ? `
       <div class="stat tone-gold"><div class="stat-label">Chicks hatched</div><div class="stat-value">${s.chicksHatched}</div><div class="stat-sub">from clutches started this year</div>${statSpark(tm.chicks)}${yoy(s.chicksHatched, sp && sp.chicksHatched)}</div>
@@ -5289,14 +5300,25 @@ function renderYearReviewSection() {
       </div>
     </div>
 
-    <div class="chart-grid" style="margin-top:16px">
-      <div class="card"><div class="card-title">Eggs by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div><div class="chart-box"><canvas id="reviewEggChart"></canvas></div></div>
-      <div class="card"><div class="card-title">Meat produced by month, lbs — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div><div class="chart-box"><canvas id="reviewMeatChart"></canvas></div></div>
-      <div class="card"><div class="card-title">Spend by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div><div class="chart-box"><canvas id="reviewExpenseChart"></canvas></div></div>
-      ${years.includes(String(Number(selectedYear) - 1)) ? `<div class="card"><div class="card-title">${selectedYear} vs ${Number(selectedYear) - 1}</div><div class="chart-box"><canvas id="reviewCompareChart"></canvas></div></div>` : ""}
+    <div class="chart-grid chart-grid-stretch" style="margin-top:16px">
+      <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">Eggs by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div></div><div class="chart-box"><canvas id="reviewEggChart"></canvas></div></div>
+      <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">Meat produced by month, lbs — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div></div><div class="chart-box"><canvas id="reviewMeatChart"></canvas></div></div>
+      <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">${reviewMoneyMode === "income" ? "Income" : reviewMoneyMode === "net" ? "Net" : "Spend"} by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div>
+        <div class="pill-row" id="reviewMoneyMode">
+          ${[["spend", "💵 Spend"], ["income", "💰 Income"], ["net", "⚖️ Net"]].map(([v, label]) => `<button class="pill-btn ${reviewMoneyMode === v ? "range-btn active" : ""}" data-money-mode="${v}">${label}</button>`).join("")}
+        </div>
+      </div><div class="chart-box"><canvas id="reviewExpenseChart"></canvas></div></div>
+      ${years.includes(String(Number(selectedYear) - 1)) ? `<div class="card"><div class="chart-head chart-head-grow"><div class="card-title">${selectedYear} vs ${Number(selectedYear) - 1}</div></div><div class="chart-box"><canvas id="reviewCompareChart"></canvas></div></div>` : ""}
     </div>
   `;
   document.getElementById("reviewYearSelect").addEventListener("change", (e) => { reviewYear = e.target.value; renderYearReviewSection(); });
+  const moneyModeToggle = document.getElementById("reviewMoneyMode");
+  if (moneyModeToggle) moneyModeToggle.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-money-mode]");
+    if (!btn) return;
+    reviewMoneyMode = btn.dataset.moneyMode;
+    renderYearReviewSection();
+  });
   drawYearReviewCharts(selectedYear);
 }
 
@@ -5343,12 +5365,23 @@ function drawYearReviewCharts(year) {
     options: yearChartOpts(hasPrev, (v) => `${displayWeight(v)} ${getWeightUnit()}`)
   });
 
+  // Money by month: spend, income, or net -- toggled by reviewMoneyMode. Spend
+  // and income are simple monthly sums; net is income - spend per month. Each
+  // shows the current year solid with last year dotted, same as the others.
   const expenseItems = STATE.expenses.filter(x => x.entry_type !== "income");
-  const expenseMonthly = monthlyBuckets(expenseItems, year, x => Number(x.amount) || 0);
-  const expensePrev = hasPrev ? monthlyBuckets(expenseItems, lastYear, x => Number(x.amount) || 0) : null;
+  const incomeItems = STATE.expenses.filter(x => x.entry_type === "income");
+  const spendMonthly = monthlyBuckets(expenseItems, year, x => Number(x.amount) || 0);
+  const incomeMonthly = monthlyBuckets(incomeItems, year, x => Number(x.amount) || 0);
+  const netMonthly = incomeMonthly.map((v, i) => v - spendMonthly[i]);
+  const spendPrev = hasPrev ? monthlyBuckets(expenseItems, lastYear, x => Number(x.amount) || 0) : null;
+  const incomePrev = hasPrev ? monthlyBuckets(incomeItems, lastYear, x => Number(x.amount) || 0) : null;
+  const netPrev = hasPrev ? incomePrev.map((v, i) => v - spendPrev[i]) : null;
+  const moneyPick = reviewMoneyMode === "income" ? { data: incomeMonthly, prev: incomePrev, color: "#8A9A5B" }
+    : reviewMoneyMode === "net" ? { data: netMonthly, prev: netPrev, color: "#D4A017" }
+    : { data: spendMonthly, prev: spendPrev, color: "#7A8FA6" };
   reviewCharts.expenses = new Chart(document.getElementById("reviewExpenseChart"), {
     type: "line",
-    data: { labels: MONTH_LABELS, datasets: withPrev({ label: year, data: expenseMonthly, borderColor: "#7A8FA6", backgroundColor: "#7A8FA633", tension: 0.25, pointRadius: 2, fill: true }, expensePrev, "#C7B9A6") },
+    data: { labels: MONTH_LABELS, datasets: withPrev({ label: year, data: moneyPick.data, borderColor: moneyPick.color, backgroundColor: moneyPick.color + "33", tension: 0.25, pointRadius: 2, fill: true }, moneyPick.prev, "#C7B9A6") },
     options: yearChartOpts(hasPrev, (v) => fmtMoney(v))
   });
 
