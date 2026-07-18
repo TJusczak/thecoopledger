@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-189";
+const APP_VERSION = "2026.07.13-191";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -44,6 +44,7 @@ let activeTab = "dashboard";
 let dashMonthKey = null;       // set on first render to current month
 let dashCompareKey = null;     // set to previous month
 let dashFeedType = "both";     // dashboard feed chart: "layer" | "meat" | "both"
+let dashProduceType = "eggs";  // combined produce card: "eggs" | "meat" (eggs default -- daily data; meat only a few months/yr)
 let reviewMoneyMode = "spend"; // Year Review money chart: "spend" | "income" | "net"
 // Dashboard "money" mega-chart: mode (spend/income/net) plus which pill is
 // selected within spend and income modes (null = all).
@@ -4685,26 +4686,47 @@ function incomeSourceIcon(source) {
  * the only date we can honestly attribute it to. That's also what makes a
  * "used 3/4 of a bag this month" case actually show up, instead of staying
  * invisible until the bag is finally marked empty. */
+/** How a bag's consumption is spread over time: {start, spanDays, perDay}, or
+ * null if nothing has been consumed yet.
+ *
+ * Birds eat a bit every day, so a bag's contents are spread evenly across the
+ * days it was actually in use -- never dumped on a single date.
+ *  - EMPTIED bag: its full quantity spread over opened_at -> date_emptied.
+ *  - OPEN bag: the portion used so far (from its status) spread over
+ *    opened_at -> today. This is the honest reading: if you opened a bag on
+ *    the 15th and marked it 3/4 full on the 18th, that quarter was eaten
+ *    across those four days, not all at once on the 18th.
+ * A bag with no opened_at can only be attributed to a single day (the emptied
+ * date, or today for an open bag), since there's no window to spread over. */
+function bagRamp(s, today) {
+  const qty = Number(s.quantity) || 0;
+  if (!(qty > 0)) return null;
+  if (s.date_emptied) {
+    const end = s.date_emptied;
+    const start = s.opened_at && s.opened_at < end ? s.opened_at : null;
+    if (!start) return { start: end, spanDays: 1, perDay: qty };
+    const spanDays = Math.round((new Date(end + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000) + 1;
+    return { start, spanDays, perDay: qty / spanDays };
+  }
+  const usedNow = qty * (STATUS_USED_FRACTION[s.status] ?? 0);
+  if (!(usedNow > 0)) return null; // still full -- nothing eaten yet
+  const start = s.opened_at && s.opened_at < today ? s.opened_at : null;
+  if (!start) return { start: today, spanDays: 1, perDay: usedNow };
+  const spanDays = Math.round((new Date(today + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000) + 1;
+  return { start, spanDays, perDay: usedNow / spanDays };
+}
+
 function feedCumulativeForMonth(key, feedType = "both") {
   const n = daysInMonthKey(key);
   const perDay = Array(n).fill(0);
   const today = todayStr();
   const cats = feedType === "layer" ? ["Layer Feed"] : feedType === "meat" ? ["Meat Feed"] : ["Layer Feed", "Meat Feed"];
   STATE.supplies.filter(s => cats.includes(s.category)).forEach(s => {
-    const qty = Number(s.quantity) || 0;
-    if (s.date_emptied) {
-      const end = s.date_emptied;
-      const start = s.opened_at && s.opened_at < end ? s.opened_at : null;
-      if (!start) { const d = dayInMonth(end, key); if (d > 0) perDay[d - 1] += qty; return; }
-      const spanDays = Math.round((new Date(end + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000) + 1;
-      const per = qty / spanDays;
-      for (let i = 0; i < spanDays; i++) { const d = dayInMonth(addDays(start, i), key); if (d > 0) perDay[d - 1] += per; }
-    } else {
-      // Open bag: attribute its used-so-far portion to today (if today is in
-      // this month). For a past month, an open bag contributes nothing --
-      // there's no honest date within a past month to place it.
-      const usedNow = qty * (STATUS_USED_FRACTION[s.status] ?? 0);
-      if (usedNow > 0) { const d = dayInMonth(today, key); if (d > 0) perDay[d - 1] += usedNow; }
+    const ramp = bagRamp(s, today);
+    if (!ramp) return;
+    for (let i = 0; i < ramp.spanDays; i++) {
+      const d = dayInMonth(addDays(ramp.start, i), key);
+      if (d > 0) perDay[d - 1] += ramp.perDay;
     }
   });
   // Turn per-day into a within-month running total.
@@ -4716,11 +4738,12 @@ function feedCumulativeForMonth(key, feedType = "both") {
  * on the All-Time and Year Review pages. `rows` is [{label, amount, emoji,
  * from, to}] (already the caller's choice of icon/colors); renders highest
  * first with a percent, a gradient bar, and a grand total. */
-function proportionBarsHtml(rows, { title, totalLabel }) {
+function proportionBarsHtml(rows, { title, totalLabel, bare = false }) {
   const entries = rows.filter(r => r.amount > 0).sort((a, b) => b.amount - a.amount);
-  if (!entries.length) return `<div class="card"><div class="card-title">${esc(title)}</div><div class="empty">Nothing logged yet.</div></div>`;
+  const wrap = (inner) => bare ? `<div class="bars-bare">${inner}</div>` : `<div class="card">${inner}</div>`;
+  if (!entries.length) return wrap(`<div class="card-title">${esc(title)}</div><div class="empty">Nothing logged.</div>`);
   const grand = entries.reduce((sum, r) => sum + r.amount, 0);
-  return `<div class="card">
+  return wrap(`
     <div class="card-title" style="margin-bottom:10px">${esc(title)}</div>
     <div style="display:flex;flex-direction:column;gap:8px">
       ${entries.map(r => {
@@ -4734,8 +4757,7 @@ function proportionBarsHtml(rows, { title, totalLabel }) {
         </div>`;
       }).join("")}
     </div>
-    <div class="cat-bar-total">${esc(totalLabel)}: <strong>${fmtMoney(grand)}</strong></div>
-  </div>`;
+    <div class="cat-bar-total">${esc(totalLabel)}: <strong>${fmtMoney(grand)}</strong></div>`);
 }
 
 /** Spend-by-category bars (wraps proportionBarsHtml with category icons). */
@@ -4788,6 +4810,17 @@ function valueBreakdownIn(inWindow) {
   return { eggValue, meatValue, otherIncomeByCat };
 }
 
+/** {category: dollars} of expenses in a month, for the dashboard breakdown. */
+function spendCatTotalsForMonth(key) {
+  const totals = {};
+  STATE.expenses.forEach(x => {
+    if (x.entry_type === "income" || monthKeyOf(x.date) !== key) return;
+    const cat = x.category || "Other";
+    totals[cat] = (totals[cat] || 0) + (Number(x.amount) || 0);
+  });
+  return totals;
+}
+
 /** Spend categories that actually have expenses, for the category pill picker. */
 function spendCategoriesPresent() {
   const set = new Set();
@@ -4816,20 +4849,11 @@ function avgEggsPerDay(key) {
  * open->emptied ramp the charts use. `inWindow(dateStr)` decides which days
  * count -- pass a month test, a year test, or `() => true` for all-time. */
 function feedBagLbsUsed(s, inWindow) {
-  const qty = Number(s.quantity) || 0;
-  if (s.date_emptied) {
-    const end = s.date_emptied;
-    const start = s.opened_at && s.opened_at < end ? s.opened_at : null;
-    if (!start) return inWindow(end) ? qty : 0;
-    const spanDays = Math.round((new Date(end + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000) + 1;
-    const per = qty / spanDays;
-    let lbs = 0;
-    for (let i = 0; i < spanDays; i++) if (inWindow(addDays(start, i))) lbs += per;
-    return lbs;
-  }
-  // Open bag: used-so-far portion is attributed to today.
-  const usedNow = qty * (STATUS_USED_FRACTION[s.status] ?? 0);
-  return (usedNow > 0 && inWindow(todayStr())) ? usedNow : 0;
+  const ramp = bagRamp(s, todayStr());
+  if (!ramp) return 0;
+  let lbs = 0;
+  for (let i = 0; i < ramp.spanDays; i++) if (inWindow(addDays(ramp.start, i))) lbs += ramp.perDay;
+  return lbs;
 }
 
 /** Cost of the feed of one category actually EATEN in a window, and the priced
@@ -5901,22 +5925,26 @@ function renderCoopOverview() {
         </div>
 
         <div class="chart-grid chart-grid-stretch">
-          <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">🥚 Eggs collected</div>${dashTotalBlock(sum(eggsDailyForMonth(dashMonthKey)), dashCompareKey ? sum(eggsDailyForMonth(dashCompareKey)) : 0, (v) => `${Math.round(v)} egg${Math.round(v) === 1 ? "" : "s"}`)}${(() => {
-            const avg = avgEggsPerDay(dashMonthKey);
-            return avg > 0 ? `<div class="dash-substat">${avg.toFixed(1)}/day avg</div>` : "";
-          })()}</div><div class="chart-box"><canvas id="dashEggChart"></canvas></div></div>
+          <div class="card"><div class="chart-head chart-head-grow">
+            ${dashProduceType === "meat" ? `<div class="card-title">🍗 Meat processed (${getWeightUnit()})</div>${dashTotalBlock(sum(meatDailyForMonth(dashMonthKey)), dashCompareKey ? sum(meatDailyForMonth(dashCompareKey)) : 0, (v) => `${displayWeight(v)} ${getWeightUnit()}`)}${(() => {
+              const shownBirds = birdsProcessedInMonth(dashMonthKey);
+              const compBirds = dashCompareKey ? birdsProcessedInMonth(dashCompareKey) : null;
+              if (!shownBirds && !compBirds) return `<div class="dash-substat">no birds processed this month</div>`;
+              const shownTxt = shownBirds ? `${shownBirds} bird${shownBirds === 1 ? "" : "s"} processed` : "no birds processed";
+              return `<div class="dash-substat">${shownTxt}${compBirds !== null ? ` · ${compBirds} in ${monthLabelShort(dashCompareKey)}` : ""}</div>`;
+            })()}` : `<div class="card-title">🥚 Eggs collected</div>${dashTotalBlock(sum(eggsDailyForMonth(dashMonthKey)), dashCompareKey ? sum(eggsDailyForMonth(dashCompareKey)) : 0, (v) => `${Math.round(v)} egg${Math.round(v) === 1 ? "" : "s"}`)}${(() => {
+              const avg = avgEggsPerDay(dashMonthKey);
+              return avg > 0 ? `<div class="dash-substat">${avg.toFixed(1)}/day avg</div>` : "";
+            })()}`}
+            <div class="pill-row" id="dashProduceType">
+              ${[["eggs", `${BIRD_TYPE_ICONS.layer.emoji} Eggs`], ["meat", `${BIRD_TYPE_ICONS.meat.emoji} Meat`]].map(([v, label]) => `<button class="pill-btn ${dashProduceType === v ? "range-btn active" : ""}" data-produce-type="${v}">${label}</button>`).join("")}
+            </div>
+          </div><div class="chart-box"><canvas id="dashProduceChart"></canvas></div></div>
           <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">🌾 Feed used, month-to-date${dashFeedType === "layer" ? " — layer" : dashFeedType === "meat" ? " — meat" : ""} (lbs)</div>${dashTotalBlock(feedTotalForMonth(dashMonthKey, dashFeedType), dashCompareKey ? feedTotalForMonth(dashCompareKey, dashFeedType) : 0, (v) => `${v.toFixed(1)} lb`, { invertColors: true })}
             <div class="pill-row" id="dashFeedType">
               ${[["both", "Both"], ["layer", `${BIRD_TYPE_ICONS.layer.emoji} Layer`], ["meat", `${BIRD_TYPE_ICONS.meat.emoji} Meat`]].map(([v, label]) => `<button class="pill-btn ${dashFeedType === v ? "range-btn active" : ""}" data-feed-type="${v}">${label}</button>`).join("")}
             </div>
           </div><div class="chart-box"><canvas id="dashFeedChart"></canvas></div></div>
-          <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">🍗 Meat processed (lbs)</div>${dashTotalBlock(sum(meatDailyForMonth(dashMonthKey)), dashCompareKey ? sum(meatDailyForMonth(dashCompareKey)) : 0, (v) => `${displayWeight(v)} ${getWeightUnit()}`)}${(() => {
-            const shownBirds = birdsProcessedInMonth(dashMonthKey);
-            const compBirds = dashCompareKey ? birdsProcessedInMonth(dashCompareKey) : null;
-            if (!shownBirds && !compBirds) return "";
-            const shownTxt = shownBirds ? `${shownBirds} bird${shownBirds === 1 ? "" : "s"} processed` : "no birds processed";
-            return `<div class="dash-substat">${shownTxt}${compBirds !== null ? ` · ${compBirds} in ${monthLabelShort(dashCompareKey)}` : ""}</div>`;
-          })()}</div><div class="chart-box"><canvas id="dashMeatChart"></canvas></div></div>
           <div class="card" style="grid-column:1/-1">
             <div class="chart-head chart-head-grow">
               <div class="money-mega-head">
@@ -5940,6 +5968,17 @@ function renderCoopOverview() {
               </div>` : `<div class="dash-substat">Value produced minus money spent, per day</div>`}
             </div>
             <div class="chart-box"><canvas id="dashMoneyChart"></canvas></div>
+            ${(() => {
+              // Breakdown beneath the chart, matching the current mode: where
+              // the money went (spend) or where the value came from (income).
+              // Net shows both side by side -- out vs in for the month.
+              const inMonth = (d) => monthKeyOf(d) === dashMonthKey;
+              const spendBars = () => spendCategoryBarsHtml(spendCatTotalsForMonth(dashMonthKey), { title: "Where it went", totalLabel: "Total spent", bare: true });
+              const valueBars = () => valueSourceBarsHtml(valueBreakdownIn(inMonth), { title: "Where it came from", totalLabel: "Total value", bare: true });
+              if (dashMoneyMode === "spend") return `<div class="money-breakdown">${spendBars()}</div>`;
+              if (dashMoneyMode === "income") return `<div class="money-breakdown">${valueBars()}</div>`;
+              return `<div class="money-breakdown money-breakdown-2">${valueBars()}${spendBars()}</div>`;
+            })()}
           </div>
         </div>`;
       })()}
@@ -5980,6 +6019,13 @@ function renderCoopOverview() {
     const btn = e.target.closest("[data-feed-type]");
     if (!btn) return;
     dashFeedType = btn.dataset.feedType;
+    renderCoopOverview();
+  });
+  const produceToggle = document.getElementById("dashProduceType");
+  if (produceToggle) produceToggle.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-produce-type]");
+    if (!btn) return;
+    dashProduceType = btn.dataset.produceType;
     renderCoopOverview();
   });
   el.querySelectorAll("[data-goto-hatching]").forEach(row => row.addEventListener("click", () => {
@@ -6115,14 +6161,27 @@ function drawDashboardCharts() {
   const compLabel = compareOn ? monthLabelOf(dashCompareKey) : "";
   const dashLine = (color) => ({ borderColor: color, borderDash: [4, 4], backgroundColor: "transparent", pointRadius: 0, tension: 0.25 });
 
-  // ---- Eggs ----
-  const eggMain = eggsDailyForMonth(dashMonthKey);
-  const eggDatasets = [{ label: mainLabel, data: eggMain, borderColor: "#D4A017", backgroundColor: "#D4A01733", tension: 0.25, pointRadius: 2, fill: true }];
-  if (compareOn) eggDatasets.push({ label: compLabel, data: alignCompare(eggsDailyForMonth(dashCompareKey)), ...dashLine("#C7B9A6") });
-  charts.dashEgg = new Chart(document.getElementById("dashEggChart"), {
-    type: "line", data: { labels, datasets: eggDatasets },
-    options: monthChartOpts(compareOn),
-  });
+  // ---- Produce: eggs (line) or meat (bars), toggled ----
+  const produceEl = document.getElementById("dashProduceChart");
+  if (produceEl) {
+    if (dashProduceType === "meat") {
+      const meatMain = meatDailyForMonth(dashMonthKey);
+      const meatDatasets = [{ label: mainLabel, data: meatMain, backgroundColor: "#C1502E", borderColor: "#C1502E", type: "bar" }];
+      if (compareOn) meatDatasets.push({ label: compLabel, data: alignCompare(meatDailyForMonth(dashCompareKey)), ...dashLine("#C7B9A6"), type: "line" });
+      charts.dashProduce = new Chart(produceEl, {
+        data: { labels, datasets: meatDatasets },
+        options: monthChartOpts(compareOn, (v) => `${displayWeight(v)} ${getWeightUnit()}`),
+      });
+    } else {
+      const eggMain = eggsDailyForMonth(dashMonthKey);
+      const eggDatasets = [{ label: mainLabel, data: eggMain, borderColor: "#D4A017", backgroundColor: "#D4A01733", tension: 0.25, pointRadius: 2, fill: true }];
+      if (compareOn) eggDatasets.push({ label: compLabel, data: alignCompare(eggsDailyForMonth(dashCompareKey)), ...dashLine("#C7B9A6") });
+      charts.dashProduce = new Chart(produceEl, {
+        type: "line", data: { labels, datasets: eggDatasets },
+        options: monthChartOpts(compareOn),
+      });
+    }
+  }
 
   // ---- Feed (cumulative within the month) ----
   const feedMain = feedCumulativeForMonth(dashMonthKey, dashFeedType);
@@ -6132,26 +6191,16 @@ function drawDashboardCharts() {
   const isCurrentMonth = dashMonthKey === monthKeyOf(todayStr());
   const todayDom = Number(todayStr().slice(8, 10));
   const truncateToToday = (arr) => isCurrentMonth ? arr.map((v, i) => (i < todayDom ? v : null)) : arr;
-  const feedColor = dashFeedType === "layer" ? "#D4A017" : dashFeedType === "meat" ? "#C1502E" : "#C1502E";
-  const feedFill = dashFeedType === "layer" ? "#D4A01733" : "#C1502E33";
+  // Distinct color per feed type: layer gold, meat rust, and Both its own
+  // slate -- previously Both reused the meat rust, which read as "meat feed."
+  const feedColor = dashFeedType === "layer" ? "#D4A017" : dashFeedType === "meat" ? "#C1502E" : "#7A8FA6";
+  const feedFill = dashFeedType === "layer" ? "#D4A01733" : dashFeedType === "meat" ? "#C1502E33" : "#7A8FA633";
   const feedDatasets = [{ label: mainLabel, data: truncateToToday(feedMain), borderColor: feedColor, backgroundColor: feedFill, tension: 0.2, pointRadius: 2, fill: true, spanGaps: false }];
   if (compareOn) feedDatasets.push({ label: compLabel, data: alignCompare(feedCumulativeForMonth(dashCompareKey, dashFeedType)), ...dashLine("#C7B9A6") });
   charts.dashFeed = new Chart(document.getElementById("dashFeedChart"), {
     type: "line", data: { labels, datasets: feedDatasets },
     options: monthChartOpts(compareOn, (v) => `${v.toFixed(2)} lb`),
   });
-
-  // ---- Meat processed (per-day; sporadic, so bars read better than a line) ----
-  const meatEl = document.getElementById("dashMeatChart");
-  if (meatEl) {
-    const meatMain = meatDailyForMonth(dashMonthKey);
-    const meatDatasets = [{ label: mainLabel, data: meatMain, backgroundColor: "#C1502E", borderColor: "#C1502E", type: "bar" }];
-    if (compareOn) meatDatasets.push({ label: compLabel, data: alignCompare(meatDailyForMonth(dashCompareKey)), ...dashLine("#C7B9A6"), type: "line" });
-    charts.dashMeat = new Chart(meatEl, {
-      data: { labels, datasets: meatDatasets },
-      options: monthChartOpts(compareOn, (v) => `${displayWeight(v)} ${getWeightUnit()}`),
-    });
-  }
 
   // ---- Money mega chart (spend / income / net) ----
   const moneyEl = document.getElementById("dashMoneyChart");

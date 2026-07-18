@@ -125,3 +125,50 @@ ok(shared90.meat[0] === 0 || shared90.meat[0] < shared90.meat.at(-1),
 ok(approx(shared90.meat.at(-1), 50), "90-day shared-axis also reaches 50");
 
 console.log(`\u2713 feed series: ${passed} assertions passed`);
+
+// ---------------------------------------------------------------------------
+// bagRamp / feedCumulativeForMonth: an OPEN bag's usage must be spread across
+// the days since it was opened, not dumped on today.
+//
+// Regression: a bag opened on the 15th and marked 3/4 full on the 18th used to
+// show a flat line for the 15th-17th and then a single jump on the 18th, which
+// reads as "no feed eaten for three days." Birds eat daily, so the quarter that
+// disappeared belongs spread over those four days.
+// ---------------------------------------------------------------------------
+globalThis.localDateStr = (d) => {
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+globalThis.STATUS_USED_FRACTION = { "Full": 0, "3/4": 0.25, "1/2": 0.5, "1/4": 0.75, "Empty": 1 };
+globalThis.todayStr = () => "2026-07-18";
+(0, eval)(grab("addDays").replace(/^function /, "globalThis.addDays=function "));
+(0, eval)(grab("daysInMonthKey").replace(/^function /, "globalThis.daysInMonthKey=function "));
+(0, eval)(grab("dayInMonth").replace(/^function /, "globalThis.dayInMonth=function "));
+(0, eval)(grab("bagRamp").replace(/^function /, "globalThis.bagRamp=function "));
+(0, eval)(grab("feedCumulativeForMonth").replace(/^function /, "globalThis.feedCumulativeForMonth=function "));
+
+// A 50 lb bag opened on the 15th, marked 3/4 full (so 1/4 = 12.5 lb eaten) on
+// the 18th: 12.5 lb over 4 days = 3.125 lb/day.
+const openBag = { category: "Meat Feed", quantity: 50, status: "3/4", opened_at: "2026-07-15" };
+const ramp = bagRamp(openBag, "2026-07-18");
+ok(ramp.spanDays === 4, `open bag spans opened_at..today (4 days), got ${ramp.spanDays}`);
+ok(approx(ramp.perDay, 3.125), `open bag spreads 12.5 lb over 4 days, got ${ramp.perDay}/day`);
+
+globalThis.STATE = { supplies: [openBag] };
+const openSeries = feedCumulativeForMonth("2026-07", "meat");
+ok(approx(openSeries[14], 3.125), `day 15 shows the first day's share, got ${openSeries[14]}`);
+ok(approx(openSeries[15], 6.25), `day 16 keeps climbing, got ${openSeries[15]}`);
+ok(approx(openSeries[16], 9.375), `day 17 keeps climbing, got ${openSeries[16]}`);
+ok(approx(openSeries[17], 12.5), `day 18 reaches the full used-so-far, got ${openSeries[17]}`);
+ok(openSeries[15] > openSeries[14] && openSeries[16] > openSeries[15],
+  "open bag climbs every day rather than staying flat then jumping");
+
+// A bag still marked Full has eaten nothing yet -- no phantom usage.
+ok(bagRamp({ category: "Meat Feed", quantity: 50, status: "Full", opened_at: "2026-07-15" }, "2026-07-18") === null,
+  "a Full bag contributes no consumption");
+
+// An emptied bag still spreads across its open->emptied window.
+const emptied = bagRamp({ category: "Meat Feed", quantity: 50, status: "Empty", opened_at: "2026-07-01", date_emptied: "2026-07-15" }, "2026-07-18");
+ok(emptied.spanDays === 15 && approx(emptied.perDay, 50 / 15), "emptied bag still ramps over its own window");
+
+console.log(`\u2713 open-bag ramp: assertions passed`);

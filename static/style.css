@@ -229,6 +229,12 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 .money-mega-head { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
 .money-mega-head .card-title { flex: 1 1 auto; min-width: 0; }
 .money-mode-pills { flex: 0 0 auto; margin-left: auto; }
+/* Source breakdown nested under the mega chart: bars without their own card
+   chrome, separated from the chart by a divider. Net mode shows value and
+   spend side by side (in vs out), stacking on narrow screens. */
+.money-breakdown { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.money-breakdown-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+.bars-bare { min-width: 0; }
 /* Headline feed-cost cards (Year Review + All-Time): the true cost-to-produce
    figures, given prominence -- big number, icon tile, caption. Two-up on wide
    screens, stacked on narrow. */
