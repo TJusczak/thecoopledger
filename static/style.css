@@ -249,6 +249,19 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
    out/churn) + area name + inline caption. Far denser than the old multi-line
    stamped blocks. */
 .bedding-fresh-list { display: flex; flex-direction: column; gap: 2px; }
+/* Dashboard top: stat cards + alerts on the left, bedding freshness as a
+   full-height column on the right. Single column on narrow screens; the side
+   column only splits off once there's room for it. */
+.dash-top { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 900px) {
+  .dash-top { grid-template-columns: minmax(0, 1fr) 300px; align-items: stretch; }
+  .dash-top-side { display: flex; }
+  .dash-top-side > .card { flex: 1; margin-bottom: 0; }
+  /* In the narrow side column, put each area's detail on its own line under
+     the name rather than squeezing both onto one row. */
+  .dash-top-side .bedding-fresh-row { flex-wrap: wrap; }
+  .dash-top-side .bedding-fresh-info { margin-left: 19px; width: 100%; text-align: left; }
+}
 .bedding-fresh-row { display: flex; align-items: center; gap: 9px; padding: 5px 2px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
 .bedding-fresh-row:last-child { border-bottom: none; }
 .bedding-fresh-area { font-weight: 600; font-size: 13px; flex: 0 0 auto; }

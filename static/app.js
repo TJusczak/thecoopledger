@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-191";
+const APP_VERSION = "2026.07.13-192";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -54,6 +54,8 @@ let dashIncomePill = null;  // "Egg value" | "Meat value" | an income category, 
 // Year Review mega-chart pill selection (mode reuses reviewMoneyMode).
 let reviewSpendPill = null;
 let reviewIncomePill = null;
+let reviewProduceType = "eggs"; // Year Review produce card: "eggs" | "meat"
+let reviewFeedType = "both";    // Year Review feed card: "layer" | "meat" | "both"
 let charts = {};
 
 const BIRD_TYPES = ["Layer", "Meat", "Dual Purpose"];
@@ -5366,10 +5368,6 @@ function renderYearReviewSection() {
       </div>`;
     })()}
 
-    <div class="grid-2">
-      ${spendCategoryBarsHtml(s.categoryBreakdown, { title: `Spending by category — ${selectedYear}`, totalLabel: `Total spent in ${selectedYear}` })}
-      ${valueSourceBarsHtml(valueBreakdownIn((d) => d && d.slice(0, 4) === selectedYear), { title: `Value by source — ${selectedYear}`, totalLabel: `Total value in ${selectedYear}` })}
-    </div>
     <div class="grid-2" style="margin-top:16px">
       <div class="card">
         <div class="card-title">Bedding clean-outs — ${selectedYear}</div>
@@ -5383,9 +5381,21 @@ function renderYearReviewSection() {
     </div>
 
     <div class="chart-grid chart-grid-stretch" style="margin-top:16px">
-      <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">Eggs by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div></div><div class="chart-box"><canvas id="reviewEggChart"></canvas></div></div>
-      <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">Meat produced by month, lbs — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div></div><div class="chart-box"><canvas id="reviewMeatChart"></canvas></div></div>
-      <div class="card"><div class="chart-head chart-head-grow"><div class="money-mega-head"><div class="card-title">${reviewMoneyMode === "income" ? "💰 Income / value" : reviewMoneyMode === "net" ? "⚖️ Net" : "💵 Spend"} by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}${reviewMoneyMode === "spend" && reviewSpendPill ? ` · ${esc(reviewSpendPill)}` : reviewMoneyMode === "income" && reviewIncomePill ? ` · ${esc(reviewIncomePill)}` : ""}</div>
+      <div class="card"><div class="chart-head chart-head-grow">
+        ${reviewProduceType === "meat"
+          ? `<div class="card-title">🍗 Meat by month, ${getWeightUnit()} — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div>`
+          : `<div class="card-title">🥚 Eggs by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div>`}
+        <div class="pill-row" id="reviewProduceType">
+          ${[["eggs", `${BIRD_TYPE_ICONS.layer.emoji} Eggs`], ["meat", `${BIRD_TYPE_ICONS.meat.emoji} Meat`]].map(([v, label]) => `<button class="pill-btn ${reviewProduceType === v ? "range-btn active" : ""}" data-produce-type="${v}">${label}</button>`).join("")}
+        </div>
+      </div><div class="chart-box"><canvas id="reviewProduceChart"></canvas></div></div>
+      <div class="card"><div class="chart-head chart-head-grow">
+        <div class="card-title">🌾 Feed by month${reviewFeedType === "layer" ? " — layer" : reviewFeedType === "meat" ? " — meat" : ""} (lbs) — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div>
+        <div class="pill-row" id="reviewFeedType">
+          ${[["both", "Both"], ["layer", `${BIRD_TYPE_ICONS.layer.emoji} Layer`], ["meat", `${BIRD_TYPE_ICONS.meat.emoji} Meat`]].map(([v, label]) => `<button class="pill-btn ${reviewFeedType === v ? "range-btn active" : ""}" data-feed-type="${v}">${label}</button>`).join("")}
+        </div>
+      </div><div class="chart-box"><canvas id="reviewFeedChart"></canvas></div></div>
+      <div class="card" style="grid-column:1/-1"><div class="chart-head chart-head-grow"><div class="money-mega-head"><div class="card-title">${reviewMoneyMode === "income" ? "💰 Income / value" : reviewMoneyMode === "net" ? "⚖️ Net" : "💵 Spend"} by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}${reviewMoneyMode === "spend" && reviewSpendPill ? ` · ${esc(reviewSpendPill)}` : reviewMoneyMode === "income" && reviewIncomePill ? ` · ${esc(reviewIncomePill)}` : ""}</div>
         <div class="pill-row money-mode-pills" id="reviewMoneyMode">
           ${[["spend", "💵 Spend"], ["income", "💰 Income"], ["net", "⚖️ Net"]].map(([v, label]) => `<button class="pill-btn ${reviewMoneyMode === v ? "range-btn active" : ""}" data-money-mode="${v}">${label}</button>`).join("")}
         </div></div>
@@ -5396,8 +5406,16 @@ function renderYearReviewSection() {
           <button class="pill-btn ${!reviewIncomePill ? "range-btn active" : ""}" data-income-pill="">All</button>
           ${incomeSourcesPresent().map(src => { const ic = incomeSourceIcon(src); return `<button class="pill-btn ${reviewIncomePill === src ? "range-btn active" : ""}" data-income-pill="${esc(src)}">${ic.emoji} ${esc(src)}</button>`; }).join("")}
         </div>` : ""}
-      </div><div class="chart-box"><canvas id="reviewExpenseChart"></canvas></div></div>
-      ${years.includes(String(Number(selectedYear) - 1)) ? `<div class="card"><div class="chart-head chart-head-grow"><div class="card-title">${selectedYear} vs ${Number(selectedYear) - 1}</div></div><div class="chart-box"><canvas id="reviewCompareChart"></canvas></div></div>` : ""}
+      </div><div class="chart-box"><canvas id="reviewExpenseChart"></canvas></div>
+        ${(() => {
+          const inYearTest = (d) => d && d.slice(0, 4) === selectedYear;
+          const spendBars = () => spendCategoryBarsHtml(s.categoryBreakdown, { title: "Where it went", totalLabel: `Total spent in ${selectedYear}`, bare: true });
+          const valueBars = () => valueSourceBarsHtml(valueBreakdownIn(inYearTest), { title: "Where it came from", totalLabel: `Total value in ${selectedYear}`, bare: true });
+          if (reviewMoneyMode === "spend") return `<div class="money-breakdown">${spendBars()}</div>`;
+          if (reviewMoneyMode === "income") return `<div class="money-breakdown">${valueBars()}</div>`;
+          return `<div class="money-breakdown money-breakdown-2">${valueBars()}${spendBars()}</div>`;
+        })()}
+      </div>
     </div>
   `;
   document.getElementById("reviewYearSelect").addEventListener("change", (e) => { reviewYear = e.target.value; renderYearReviewSection(); });
@@ -5422,6 +5440,20 @@ function renderYearReviewSection() {
     reviewIncomePill = btn.dataset.incomePill || null;
     renderYearReviewSection();
   });
+  const reviewProduceToggle = document.getElementById("reviewProduceType");
+  if (reviewProduceToggle) reviewProduceToggle.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-produce-type]");
+    if (!btn) return;
+    reviewProduceType = btn.dataset.produceType;
+    renderYearReviewSection();
+  });
+  const reviewFeedToggle = document.getElementById("reviewFeedType");
+  if (reviewFeedToggle) reviewFeedToggle.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-feed-type]");
+    if (!btn) return;
+    reviewFeedType = btn.dataset.feedType;
+    renderYearReviewSection();
+  });
   drawYearReviewCharts(selectedYear);
 }
 
@@ -5438,6 +5470,27 @@ function monthlyBuckets(items, year, valueFn) {
 }
 
 let reviewCharts = {};
+
+/** Feed consumed (lb) per month across a year, by feed type. Uses the same
+ * bag ramp as everywhere else, so a bag spanning a month boundary splits by
+ * the days it was actually eaten in each. Per-month totals (not cumulative):
+ * birds eat every month, so each bucket is meaningfully non-zero. */
+function feedMonthlyForYear(year, feedType = "both") {
+  const arr = new Array(12).fill(0);
+  const today = todayStr();
+  const cats = feedType === "layer" ? ["Layer Feed"] : feedType === "meat" ? ["Meat Feed"] : ["Layer Feed", "Meat Feed"];
+  STATE.supplies.filter(s => cats.includes(s.category)).forEach(s => {
+    const ramp = bagRamp(s, today);
+    if (!ramp) return;
+    for (let i = 0; i < ramp.spanDays; i++) {
+      const day = addDays(ramp.start, i);
+      if (day.slice(0, 4) !== year) continue;
+      const m = parseInt(day.slice(5, 7), 10) - 1;
+      if (m >= 0 && m < 12) arr[m] += ramp.perDay;
+    }
+  });
+  return arr;
+}
 
 /** 12-month array of money for a year, honoring mode (spend/income/net) and an
  * optional pill. Income value = egg value + meat value + other income (egg/
@@ -5478,23 +5531,42 @@ function drawYearReviewCharts(year) {
     ? [mainDs, { label: lastYear, data: prevData, ...prevDash(prevColor) }]
     : [mainDs];
 
-  const eggMonthly = monthlyBuckets(STATE.eggs, year, e => Number(e.count) || 0);
-  const eggPrev = hasPrev ? monthlyBuckets(STATE.eggs, lastYear, e => Number(e.count) || 0) : null;
-  reviewCharts.eggs = new Chart(document.getElementById("reviewEggChart"), {
-    type: "line",
-    data: { labels: MONTH_LABELS, datasets: withPrev({ label: year, data: eggMonthly, borderColor: "#D4A017", backgroundColor: "#D4A01733", tension: 0.25, pointRadius: 2, fill: true }, eggPrev, "#C7B9A6") },
-    options: yearChartOpts(hasPrev)
-  });
+  // ---- Produce: eggs (line) or meat (bars), toggled -- mirrors the dashboard
+  const produceEl = document.getElementById("reviewProduceChart");
+  if (produceEl) {
+    if (reviewProduceType === "meat") {
+      const meatItems = STATE.birds.filter(b => b.status === "Processed" && b.harvest_date).map(b => ({ date: b.harvest_date, weight: Number(b.harvest_weight) || 0 }));
+      const meatMonthly = monthlyBuckets(meatItems, year, (it) => it.weight);
+      const meatPrev = hasPrev ? monthlyBuckets(meatItems, lastYear, (it) => it.weight) : null;
+      const ds = [{ label: year, data: meatMonthly, backgroundColor: "#C1502E", borderColor: "#C1502E", type: "bar" }];
+      if (hasPrev) ds.push({ label: lastYear, data: meatPrev, ...prevDash("#C7B9A6"), type: "line" });
+      reviewCharts.produce = new Chart(produceEl, {
+        data: { labels: MONTH_LABELS, datasets: ds },
+        options: yearChartOpts(hasPrev, (v) => `${displayWeight(v)} ${getWeightUnit()}`)
+      });
+    } else {
+      const eggMonthly = monthlyBuckets(STATE.eggs, year, e => Number(e.count) || 0);
+      const eggPrev = hasPrev ? monthlyBuckets(STATE.eggs, lastYear, e => Number(e.count) || 0) : null;
+      reviewCharts.produce = new Chart(produceEl, {
+        type: "line",
+        data: { labels: MONTH_LABELS, datasets: withPrev({ label: year, data: eggMonthly, borderColor: "#D4A017", backgroundColor: "#D4A01733", tension: 0.25, pointRadius: 2, fill: true }, eggPrev, "#C7B9A6") },
+        options: yearChartOpts(hasPrev)
+      });
+    }
+  }
 
-  const processedBirds = STATE.birds.filter(b => b.status === "Processed" && b.harvest_date);
-  const meatItems = processedBirds.map(b => ({ date: b.harvest_date, weight: Number(b.harvest_weight) || 0 }));
-  const meatMonthly = monthlyBuckets(meatItems, year, (it) => it.weight);
-  const meatPrev = hasPrev ? monthlyBuckets(meatItems, lastYear, (it) => it.weight) : null;
-  reviewCharts.meat = new Chart(document.getElementById("reviewMeatChart"), {
-    type: "line",
-    data: { labels: MONTH_LABELS, datasets: withPrev({ label: year, data: meatMonthly, borderColor: "#C1502E", backgroundColor: "#C1502E33", tension: 0.25, pointRadius: 2, fill: true }, meatPrev, "#C7B9A6") },
-    options: yearChartOpts(hasPrev, (v) => `${displayWeight(v)} ${getWeightUnit()}`)
-  });
+  // ---- Feed by month, by type -- same toggle and colors as the dashboard ----
+  const feedEl = document.getElementById("reviewFeedChart");
+  if (feedEl) {
+    const feedMonthly = feedMonthlyForYear(year, reviewFeedType);
+    const feedPrev = hasPrev ? feedMonthlyForYear(lastYear, reviewFeedType) : null;
+    const fc = reviewFeedType === "layer" ? "#D4A017" : reviewFeedType === "meat" ? "#C1502E" : "#7A8FA6";
+    reviewCharts.feed = new Chart(feedEl, {
+      type: "line",
+      data: { labels: MONTH_LABELS, datasets: withPrev({ label: year, data: feedMonthly, borderColor: fc, backgroundColor: fc + "33", tension: 0.25, pointRadius: 2, fill: true }, feedPrev, "#C7B9A6") },
+      options: yearChartOpts(hasPrev, (v) => `${v.toFixed(1)} lb`)
+    });
+  }
 
   // Money mega chart: spend/income/net (reviewMoneyMode) with an optional pill
   // (category for spend, source for income). Income uses the value model (egg
@@ -5514,30 +5586,6 @@ function drawYearReviewCharts(year) {
     options: moneyOpts
   });
 
-  const compareCanvas = document.getElementById("reviewCompareChart");
-  if (compareCanvas) {
-    const prev = computeYearStats(lastYear);
-    // Percentage change rather than raw numbers -- egg counts (hundreds)
-    // and dollar amounts don't share a sensible axis, but "% change" puts
-    // every metric on the same comparable scale, which is what actually
-    // shows a trend at a glance.
-    const pctChange = (curr, prevVal) => prevVal === 0 ? (curr > 0 ? 100 : 0) : ((curr - prevVal) / Math.abs(prevVal)) * 100;
-    const compareLabels = ["Eggs", "Meat (lb)", "Spent", "Net"];
-    const compareData = [
-      pctChange(s.eggCount, prev.eggCount),
-      pctChange(s.processedWeight, prev.processedWeight),
-      pctChange(s.totalExpenses, prev.totalExpenses),
-      pctChange(s.net, prev.net),
-    ];
-    reviewCharts.compare = new Chart(compareCanvas, {
-      type: "bar",
-      data: {
-        labels: compareLabels,
-        datasets: [{ label: `vs ${lastYear}`, data: compareData, backgroundColor: compareData.map(v => v >= 0 ? "#8A9A5B" : "#C1502E") }]
-      },
-      options: { ...chartOpts((v) => `${v >= 0 ? "+" : ""}${v.toFixed(0)}%`), plugins: { legend: { display: false } } }
-    });
-  }
 }
 
 /** Year Review monthly chart options: legend shown only when a prior-year
@@ -5796,6 +5844,8 @@ function renderCoopOverview() {
     </div>`;
   el.innerHTML = `
     <div class="section-gap">
+      <div class="dash-top">
+      <div class="dash-top-main">
       <div class="grid-stats-2">
         ${statCard({ tone: "sage", goto: "flock", label: "Active Birds", value: s.active,
           sub: `${BIRD_TYPE_ICONS.layer.emoji} ${s.layers} layer · ${BIRD_TYPE_ICONS.meat.emoji} ${s.meatActive} meat`,
@@ -5866,6 +5916,8 @@ function renderCoopOverview() {
         </div>`;
       })()}
 
+      </div>
+      <div class="dash-top-side">
       <div class="card">
         <div class="card-title">Bedding freshness</div>
         <div class="bedding-fresh-list">
@@ -5900,6 +5952,8 @@ function renderCoopOverview() {
           }).join("")}
         </div>
         <div class="dim" style="font-size:11px;margin-top:10px">Thresholds are per-area and adjustable in the <strong style="color:var(--text)">Settings</strong> tab.</div>
+      </div>
+      </div>
       </div>
 
       ${(() => {
