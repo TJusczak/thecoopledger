@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-194";
+const APP_VERSION = "2026.07.13-195";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5777,7 +5777,16 @@ function computeCardTrends() {
     const b = bucketOf(x.date);
     if (b >= 0) spentW[b] += Number(x.amount) || 0;
   });
-  const netW = valueW.map((v, i) => v - spentW[i]);
+  // Net is a RUNNING total across the 8 weeks, not a per-week figure. As a
+  // per-week value it mostly showed when transactions happened -- a feed
+  // purchase dropped one week hard negative, egg weeks pushed it back up --
+  // which is timing noise, not a trend. A running total answers the question
+  // the card is actually for: am I still sinking, or has income started to
+  // outweigh spending and pulled the line back upward?
+  const netW = (() => {
+    let run = 0;
+    return valueW.map((v, i) => (run += v - spentW[i]));
+  })();
 
   // Flock size at the end of each weekly bucket.
   const flockW = zeros();
