@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-192";
+const APP_VERSION = "2026.07.13-194";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -3622,8 +3622,8 @@ function renderAllTimeStatsSection() {
       <div class="stat tone-gold"><div class="stat-label">Value produced, all time</div><div class="stat-value">${fmtMoney(s.incomeAll)}</div><div class="stat-sub">eggs + meat + other income</div>${statSpark(ty.value)}</div>
       <div class="stat ${s.netAll >= 0 ? "tone-sage" : ""}" style="${s.netAll < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net savings, all time</div><div class="stat-value">${fmtMoney(s.netAll)}</div><div class="stat-sub">value − spend</div>${statSpark(ty.net)}</div>
       <div class="stat tone-gold"><div class="stat-label">Full clean-outs, all time</div><div class="stat-value">${totalCleanouts}</div><div class="stat-sub">across ${getBeddingAreas().length} tracked area${getBeddingAreas().length !== 1 ? "s" : ""}</div>${statSpark(ty.cleanouts)}</div>
-      <div class="stat tone-gold"><div class="stat-label">Layer feed used, all time</div><div class="stat-value">${usage.layerFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${costPerLbLayerFeed !== null ? `${fmtMoney(layerConsumed.cost)} at ${fmtMoney(costPerLbLayerFeed)}/lb` : "no cost data yet"}</div>${statSpark(ty.layerFeed)}</div>
-      <div class="stat tone-rust"><div class="stat-label">Meat feed used, all time</div><div class="stat-value">${usage.meatFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${costPerLbMeatFeed !== null ? `${fmtMoney(meatConsumed.cost)} at ${fmtMoney(costPerLbMeatFeed)}/lb` : "no cost data yet"}</div>${statSpark(ty.meatFeed)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Layer feed used, all time</div><div class="stat-value">${displayWeight(usage.layerFeedLbs)} ${getWeightUnit()}</div><div class="stat-sub">${costPerLbLayerFeed !== null ? `${fmtMoney(layerConsumed.cost)} at ${fmtMoney(displayPricePerLb(costPerLbLayerFeed))}/${getWeightUnit()}` : "no cost data yet"}</div>${statSpark(ty.layerFeed)}</div>
+      <div class="stat tone-rust"><div class="stat-label">Meat feed used, all time</div><div class="stat-value">${displayWeight(usage.meatFeedLbs)} ${getWeightUnit()}</div><div class="stat-sub">${costPerLbMeatFeed !== null ? `${fmtMoney(meatConsumed.cost)} at ${fmtMoney(displayPricePerLb(costPerLbMeatFeed))}/${getWeightUnit()}` : "no cost data yet"}</div>${statSpark(ty.meatFeed)}</div>
       <div class="stat tone-slate"><div class="stat-label">Bedding used, all time</div><div class="stat-value">${usage.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">${costPerCuFtBedding !== null ? fmtMoney(costPerCuFtBedding) + "/cu ft" : "no cost data yet"}</div>${statSpark(ty.bedding)}</div>
       ${STATE.hatches.length > 0 ? `
       <div class="stat tone-gold"><div class="stat-label">Chicks hatched, all time</div><div class="stat-value">${s.chicksHatchedAll}</div><div class="stat-sub">across ${STATE.hatches.length} clutch${STATE.hatches.length !== 1 ? "es" : ""}</div>${statSpark(ty.chicks)}</div>
@@ -3688,7 +3688,7 @@ function renderProductsSection() {
                     ${productPhotoUrl(p) ? `<div class="thumb-clickable" data-view-photo="${esc(productPhotoUrl(p))}" data-product-id="${p.id}" style="width:48px;height:48px;border-radius:6px;overflow:hidden;flex:0 0 auto;cursor:zoom-in"><img src="${productPhotoUrl(p)}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(p)};${photoTransformStyle(p)}"></div>` : `<div style="width:48px;height:48px;border-radius:6px;flex:0 0 auto;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:20px">📦</div>`}
                     <div class="list-card-main">
                       <div style="font-weight:700">${esc(p.brand || cat)}</div>
-                      <div class="list-card-desc dim">${p.default_quantity != null ? `usually ${p.default_quantity} ${esc(p.default_unit || "")}` : "no usual quantity set"}${p.default_description ? ` · "${esc(p.default_description)}"` : ""}</div>
+                      <div class="list-card-desc dim">${p.default_quantity != null ? `usually ${displayQty(p.default_quantity, p.default_unit)} ${esc(unitLabel(p.default_unit))}` : "no usual quantity set"}${p.default_description ? ` · "${esc(p.default_description)}"` : ""}</div>
                       ${(inStock > 0 || used > 0) ? `<div class="list-card-desc dim">${inStock > 0 ? `${inStock} in stock` : ""}${inStock > 0 && used > 0 ? " · " : ""}${used > 0 ? `${used} used up` : ""}</div>` : ""}
                     </div>
                   </div>
@@ -3801,13 +3801,13 @@ function openProductModal(editingProduct, category) {
     let productId;
     if (editingProduct) {
       await localSupplyProductUpdate(editingProduct.id, {
-        brand, default_quantity: qtyVal ? Number(qtyVal) : null, default_unit: unitVal || null, default_description: descVal || null,
+        brand, default_quantity: parseQtyInput(qtyVal, unitVal), default_unit: unitVal || null, default_description: descVal || null,
       });
       productId = editingProduct.id;
     } else {
       const created = await localSupplyProductCreate({
         coop_id: currentCoopId, category, brand, last_used_at: todayStr(),
-        default_quantity: qtyVal ? Number(qtyVal) : null, default_unit: unitVal || null, default_description: descVal || null,
+        default_quantity: parseQtyInput(qtyVal, unitVal), default_unit: unitVal || null, default_description: descVal || null,
       });
       productId = created.id;
     }
@@ -4707,7 +4707,13 @@ function bagRamp(s, today) {
     const end = s.date_emptied;
     const start = s.opened_at && s.opened_at < end ? s.opened_at : null;
     if (!start) return { start: end, spanDays: 1, perDay: qty };
-    const spanDays = Math.round((new Date(end + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000) + 1;
+    // The window is HALF-OPEN: [opened_at, date_emptied). The emptied date is
+    // when the bag was recorded gone, so the feed was eaten on the days
+    // leading up to it. Counting that day too would double up with a
+    // replacement bag opened the same day -- the handoff day would show two
+    // full rations (one from each bag) and spike the chart.
+    const diff = Math.round((new Date(end + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000);
+    const spanDays = Math.max(1, diff); // opened and emptied same day -> one day
     return { start, spanDays, perDay: qty / spanDays };
   }
   const usedNow = qty * (STATUS_USED_FRACTION[s.status] ?? 0);
@@ -5348,8 +5354,8 @@ function renderYearReviewSection() {
       <div class="stat tone-slate"><div class="stat-label">Total spent</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${Object.keys(s.categoryBreakdown).length} categories</div>${statSpark(tm.spent)}${yoy(s.totalExpenses, sp && sp.totalExpenses, false)}</div>
       <div class="stat tone-gold"><div class="stat-label">Value produced</div><div class="stat-value">${fmtMoney(s.income)}</div><div class="stat-sub">eggs + meat</div>${statSpark(tm.value)}${yoy(s.income, sp && sp.income)}</div>
       <div class="stat ${s.net >= 0 ? "tone-sage" : ""}" style="${s.net < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net for ${selectedYear}</div><div class="stat-value">${fmtMoney(s.net)}</div><div class="stat-sub">value − spend</div>${statSpark(tm.net)}${sp && sp.net > 0 && s.net > 0 ? yoy(s.net, sp.net) : ""}</div>
-      <div class="stat tone-gold"><div class="stat-label">Layer feed used</div><div class="stat-value">${s.layerFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbLayerFeed !== null ? `${fmtMoney(s.layerFeedCost)} at ${fmtMoney(s.costPerLbLayerFeed)}/lb` : "no cost data yet"}</div>${statSpark(tm.layerFeed)}${yoy(s.layerFeedLbs, sp && sp.layerFeedLbs, false)}</div>
-      <div class="stat tone-rust"><div class="stat-label">Meat feed used</div><div class="stat-value">${s.meatFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbMeatFeed !== null ? `${fmtMoney(s.meatFeedCost)} at ${fmtMoney(s.costPerLbMeatFeed)}/lb` : "no cost data yet"}</div>${statSpark(tm.meatFeed)}${yoy(s.meatFeedLbs, sp && sp.meatFeedLbs, false)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Layer feed used</div><div class="stat-value">${displayWeight(s.layerFeedLbs)} ${getWeightUnit()}</div><div class="stat-sub">${s.costPerLbLayerFeed !== null ? `${fmtMoney(s.layerFeedCost)} at ${fmtMoney(displayPricePerLb(s.costPerLbLayerFeed))}/${getWeightUnit()}` : "no cost data yet"}</div>${statSpark(tm.layerFeed)}${yoy(s.layerFeedLbs, sp && sp.layerFeedLbs, false)}</div>
+      <div class="stat tone-rust"><div class="stat-label">Meat feed used</div><div class="stat-value">${displayWeight(s.meatFeedLbs)} ${getWeightUnit()}</div><div class="stat-sub">${s.costPerLbMeatFeed !== null ? `${fmtMoney(s.meatFeedCost)} at ${fmtMoney(displayPricePerLb(s.costPerLbMeatFeed))}/${getWeightUnit()}` : "no cost data yet"}</div>${statSpark(tm.meatFeed)}${yoy(s.meatFeedLbs, sp && sp.meatFeedLbs, false)}</div>
       <div class="stat tone-slate"><div class="stat-label">Bedding used</div><div class="stat-value">${s.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">bags emptied this year</div>${statSpark(tm.bedding)}${yoy(s.beddingCuFt, sp && sp.beddingCuFt, false)}</div>
       ${(s.chicksHatched + s.hatchLoss) > 0 ? `
       <div class="stat tone-gold"><div class="stat-label">Chicks hatched</div><div class="stat-value">${s.chicksHatched}</div><div class="stat-sub">from clutches started this year</div>${statSpark(tm.chicks)}${yoy(s.chicksHatched, sp && sp.chicksHatched)}</div>
@@ -5390,7 +5396,7 @@ function renderYearReviewSection() {
         </div>
       </div><div class="chart-box"><canvas id="reviewProduceChart"></canvas></div></div>
       <div class="card"><div class="chart-head chart-head-grow">
-        <div class="card-title">🌾 Feed by month${reviewFeedType === "layer" ? " — layer" : reviewFeedType === "meat" ? " — meat" : ""} (lbs) — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div>
+        <div class="card-title">🌾 Feed by month${reviewFeedType === "layer" ? " — layer" : reviewFeedType === "meat" ? " — meat" : ""} (${getWeightUnit()}) — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div>
         <div class="pill-row" id="reviewFeedType">
           ${[["both", "Both"], ["layer", `${BIRD_TYPE_ICONS.layer.emoji} Layer`], ["meat", `${BIRD_TYPE_ICONS.meat.emoji} Meat`]].map(([v, label]) => `<button class="pill-btn ${reviewFeedType === v ? "range-btn active" : ""}" data-feed-type="${v}">${label}</button>`).join("")}
         </div>
@@ -5558,13 +5564,13 @@ function drawYearReviewCharts(year) {
   // ---- Feed by month, by type -- same toggle and colors as the dashboard ----
   const feedEl = document.getElementById("reviewFeedChart");
   if (feedEl) {
-    const feedMonthly = feedMonthlyForYear(year, reviewFeedType);
-    const feedPrev = hasPrev ? feedMonthlyForYear(lastYear, reviewFeedType) : null;
+    const feedMonthly = feedMonthlyForYear(year, reviewFeedType).map(weightNum);
+    const feedPrev = hasPrev ? feedMonthlyForYear(lastYear, reviewFeedType).map(weightNum) : null;
     const fc = reviewFeedType === "layer" ? "#D4A017" : reviewFeedType === "meat" ? "#C1502E" : "#7A8FA6";
     reviewCharts.feed = new Chart(feedEl, {
       type: "line",
       data: { labels: MONTH_LABELS, datasets: withPrev({ label: year, data: feedMonthly, borderColor: fc, backgroundColor: fc + "33", tension: 0.25, pointRadius: 2, fill: true }, feedPrev, "#C7B9A6") },
-      options: yearChartOpts(hasPrev, (v) => `${v.toFixed(1)} lb`)
+      options: yearChartOpts(hasPrev, (v) => `${v.toFixed(1)} ${getWeightUnit()}`)
     });
   }
 
@@ -5656,6 +5662,13 @@ function parseWeightInput(displayValue) {
  * scales the opposite way from a plain quantity. $5/lb is about $11.02/kg
  * (dividing by the lb-to-kg factor), not $2.27/kg -- a kg costs more
  * because it's the bigger unit, not less. */
+/** Numeric form of displayWeight, for chart series data (displayWeight returns
+ * a string, which Chart.js would treat as a category rather than a value). */
+function weightNum(lbValue) {
+  const n = Number(lbValue) || 0;
+  return getWeightUnit() === "kg" ? +(n * LB_TO_KG).toFixed(2) : +n.toFixed(2);
+}
+
 function displayPricePerLb(dollarsPerLb) {
   if (dollarsPerLb == null || dollarsPerLb === "") return "";
   const n = Number(dollarsPerLb);
@@ -5994,7 +6007,7 @@ function renderCoopOverview() {
               ${[["eggs", `${BIRD_TYPE_ICONS.layer.emoji} Eggs`], ["meat", `${BIRD_TYPE_ICONS.meat.emoji} Meat`]].map(([v, label]) => `<button class="pill-btn ${dashProduceType === v ? "range-btn active" : ""}" data-produce-type="${v}">${label}</button>`).join("")}
             </div>
           </div><div class="chart-box"><canvas id="dashProduceChart"></canvas></div></div>
-          <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">🌾 Feed used, month-to-date${dashFeedType === "layer" ? " — layer" : dashFeedType === "meat" ? " — meat" : ""} (lbs)</div>${dashTotalBlock(feedTotalForMonth(dashMonthKey, dashFeedType), dashCompareKey ? feedTotalForMonth(dashCompareKey, dashFeedType) : 0, (v) => `${v.toFixed(1)} lb`, { invertColors: true })}
+          <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">🌾 Feed used, month-to-date${dashFeedType === "layer" ? " — layer" : dashFeedType === "meat" ? " — meat" : ""} (${getWeightUnit()})</div>${dashTotalBlock(weightNum(feedTotalForMonth(dashMonthKey, dashFeedType)), dashCompareKey ? weightNum(feedTotalForMonth(dashCompareKey, dashFeedType)) : 0, (v) => `${v.toFixed(1)} ${getWeightUnit()}`, { invertColors: true })}
             <div class="pill-row" id="dashFeedType">
               ${[["both", "Both"], ["layer", `${BIRD_TYPE_ICONS.layer.emoji} Layer`], ["meat", `${BIRD_TYPE_ICONS.meat.emoji} Meat`]].map(([v, label]) => `<button class="pill-btn ${dashFeedType === v ? "range-btn active" : ""}" data-feed-type="${v}">${label}</button>`).join("")}
             </div>
@@ -6238,7 +6251,8 @@ function drawDashboardCharts() {
   }
 
   // ---- Feed (cumulative within the month) ----
-  const feedMain = feedCumulativeForMonth(dashMonthKey, dashFeedType);
+  // Series converted to the display unit so the axis matches the label.
+  const feedMain = feedCumulativeForMonth(dashMonthKey, dashFeedType).map(weightNum);
   // For the CURRENT month, don't draw a flat line stretching to the end of the
   // month past today -- cut the series off at today so it doesn't imply "no
   // more feed forecast." Past months show the whole month.
@@ -6250,10 +6264,10 @@ function drawDashboardCharts() {
   const feedColor = dashFeedType === "layer" ? "#D4A017" : dashFeedType === "meat" ? "#C1502E" : "#7A8FA6";
   const feedFill = dashFeedType === "layer" ? "#D4A01733" : dashFeedType === "meat" ? "#C1502E33" : "#7A8FA633";
   const feedDatasets = [{ label: mainLabel, data: truncateToToday(feedMain), borderColor: feedColor, backgroundColor: feedFill, tension: 0.2, pointRadius: 2, fill: true, spanGaps: false }];
-  if (compareOn) feedDatasets.push({ label: compLabel, data: alignCompare(feedCumulativeForMonth(dashCompareKey, dashFeedType)), ...dashLine("#C7B9A6") });
+  if (compareOn) feedDatasets.push({ label: compLabel, data: alignCompare(feedCumulativeForMonth(dashCompareKey, dashFeedType).map(weightNum)), ...dashLine("#C7B9A6") });
   charts.dashFeed = new Chart(document.getElementById("dashFeedChart"), {
     type: "line", data: { labels, datasets: feedDatasets },
-    options: monthChartOpts(compareOn, (v) => `${v.toFixed(2)} lb`),
+    options: monthChartOpts(compareOn, (v) => `${v.toFixed(2)} ${getWeightUnit()}`),
   });
 
   // ---- Money mega chart (spend / income / net) ----
@@ -8885,7 +8899,28 @@ function openEggModal(editing) {
 
 // ================= EXPENSES =================
 const EXPENSE_FOR_TYPES = ["All Birds", "Layers Only", "Meat Birds Only"];
-const EXPENSE_UNITS = ["lb", "kg", "cu ft", "bag", "bale", "gallon", "unit", "eggs"];
+// Weight is stored canonically in lb; the coop's weight toggle decides how it
+// is shown. "kg" is deliberately NOT an option here -- picking a weight unit
+// per item is what let a 20 kg bag get summed as "20" against a 50 lb bag's
+// "50". The lb option renders with whatever label the toggle is set to.
+const EXPENSE_UNITS = ["lb", "cu ft", "bag", "bale", "gallon", "unit", "eggs"];
+function isWeightUnit(u) { return u === "lb" || u === "kg"; }
+/** How a unit is labeled in the UI: weights follow the toggle, others are literal. */
+function unitLabel(u) { return isWeightUnit(u) ? getWeightUnit() : (u || ""); }
+/** A stored quantity shown in the user's units: weights convert, others don't. */
+function displayQty(qty, unit) {
+  if (qty == null || qty === "") return "";
+  return isWeightUnit(unit) ? displayWeight(qty) : String(+Number(qty).toFixed(2));
+}
+/** A quantity the user typed converted back to storage units (lb for weights). */
+function parseQtyInput(val, unit) {
+  if (val === "" || val == null) return null;
+  return isWeightUnit(unit) ? parseWeightInput(val) : Number(val);
+}
+/** Unit <option> list, labeling the weight unit per the toggle. */
+function unitOptionsHtml(selected) {
+  return EXPENSE_UNITS.map(u => `<option value="${u}" ${selected === u || (isWeightUnit(selected) && u === "lb") ? "selected" : ""}>${unitLabel(u)}</option>`).join("");
+}
 const QUANTITY_CATEGORIES = new Set(["Layer Feed", "Meat Feed", "Treats", "Bedding"]); // categories where "how much did I buy" is worth tracking
 
 function yearsFromDates(items, field) {
@@ -9095,7 +9130,7 @@ function renderExpenses() {
               <span class="expense-cat-name">${esc(x.category)}</span>
               ${!isIncome && x.for_type && x.for_type !== "All Birds" ? audienceTile(x.for_type) : ""}
             </div>
-            <div class="list-card-desc dim">${fmtDate(x.date)}${x.quantity ? ` · ${x.quantity} ${esc(x.unit || "")}` : ""}${x.description ? " · " + esc(x.description) : ""}</div>
+            <div class="list-card-desc dim">${fmtDate(x.date)}${x.quantity ? ` · ${displayQty(x.quantity, x.unit)} ${esc(unitLabel(x.unit))}` : ""}${x.description ? " · " + esc(x.description) : ""}</div>
             ${isIncome && QUANTITY_RELEVANT_INCOME.has(x.category) ? (() => { const rate = saleRateLabel(x.amount, x.quantity, x.category); return rate ? `<div class="list-card-desc dim">${rate}</div>` : ""; })() : ""}
           </div>
           <div class="list-card-side list-card-side-amount">
@@ -9234,8 +9269,8 @@ function expenseFormHtml(editing) {
       <label class="field"><span>Date</span><input type="date" id="x_date" value="${editing ? editing.date : todayStr()}"></label>
       <label class="field"><span>Category</span><select id="x_cat">${(expenseFormEntryType === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map(c => `<option ${(editing ? editing.category === c : pendingExpenseCategory === c) ? "selected" : ""}>${c}</option>`).join("")}</select></label>
       <label class="field"><span>Amount ($, total)</span><input type="number" step="0.01" id="x_amount" value="${editing ? editing.amount : ""}"></label>
-      ${showQuantityFields ? `<label class="field"><span>Quantity${expenseFormEntryType === "income" ? "" : " (per bag/item)"}</span><input type="number" step="0.01" id="x_qty" placeholder="e.g. 50" value="${editing && editing.quantity != null ? editing.quantity : ""}"></label>` : ""}
-      ${showQuantityFields ? `<label class="field"><span>Unit</span><select id="x_unit"><option value="">—</option>${EXPENSE_UNITS.map(u => `<option ${editing && editing.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>` : ""}
+      ${showQuantityFields ? `<label class="field"><span>Quantity${expenseFormEntryType === "income" ? "" : " (per bag/item)"}</span><input type="number" step="0.01" id="x_qty" placeholder="e.g. 50" value="${editing && editing.quantity != null ? displayQty(editing.quantity, editing.unit) : ""}"></label>` : ""}
+      ${showQuantityFields ? `<label class="field"><span>Unit</span><select id="x_unit"><option value="">—</option>${unitOptionsHtml(editing && editing.unit)}</select></label>` : ""}
       ${showQuantityFields && !editing && expenseFormEntryType === "expense" ? `<label class="field"><span>Number of bags/items</span><input type="number" min="1" max="200" step="1" id="x_count" value="1"></label>` : ""}
       ${expenseFormEntryType === "expense" ? `<label class="field"><span>Applies to</span><select id="x_for">${EXPENSE_FOR_TYPES.map(t => `<option ${editing ? (editing.for_type === t ? "selected" : "") : (t === "All Birds" ? "selected" : "")}>${t}</option>`).join("")}</select></label>` : ""}
       <label class="field"><span>Description</span><input id="x_desc" placeholder="${expenseFormEntryType === "income" ? "e.g. Sold to neighbor" : "e.g. 50lb layer feed, or Heat lamp"}" value="${editing ? esc(editing.description || "") : ""}"></label>
@@ -9280,11 +9315,13 @@ function wireExpenseFormModal(editing) {
   document.getElementById("saveExpense").addEventListener("click", async () => {
     const amount = document.getElementById("x_amount").value;
     if (!amount) return;
-    const qtyEl = document.getElementById("x_qty");
-    const perItemQty = qtyEl ? qtyEl.value : "";
     const category = document.getElementById("x_cat").value;
     const unitEl = document.getElementById("x_unit");
     const unit = unitEl ? (unitEl.value || null) : null;
+    // Quantity is typed in the toggle unit; store canonically (lb for weights)
+    // since this value becomes the supply bag's quantity.
+    const qtyEl = document.getElementById("x_qty");
+    const perItemQty = qtyEl ? (parseQtyInput(qtyEl.value, unit) ?? "") : "";
     const description = document.getElementById("x_desc").value;
     const date = document.getElementById("x_date").value;
     const countEl = document.getElementById("x_count");
@@ -9382,10 +9419,10 @@ function renderProductEditFormHtml(editingProduct, category, standalone = false)
         <label class="field"><span>Brand</span><input id="np_brand" placeholder="e.g. Purina Layena" value="${editingProduct ? esc(editingProduct.brand || "") : ""}"></label>
         <label class="field"><span>Photo${editingProduct ? " (leave blank to keep current)" : ""}</span><input type="file" id="np_photo" accept="image/*"></label>
         <label class="field"><span>Description</span><input id="np_desc" placeholder="e.g. large bag" value="${editingProduct ? esc(editingProduct.default_description || "") : ""}"></label>
-        <label class="field"><span>Usual quantity</span><input type="number" step="0.01" id="np_qty" placeholder="e.g. 50" value="${editingProduct && editingProduct.default_quantity != null ? editingProduct.default_quantity : ""}"></label>
+        <label class="field"><span>Usual quantity</span><input type="number" step="0.01" id="np_qty" placeholder="e.g. 50" value="${editingProduct && editingProduct.default_quantity != null ? displayQty(editingProduct.default_quantity, editingProduct.default_unit) : ""}"></label>
         <label class="field"><span>Usual unit</span><select id="np_unit" ${lockedUnit ? "disabled" : ""}>${lockedUnit
           ? `<option selected>${lockedUnit}</option>`
-          : `<option value="">—</option>${EXPENSE_UNITS.map(u => `<option ${editingProduct && editingProduct.default_unit === u ? "selected" : ""}>${u}</option>`).join("")}`
+          : `<option value="">—</option>${unitOptionsHtml(editingProduct && editingProduct.default_unit)}`
         }</select></label>
       </div>
       <div class="dim" style="font-size:11px;margin-top:6px">Selecting this product will fill in the brand (and description/quantity/unit, if set here) automatically -- keeps bags of the same product consistent instead of drifting apart by typo.</div>
@@ -9419,7 +9456,7 @@ function renderProductPickerRow(category) {
   const editingProduct = editingProductId ? STATE.supplyProducts.find(p => p.id === editingProductId) : null;
   const formOpen = newProductFormOpen || !!editingProduct;
   const tileHtml = (p) => {
-    const qtyPart = p.default_quantity != null ? `${p.default_quantity} ${p.default_unit || ""}`.trim() : "";
+    const qtyPart = p.default_quantity != null ? `${displayQty(p.default_quantity, p.default_unit)} ${unitLabel(p.default_unit)}`.trim() : "";
     const label = [p.default_description, qtyPart].filter(Boolean).join(" -- ") || p.brand || p.category;
     return `
         <div class="product-picker-item${selectedProductId === p.id ? " selected" : ""}" data-product="${p.id}">
@@ -9513,7 +9550,7 @@ function wireProductPicker(el, { categoryFieldId, brandFieldId, descFieldId, qty
     let productId;
     if (editingProductId) {
       await localSupplyProductUpdate(editingProductId, {
-        brand, default_quantity: qtyVal ? Number(qtyVal) : null, default_unit: unitVal || null, default_description: descVal || null,
+        brand, default_quantity: parseQtyInput(qtyVal, unitVal), default_unit: unitVal || null, default_description: descVal || null,
       });
       productId = editingProductId;
     } else {
@@ -9521,7 +9558,7 @@ function wireProductPicker(el, { categoryFieldId, brandFieldId, descFieldId, qty
       const category = categoryField ? categoryField.value : "";
       const created = await localSupplyProductCreate({
         coop_id: currentCoopId, category, brand, last_used_at: todayStr(),
-        default_quantity: qtyVal ? Number(qtyVal) : null, default_unit: unitVal || null, default_description: descVal || null,
+        default_quantity: parseQtyInput(qtyVal, unitVal), default_unit: unitVal || null, default_description: descVal || null,
       });
       productId = created.id;
     }
@@ -9552,7 +9589,7 @@ const FULLNESS_STEPS = [
 function supplyCardHtml(s) {
   const tone = supplyStatusTone(s.status); // "sage" | "gold" | "rust" | "slate"
   const catTone = supplyCategoryTone(s.category);
-  const amountLabel = s.quantity ? `${s.quantity} ${esc(s.unit || "")}` : "";
+  const amountLabel = s.quantity ? `${displayQty(s.quantity, s.unit)} ${esc(unitLabel(s.unit))}` : "";
   const product = s.product_id ? STATE.supplyProducts.find(p => p.id === s.product_id) : null;
   const photo = product ? productPhotoUrl(product) : null;
   const line1 = s.brand || s.description || s.category;
@@ -9586,8 +9623,8 @@ function supplyGroupFormHtml(members) {
       <label class="field"><span>Category</span><select id="grp_category">${[...QUANTITY_CATEGORIES].map(c => `<option ${first.category === c ? "selected" : ""}>${c}</option>`).join("")}</select></label>
       <label class="field"><span>Brand</span><input id="grp_brand" value="${esc(first.brand || "")}"></label>
       <label class="field"><span>Description</span><input id="grp_desc" value="${esc(first.description || "")}"></label>
-      <label class="field"><span>Quantity (per item)</span><input type="number" step="0.01" id="grp_qty" value="${first.quantity ?? ""}"></label>
-      <label class="field"><span>Unit</span><select id="grp_unit">${EXPENSE_UNITS.map(u => `<option ${first.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>
+      <label class="field"><span>Quantity (per item)</span><input type="number" step="0.01" id="grp_qty" value="${displayQty(first.quantity, first.unit)}"></label>
+      <label class="field"><span>Unit</span><select id="grp_unit">${unitOptionsHtml(first.unit)}</select></label>
       <label class="field"><span>Date added</span><input type="date" id="grp_date" value="${first.date_added || todayStr()}"></label>
       <label class="field"><span>Count</span><input type="number" min="0" max="500" step="1" id="grp_count" value="${members.length}"></label>
     </div>
@@ -9610,7 +9647,7 @@ function openSupplyGroupModal(key) {
       category: document.getElementById("grp_category").value,
       brand: document.getElementById("grp_brand").value,
       description: document.getElementById("grp_desc").value,
-      quantity: document.getElementById("grp_qty").value ? Number(document.getElementById("grp_qty").value) : null,
+      quantity: parseQtyInput(document.getElementById("grp_qty").value, document.getElementById("grp_unit").value),
       unit: document.getElementById("grp_unit").value,
       date_added: document.getElementById("grp_date").value,
       status: "Full",
@@ -9671,7 +9708,7 @@ function emptySupplyModalHtml() {
           ${photo ? `<div style="width:44px;height:44px;border-radius:6px;overflow:hidden;flex:0 0 auto;margin-right:2px"><img src="${photo}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(product)};${photoTransformStyle(product)}opacity:0.75"></div>` : ""}
           <div class="list-card-main">
             <div style="font-weight:600">${esc(s.brand || s.description || s.category)}</div>
-            <div class="list-card-desc dim">${esc(s.category)}${s.quantity ? ` · ${s.quantity} ${esc(s.unit || "")}` : ""}</div>
+            <div class="list-card-desc dim">${esc(s.category)}${s.quantity ? ` · ${displayQty(s.quantity, s.unit)} ${esc(unitLabel(s.unit))}` : ""}</div>
             <div class="list-card-desc dim">${s.date_added ? `added ${fmtDate(s.date_added)}` : ""}${s.opened_at ? ` · opened ${fmtDate(s.opened_at)}` : ""}${s.date_emptied ? ` · emptied ${fmtDate(s.date_emptied)}` : ""}${s.opened_at && s.date_emptied ? ` · used over ${Math.max(1, daysSince(s.opened_at) - daysSince(s.date_emptied))}d` : ""}</div>
           </div>
           <div class="list-card-side">
@@ -9735,7 +9772,7 @@ function supplyGroupCardHtml(items) {
   const count = items.length;
   const key = supplyGroupKey(first);
   const catTone = supplyCategoryTone(first.category);
-  const amountLabel = first.quantity ? `${first.quantity} ${esc(first.unit || "")} each` : "";
+  const amountLabel = first.quantity ? `${displayQty(first.quantity, first.unit)} ${esc(unitLabel(first.unit))} each` : "";
   // Any item in the group with a resolvable photo, not just whichever
   // happens to be first -- a group can end up mixing older items (created
   // before they were linked to a product) with newer, correctly-linked
@@ -9953,8 +9990,8 @@ function supplyFormHtml(editingSupply) {
       <label class="field"><span>Category</span><select id="sp_category">${[...QUANTITY_CATEGORIES].map(c => `<option ${editingSupply && editingSupply.category === c ? "selected" : ""}>${c}</option>`).join("")}</select></label>
       <label class="field"><span>Brand</span><input id="sp_brand" placeholder="e.g. Purina Layena" value="${editingSupply ? esc(editingSupply.brand || "") : ""}"></label>
       <label class="field"><span>Description</span><input id="sp_desc" placeholder="e.g. large bag, opened" value="${editingSupply ? esc(editingSupply.description || "") : ""}"></label>
-      <label class="field"><span>Quantity (per item)</span><input type="number" step="0.01" id="sp_qty" value="${editingSupply && editingSupply.quantity != null ? editingSupply.quantity : ""}"></label>
-      <label class="field"><span>Unit</span><select id="sp_unit">${EXPENSE_UNITS.map(u => `<option ${editingSupply && editingSupply.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>
+      <label class="field"><span>Quantity (per item)</span><input type="number" step="0.01" id="sp_qty" value="${editingSupply && editingSupply.quantity != null ? displayQty(editingSupply.quantity, editingSupply.unit) : ""}"></label>
+      <label class="field"><span>Unit</span><select id="sp_unit">${unitOptionsHtml(editingSupply && editingSupply.unit)}</select></label>
       <label class="field"><span>Cost for this item ${editingSupply && editingSupply.source_expense_id ? "(from its expense)" : "*"}</span><input type="number" step="0.01" min="0" id="sp_cost" value="${(() => {
         if (!editingSupply) return "";
         if (editingSupply.cost != null) return editingSupply.cost;
@@ -10037,7 +10074,8 @@ function wireSupplyForm(editingSupply) {
       category: document.getElementById("sp_category").value,
       brand: document.getElementById("sp_brand").value,
       description: document.getElementById("sp_desc").value,
-      quantity: document.getElementById("sp_qty").value ? Number(document.getElementById("sp_qty").value) : null,
+      // Weights are typed in the toggle unit and stored canonically in lb.
+      quantity: parseQtyInput(document.getElementById("sp_qty").value, document.getElementById("sp_unit").value),
       unit: document.getElementById("sp_unit").value,
       cost: document.getElementById("sp_cost") && document.getElementById("sp_cost").value !== "" ? Number(document.getElementById("sp_cost").value) : null,
       status,

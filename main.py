@@ -58,7 +58,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.13-192"
+SERVER_VERSION = "2026.07.13-194"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
@@ -1826,6 +1826,59 @@ async def _periodic_maintenance_loop():
             print(f"Periodic maintenance error: {e}")
 
 
+LB_TO_KG = 0.45359237
+
+
+def migrate_normalize_supply_weight_units():
+    """Convert any supplies stored in kg to lb, the canonical weight unit.
+
+    Supplies carry their own `unit` field, but every aggregation (feed totals,
+    charts, cost per lb, cost per dozen) summed `quantity` without looking at
+    it -- so a 20 kg bag was counted as "20" next to a 50 lb bag's "50",
+    silently under-counting. Weights are now normalized to lb on save and
+    converted only for display, so this brings existing rows in line.
+
+    Only kg rows are touched: cu ft, bag, bale, gallon, unit and eggs are not
+    weights and are left exactly as they are. updated_at is bumped so the fix
+    syncs outward to every device rather than being re-overwritten by a stale
+    local copy.
+    """
+    now = _now_iso()
+    total = 0
+    # Same normalization for expenses and product defaults: an expense's
+    # quantity becomes the supply bag's quantity, and a product's default
+    # quantity pre-fills both, so a stray kg in either reintroduces the bug.
+    targets = [
+        ("supplies", "quantity", "unit"),
+        ("expenses", "quantity", "unit"),
+        ("supply_products", "default_quantity", "default_unit"),
+    ]
+    with get_db() as conn:
+        existing_tables = {
+            r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        for table, qty_col, unit_col in targets:
+            if table not in existing_tables:
+                continue
+            rows = conn.execute(
+                f"SELECT id, {qty_col} AS q FROM {table} "
+                f"WHERE lower(trim(coalesce({unit_col},''))) = 'kg' AND {qty_col} IS NOT NULL"
+            ).fetchall()
+            for r in rows:
+                try:
+                    lb = round(float(r["q"]) / LB_TO_KG, 4)
+                except (TypeError, ValueError):
+                    continue
+                conn.execute(
+                    f"UPDATE {table} SET {qty_col} = ?, {unit_col} = 'lb', updated_at = ? WHERE id = ?",
+                    (lb, now, r["id"]),
+                )
+                total += 1
+        conn.commit()
+    if total:
+        print(f"Normalized {total} row(s) from kg to lb")
+
+
 def migrate_repair_orphaned_hatch_eggs():
     """Tombstones hatch_eggs whose parent hatch was already deleted -- these
     are orphans from before hatch deletion cascaded to its egg rows. They
@@ -1856,6 +1909,7 @@ async def _on_startup():
     migrate_flat_photos_to_coop_folders()
     migrate_repair_orphaned_photo_refs()
     migrate_repair_orphaned_hatch_eggs()
+    migrate_normalize_supply_weight_units()
     _maybe_auto_rotate_invite_code()  # catch anything overdue from while the server was down
     _prune_old_activity_log()
     _prune_old_failed_logins()

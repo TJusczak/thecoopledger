@@ -167,8 +167,28 @@ ok(openSeries[15] > openSeries[14] && openSeries[16] > openSeries[15],
 ok(bagRamp({ category: "Meat Feed", quantity: 50, status: "Full", opened_at: "2026-07-15" }, "2026-07-18") === null,
   "a Full bag contributes no consumption");
 
-// An emptied bag still spreads across its open->emptied window.
+// An emptied bag spreads across a HALF-OPEN window [opened, emptied): the
+// emptied date is when it was recorded gone, so the feed was eaten in the days
+// before it. Jul 1 -> Jul 15 is therefore 14 days, not 15.
 const emptied = bagRamp({ category: "Meat Feed", quantity: 50, status: "Empty", opened_at: "2026-07-01", date_emptied: "2026-07-15" }, "2026-07-18");
-ok(emptied.spanDays === 15 && approx(emptied.perDay, 50 / 15), "emptied bag still ramps over its own window");
+ok(emptied.spanDays === 14 && approx(emptied.perDay, 50 / 14), `emptied bag ramps over [opened, emptied), got ${emptied.spanDays} days`);
+
+// Opened and emptied on the same day still gets one day rather than zero.
+const sameDay = bagRamp({ category: "Meat Feed", quantity: 40, status: "Empty", opened_at: "2026-07-05", date_emptied: "2026-07-05" }, "2026-07-18");
+ok(sameDay.spanDays === 1 && approx(sameDay.perDay, 40), "same-day open/empty collapses to a single day");
+
+// Regression: a bag emptied the same day its replacement is opened must not
+// give that day two full rations. Previously both windows covered the handoff
+// date and the chart showed a doubled step there.
+globalThis.STATE = { supplies: [
+  { category: "Meat Feed", quantity: 50, status: "Empty", opened_at: "2026-07-01", date_emptied: "2026-07-15" },
+  { category: "Meat Feed", quantity: 50, status: "3/4", opened_at: "2026-07-15" },
+] };
+const handoff = feedCumulativeForMonth("2026-07", "meat");
+const stepOn = (day) => handoff[day - 1] - handoff[day - 2];
+ok(approx(stepOn(14), 50 / 14), `day 14 draws only from the old bag, got ${stepOn(14)}`);
+ok(approx(stepOn(15), 12.5 / 4), `handoff day draws only from the new bag, got ${stepOn(15)}`);
+ok(stepOn(15) < stepOn(14) * 1.5, "handoff day is a normal ration, not a doubled spike");
+ok(approx(handoff[13], 50), `the old bag's full quantity is still attributed, got ${handoff[13]}`);
 
 console.log(`\u2713 open-bag ramp: assertions passed`);
