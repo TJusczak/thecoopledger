@@ -176,6 +176,21 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 @media (max-width: 800px) { .grid-2 { grid-template-columns: 1fr; } }
 
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; align-items: start; }
+/* Dashboard grid: a taller fixed header zone (fits the eggs card's title +
+   total + averages line) above a fixed chart-box, so every card is the same
+   height AND every canvas is identical and top-aligned -- the extra averages
+   line on the eggs card sits in reserved space the feed card simply leaves
+   empty, rather than shrinking one canvas relative to the other. */
+.chart-grid-stretch > .card { display: flex; flex-direction: column; }
+/* Exactly two columns, never three. These grids hold a deliberate pair of
+   charts plus a full-width card below; letting auto-fit add a third column on
+   a wide screen left the pair hugging the left with dead space beside them. */
+.chart-grid-stretch { grid-template-columns: 1fr; }
+@media (min-width: 760px) {
+  .chart-grid-stretch { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.chart-grid-stretch > .card .chart-head { min-height: 96px; }
+.chart-grid-stretch > .card .chart-head.chart-head-grow { min-height: 130px; }
 /* Every chart card reserves the same fixed-height header zone above its
    canvas, whatever it contains -- a bare one-line title, or the feed card's
    title + description + per-bird tags. The chart-box itself is a fixed
@@ -184,6 +199,95 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
    comparing charts side by side stays visually aligned. */
 .chart-grid > .card { display: flex; flex-direction: column; }
 .chart-head { min-height: 78px; display: flex; flex-direction: column; }
+/* Dashboard month picker: two selects (shown month / comparison month) that
+   wrap on narrow screens, plus a helper line. */
+.month-picker { margin-bottom: 16px; }
+.month-picker-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.month-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 200px; }
+.month-field > span { font-size: 11px; color: var(--text-dim); font-weight: 600; }
+.month-field select { width: 100%; }
+/* Category pill row inside the spend chart head -- wraps to as many rows as
+   needed so every category is visible on screen (no hidden side-scroll on
+   mobile). The spend card's head is allowed to grow past the shared 78px
+   header zone to fit them, since it's the full-width card on its own row. */
+.pill-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.pill-row .pill-btn { flex: 0 0 auto; white-space: nowrap; }
+.chart-head.chart-head-grow { min-height: 0; }
+/* Dashboard card total: the shown-month figure prominent, the comparison
+   month + delta smaller beneath. Sits in the chart header under the title. */
+.dash-total { margin: 2px 0 4px; line-height: 1.25; }
+.dash-total-main { font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 700; color: var(--text); }
+.dash-total-compare { display: block; font-size: 11px; color: var(--text-dim); margin-top: 1px; }
+.dash-delta { font-weight: 700; }
+.dash-delta.up-good { color: var(--sage); }
+.dash-delta.up-bad { color: var(--rust); }
+.dash-delta.flat { color: var(--text-dim); }
+/* Small secondary stats under a dashboard total (e.g. avg eggs/day, feed cost
+   per dozen) -- honest derived numbers, kept visually quiet so the headline
+   total stays dominant. */
+.dash-substat { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+/* Money mega-chart head: title on the left, the spend/income/net mode pills on
+   the right, wrapping on narrow screens. */
+/* Money mega-chart head: title on the left, spend/income/net mode pills
+   anchored to the right. The title takes the remaining space (flex:1) and the
+   pills use margin-left:auto, so the pills stay put regardless of how long the
+   current mode's title is -- no jumping when switching to the shorter
+   "Spending" title. On narrow screens the pills wrap below. */
+.money-mega-head { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.money-mega-head .card-title { flex: 1 1 auto; min-width: 0; }
+.money-mode-pills { flex: 0 0 auto; margin-left: auto; }
+/* Source breakdown nested under the mega chart: bars without their own card
+   chrome, separated from the chart by a divider. Net mode shows value and
+   spend side by side (in vs out), stacking on narrow screens. */
+.money-breakdown { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.money-breakdown-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+.bars-bare { min-width: 0; }
+/* Headline feed-cost cards (Year Review + All-Time): the true cost-to-produce
+   figures, given prominence -- big number, icon tile, caption. Two-up on wide
+   screens, stacked on narrow. */
+.cost-headline-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.cost-headline { display: flex; align-items: center; gap: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; }
+.cost-headline-icon { flex: 0 0 auto; width: 46px; height: 46px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 24px; }
+.cost-headline-body { min-width: 0; }
+.cost-headline-value { font-family: 'JetBrains Mono', monospace; font-size: 26px; font-weight: 700; color: var(--text); line-height: 1.1; }
+.cost-headline-unit { font-size: 13px; font-weight: 400; color: var(--text-dim); margin-left: 3px; }
+.cost-headline-caption { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
+/* Compact bedding freshness: one row per area, a status dot (worst of clean-
+   out/churn) + area name + inline caption. Far denser than the old multi-line
+   stamped blocks. */
+.bedding-fresh-list { display: flex; flex-direction: column; gap: 2px; }
+/* Dashboard top: stat cards + alerts on the left, bedding freshness as a
+   full-height column on the right. Single column on narrow screens; the side
+   column only splits off once there's room for it. */
+.dash-top { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 900px) {
+  .dash-top { grid-template-columns: minmax(0, 1fr) 300px; align-items: stretch; }
+  .dash-top-side { display: flex; }
+  .dash-top-side > .card { flex: 1; margin-bottom: 0; }
+  /* In the narrow side column, put each area's detail on its own line under
+     the name rather than squeezing both onto one row. */
+  .dash-top-side .bedding-fresh-row { flex-wrap: wrap; }
+  .dash-top-side .bedding-fresh-info { margin-left: 19px; width: 100%; text-align: left; }
+}
+.bedding-fresh-row { display: flex; align-items: center; gap: 9px; padding: 5px 2px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
+.bedding-fresh-row:last-child { border-bottom: none; }
+.bedding-fresh-area { font-weight: 600; font-size: 13px; flex: 0 0 auto; }
+.bedding-fresh-info { font-size: 12px; margin-left: auto; text-align: right; }
+.status-dot { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.status-dot.tone-sage { background: var(--sage); box-shadow: 0 0 0 2px color-mix(in srgb, var(--sage) 22%, transparent); }
+.status-dot.tone-gold { background: var(--gold); box-shadow: 0 0 0 2px color-mix(in srgb, var(--gold) 22%, transparent); }
+.status-dot.tone-danger { background: var(--danger); box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 22%, transparent); }
+/* All-Time spend-by-category: a ranked list of proportion bars. Scales
+   gracefully with any number of categories and years (unlike a cumulative
+   chart), and reads as "where the money went" at a glance. */
+.cat-bar-row { display: flex; flex-direction: column; gap: 3px; }
+.cat-bar-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; }
+.cat-bar-label { font-weight: 600; color: var(--text); }
+.cat-bar-amt { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text); }
+.cat-bar-track { height: 8px; border-radius: 5px; background: color-mix(in srgb, var(--slate) 12%, transparent); overflow: hidden; }
+.cat-bar-fill { height: 100%; border-radius: 5px; min-width: 2px; }
+.cat-bar-total { margin-top: 12px; padding-top: 10px; border-top: 1px dotted var(--border); font-size: 13px; color: var(--text-dim); }
+.cat-bar-total strong { color: var(--text); font-family: 'JetBrains Mono', monospace; }
 .chart-box { position: relative; height: 260px; flex: 0 0 260px; }
 .chart-box canvas { width: 100% !important; height: 100% !important; }
 

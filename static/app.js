@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-176";
+const APP_VERSION = "2026.07.13-196";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -38,20 +38,46 @@ const PAGE_SIZE = 100; // "load more" page size for the Eggs/Expenses/Archive li
 const STATE = { coops: [], birds: [], eggs: [], expenses: [], bedding: [], birdLogs: [], notes: [], supplies: [], hatches: [], hatchEggs: [], birdPhotos: [], activityLog: [], supplyProducts: [] };
 let currentCoopId = null;
 let activeTab = "dashboard";
-let chartRangeDays = 30; // default 30 days -- shows meaningful recent activity without hiding older data by surprise
+// Dashboard month view: which month is shown, which month overlays it for
+// comparison, and (for the spend chart) which category is isolated. Default to
+// the current month vs the previous month.
+let dashMonthKey = null;       // set on first render to current month
+let dashCompareKey = null;     // set to previous month
+let dashFeedType = "both";     // dashboard feed chart: "layer" | "meat" | "both"
+let dashProduceType = "eggs";  // combined produce card: "eggs" | "meat" (eggs default -- daily data; meat only a few months/yr)
+let reviewMoneyMode = "spend"; // Year Review money chart: "spend" | "income" | "net"
+// Dashboard "money" mega-chart: mode (spend/income/net) plus which pill is
+// selected within spend and income modes (null = all).
+let dashMoneyMode = "net";
+let dashSpendPill = null;   // an EXPENSE_CATEGORIES value, or null for all
+let dashIncomePill = null;  // "Egg value" | "Meat value" | an income category, or null
+// Year Review mega-chart pill selection (mode reuses reviewMoneyMode).
+let reviewSpendPill = null;
+let reviewIncomePill = null;
+let reviewProduceType = "eggs"; // Year Review produce card: "eggs" | "meat"
+let reviewFeedType = "both";    // Year Review feed card: "layer" | "meat" | "both"
 let charts = {};
 
 const BIRD_TYPES = ["Layer", "Meat", "Dual Purpose"];
 const BIRD_STATUSES = ["Active", "Processed", "Sold", "Deceased", "Retired"];
-const EXPENSE_CATEGORIES = ["Layer Feed", "Meat Feed", "Treats", "Bedding", "Building Materials", "Equipment", "Birds/Chicks", "Medical/Health", "Other"];
+const EXPENSE_CATEGORIES = ["Layer Feed", "Layer Supplements", "Meat Feed", "Treats", "Bedding", "Building Materials", "Equipment", "Birds/Chicks", "Medical/Health", "Other"];
 
 // Emoji + a two-stop gradient per category, so each finance row leads with a
 // small colored icon tile instead of a text stamp -- readable at a glance and
 // far more compact, leaving the row's width for the actual description. The two
 // hex stops give the tile a slight top-lit gradient for depth. Colors follow
 // the category's meaning (feed golds, meat rust, bedding autumn, etc.).
+// Icons for non-egg/meat income sources, for the value-by-source breakdown.
+const INCOME_ICONS = {
+  "Bird Sale":    { emoji: "🐔", from: "#C9A05B", to: "#9A7238" },
+  "Other Income": { emoji: "💰", from: "#9DAE68", to: "#6E7E45" },
+  "Egg Sale":     { emoji: "🥚", from: "#E4B62C", to: "#B4860E" },
+  "Meat Sale":    { emoji: "🍗", from: "#D0623C", to: "#9E3E20" },
+};
+
 const CATEGORY_ICONS = {
   "Layer Feed":         { emoji: "🌾", from: "#E4B62C", to: "#B4860E" }, // yellow/gold
+  "Layer Supplements":  { emoji: "🦪", from: "#C9CBD4", to: "#9195A6" }, // pale shell/calcium -- oyster shell, grit
   "Meat Feed":          { emoji: "🌾", from: "#D0623C", to: "#9E3E20" }, // meat red
   "Treats":             { emoji: "🌻", from: "#9DAE68", to: "#6E7E45" }, // green
   "Bedding":            { emoji: "🍂", from: "#D08A3C", to: "#A85E22" }, // rust/orange
@@ -96,8 +122,6 @@ const INCOME_UNIT_LOCKS = { "Egg Sale": "eggs", "Meat Sale": "lb" };
 const BEDDING_AREAS = ["Coop Floor", "Nesting Boxes", "Run"];
 const BEDDING_MATERIALS = ["Pine Shavings", "Straw", "Sand", "Hemp Bedding", "Deep Litter (mixed)", "Other"];
 const BEDDING_TYPES = ["Top-off", "Churn", "Top-off + Churn", "Full Clean-out"];
-const RANGES = [{ label: "7D", days: 7 }, { label: "30D", days: 30 }, { label: "90D", days: 90 }, { label: "180D", days: 180 }, { label: "1Y", days: 365 }, { label: "All", days: null }];
-const PIE_COLORS = ["#C1502E", "#D4A017", "#8A9A5B", "#7A8FA6", "#9C7A54", "#6B5B95", "#C77B58"];
 const FLOCK_DATE_FIELDS = [
   { label: "Any date", value: "" },
   { label: "Acquired", value: "acquired_date" },
@@ -2026,7 +2050,6 @@ function lastBackupLabel() {
 }
 
 
-
 /** The better offline backup: same data as the .json export, but photos
  * become real binary files in a photos/ folder instead of base64 text
  * embedded inline -- base64 inflates a photo by roughly a third, and doing
@@ -3576,10 +3599,14 @@ function renderAllTimeStatsSection() {
   const catTotals = {};
   STATE.expenses.filter(x => x.entry_type !== "income").forEach(x => { catTotals[x.category] = (catTotals[x.category] || 0) + (Number(x.amount) || 0); });
   const usage = feedBeddingUsageInRange(STATE.supplies, null);
-  const layerFeedSpendAll = STATE.expenses.filter(x => x.category === "Layer Feed" && x.entry_type !== "income").reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
-  const meatFeedSpendAll = STATE.expenses.filter(x => x.category === "Meat Feed" && x.entry_type !== "income").reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
-  const costPerLbLayerFeed = usage.layerFeedLbs > 0 ? layerFeedSpendAll / usage.layerFeedLbs : null;
-  const costPerLbMeatFeed = usage.meatFeedLbs > 0 ? meatFeedSpendAll / usage.meatFeedLbs : null;
+  // Cost per lb of feed = cost of the feed actually CONSUMED, valued at each
+  // bag's real per-lb cost, divided by the lbs consumed. NOT total spend /
+  // consumption -- that inflates the figure whenever you've bought feed you
+  // haven't finished yet (a full bag's cost spread over a partial bag's use).
+  const layerConsumed = pricedFeedConsumed("Layer Feed", () => true);
+  const meatConsumed = pricedFeedConsumed("Meat Feed", () => true);
+  const costPerLbLayerFeed = layerConsumed.lbs > 0 ? layerConsumed.cost / layerConsumed.lbs : null;
+  const costPerLbMeatFeed = meatConsumed.lbs > 0 ? meatConsumed.cost / meatConsumed.lbs : null;
   const beddingSpendAll = STATE.expenses.filter(x => x.category === "Bedding" && x.entry_type !== "income").reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
   const costPerCuFtBedding = usage.beddingCuFt > 0 ? beddingSpendAll / usage.beddingCuFt : null;
   const ty = yearlyTrends(); // one bucket per calendar year with data
@@ -3595,33 +3622,32 @@ function renderAllTimeStatsSection() {
       <div class="stat tone-gold"><div class="stat-label">Value produced, all time</div><div class="stat-value">${fmtMoney(s.incomeAll)}</div><div class="stat-sub">eggs + meat + other income</div>${statSpark(ty.value)}</div>
       <div class="stat ${s.netAll >= 0 ? "tone-sage" : ""}" style="${s.netAll < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net savings, all time</div><div class="stat-value">${fmtMoney(s.netAll)}</div><div class="stat-sub">value − spend</div>${statSpark(ty.net)}</div>
       <div class="stat tone-gold"><div class="stat-label">Full clean-outs, all time</div><div class="stat-value">${totalCleanouts}</div><div class="stat-sub">across ${getBeddingAreas().length} tracked area${getBeddingAreas().length !== 1 ? "s" : ""}</div>${statSpark(ty.cleanouts)}</div>
-      <div class="stat tone-gold"><div class="stat-label">Layer feed used, all time</div><div class="stat-value">${usage.layerFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${costPerLbLayerFeed !== null ? fmtMoney(costPerLbLayerFeed) + "/lb" : "no cost data yet"}</div>${statSpark(ty.layerFeed)}</div>
-      <div class="stat tone-rust"><div class="stat-label">Meat feed used, all time</div><div class="stat-value">${usage.meatFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${costPerLbMeatFeed !== null ? fmtMoney(costPerLbMeatFeed) + "/lb" : "no cost data yet"}</div>${statSpark(ty.meatFeed)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Layer feed used, all time</div><div class="stat-value">${displayWeight(usage.layerFeedLbs)} ${getWeightUnit()}</div><div class="stat-sub">${costPerLbLayerFeed !== null ? `${fmtMoney(layerConsumed.cost)} at ${fmtMoney(displayPricePerLb(costPerLbLayerFeed))}/${getWeightUnit()}` : "no cost data yet"}</div>${statSpark(ty.layerFeed)}</div>
+      <div class="stat tone-rust"><div class="stat-label">Meat feed used, all time</div><div class="stat-value">${displayWeight(usage.meatFeedLbs)} ${getWeightUnit()}</div><div class="stat-sub">${costPerLbMeatFeed !== null ? `${fmtMoney(meatConsumed.cost)} at ${fmtMoney(displayPricePerLb(costPerLbMeatFeed))}/${getWeightUnit()}` : "no cost data yet"}</div>${statSpark(ty.meatFeed)}</div>
       <div class="stat tone-slate"><div class="stat-label">Bedding used, all time</div><div class="stat-value">${usage.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">${costPerCuFtBedding !== null ? fmtMoney(costPerCuFtBedding) + "/cu ft" : "no cost data yet"}</div>${statSpark(ty.bedding)}</div>
       ${STATE.hatches.length > 0 ? `
       <div class="stat tone-gold"><div class="stat-label">Chicks hatched, all time</div><div class="stat-value">${s.chicksHatchedAll}</div><div class="stat-sub">across ${STATE.hatches.length} clutch${STATE.hatches.length !== 1 ? "es" : ""}</div>${statSpark(ty.chicks)}</div>
       <div class="stat tone-rust"><div class="stat-label">Lost from hatching, all time</div><div class="stat-value">${s.hatchLossAll}</div><div class="stat-sub">${s.hatchClearAll} clear · ${s.hatchQuitAll} quit · ${s.hatchFailedAll} failed to hatch</div></div>
       ` : ""}
     </div>
-    ${(s.costPerDozenLayers !== null || s.costPerLbMeat !== null) ? `<div class="note-box" style="margin-top:14px">
-      ${s.costPerDozenLayers !== null ? `Feed cost per dozen eggs: <strong style="color:var(--text)">${fmtMoney(s.costPerDozenLayers)}</strong><br>` : ""}
-      ${s.costPerLbMeat !== null ? `Feed cost per ${getWeightUnit()} of meat: <strong style="color:var(--text)">${fmtMoney(displayPricePerLb(s.costPerLbMeat))}</strong><br>` : ""}
-      Tag Feed expenses by flock in the Finances tab to sharpen these.
+    ${(() => {
+      // Consumption-based feed cost: layer feed (+ supplements) eaten -> per
+      // dozen eggs, meat feed eaten -> per lb of meat, each valued at what the
+      // bags actually cost. A year or all-time is the honest window for these
+      // (a single month misleads, especially for meat).
+      const cpDozen = costPerDozenIn(s.totalEggs, () => true);
+      const cpLbMeat = costPerLbMeatIn(s.totalWeight, () => true);
+      const cards = feedCostHeadlineHtml(cpDozen, cpLbMeat, "all time");
+      if (!cards) return "";
+      return `<div style="margin-top:16px">${cards}
+        <div class="dim" style="font-size:11px;margin-top:8px">Based on feed actually consumed, valued at each bag's cost.</div>
+      </div>`;
+    })()}
+    ${(Object.keys(catTotals).length > 0 || s.totalEggs > 0 || s.totalWeight > 0) ? `<div class="grid-2" style="margin-top:16px">
+      ${spendCategoryBarsHtml(catTotals, { title: "Spending by category, all time", totalLabel: "Total spent, all time" })}
+      ${valueSourceBarsHtml(valueBreakdownIn(() => true), { title: "Value by source, all time", totalLabel: "Total value, all time" })}
     </div>` : ""}
-    ${Object.keys(catTotals).length > 0 ? `
-    <div class="chart-grid" style="margin-top:16px">
-      <div class="card"><div class="card-title">Spend by category, all time</div><div class="chart-box"><canvas id="allTimeCatChart"></canvas></div></div>
-    </div>
-    ` : ""}
   `;
-  if (Object.keys(catTotals).length > 0) {
-    const catLabels = Object.keys(catTotals);
-    new Chart(document.getElementById("allTimeCatChart"), {
-      type: "pie",
-      data: { labels: catLabels, datasets: [{ data: catLabels.map(l => catTotals[l]), backgroundColor: PIE_COLORS }] },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } } } }
-    });
-  }
 }
 
 function renderProductsSection() {
@@ -3662,7 +3688,7 @@ function renderProductsSection() {
                     ${productPhotoUrl(p) ? `<div class="thumb-clickable" data-view-photo="${esc(productPhotoUrl(p))}" data-product-id="${p.id}" style="width:48px;height:48px;border-radius:6px;overflow:hidden;flex:0 0 auto;cursor:zoom-in"><img src="${productPhotoUrl(p)}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(p)};${photoTransformStyle(p)}"></div>` : `<div style="width:48px;height:48px;border-radius:6px;flex:0 0 auto;background:var(--surface-raised);display:flex;align-items:center;justify-content:center;font-size:20px">📦</div>`}
                     <div class="list-card-main">
                       <div style="font-weight:700">${esc(p.brand || cat)}</div>
-                      <div class="list-card-desc dim">${p.default_quantity != null ? `usually ${p.default_quantity} ${esc(p.default_unit || "")}` : "no usual quantity set"}${p.default_description ? ` · "${esc(p.default_description)}"` : ""}</div>
+                      <div class="list-card-desc dim">${p.default_quantity != null ? `usually ${displayQty(p.default_quantity, p.default_unit)} ${esc(unitLabel(p.default_unit))}` : "no usual quantity set"}${p.default_description ? ` · "${esc(p.default_description)}"` : ""}</div>
                       ${(inStock > 0 || used > 0) ? `<div class="list-card-desc dim">${inStock > 0 ? `${inStock} in stock` : ""}${inStock > 0 && used > 0 ? " · " : ""}${used > 0 ? `${used} used up` : ""}</div>` : ""}
                     </div>
                   </div>
@@ -3775,13 +3801,13 @@ function openProductModal(editingProduct, category) {
     let productId;
     if (editingProduct) {
       await localSupplyProductUpdate(editingProduct.id, {
-        brand, default_quantity: qtyVal ? Number(qtyVal) : null, default_unit: unitVal || null, default_description: descVal || null,
+        brand, default_quantity: parseQtyInput(qtyVal, unitVal), default_unit: unitVal || null, default_description: descVal || null,
       });
       productId = editingProduct.id;
     } else {
       const created = await localSupplyProductCreate({
         coop_id: currentCoopId, category, brand, last_used_at: todayStr(),
-        default_quantity: qtyVal ? Number(qtyVal) : null, default_unit: unitVal || null, default_description: descVal || null,
+        default_quantity: parseQtyInput(qtyVal, unitVal), default_unit: unitVal || null, default_description: descVal || null,
       });
       productId = created.id;
     }
@@ -4528,6 +4554,386 @@ function feedBeddingUsageInRange(supplies, days) {
  * cumulative meat chart, which has the identical sporadic-event shape. */
 const STATUS_USED_FRACTION = { "Full": 0, "3/4": 0.25, "1/2": 0.5, "1/4": 0.75, "Empty": 1 };
 
+// ---- Monthly daily-series helpers (dashboard month view) ----
+// The dashboard shows one calendar month at a time, broken down by day, with
+// an optional dotted overlay of another month for comparison. Everything here
+// returns a per-day array of length = days-in-month, indexed day 1..N, so two
+// months of different lengths still overlay cleanly (a 30-day month just has
+// no day-31 point). These are PER-DAY amounts (not cumulative) -- "how much
+// that day" -- which is the honest shape for a month view, unlike the
+// ever-rising cumulative charts that belong on the All-Time page.
+
+function daysInMonthKey(key) {
+  const [y, m] = key.split("-").map(Number);
+  return new Date(y, m, 0).getDate(); // day 0 of next month = last day of this one
+}
+/** "2026-07-05" -> day-of-month index 5 if it's in `key`, else -1. */
+function dayInMonth(dateStr, key) {
+  return (dateStr && dateStr.slice(0, 7) === key) ? Number(dateStr.slice(8, 10)) : -1;
+}
+
+/** Eggs collected per day for a month. */
+function eggsDailyForMonth(key) {
+  const arr = Array(daysInMonthKey(key)).fill(0);
+  STATE.eggs.forEach(e => { const d = dayInMonth(e.date, key); if (d > 0) arr[d - 1] += Number(e.count) || 0; });
+  return arr;
+}
+
+/** Total spend per day for a month (expenses only, not income). */
+function spendDailyForMonth(key, category) {
+  const arr = Array(daysInMonthKey(key)).fill(0);
+  STATE.expenses.forEach(x => {
+    if (x.entry_type === "income") return;
+    if (category && x.category !== category) return;
+    const d = dayInMonth(x.date, key);
+    if (d > 0) arr[d - 1] += Number(x.amount) || 0;
+  });
+  return arr;
+}
+
+/** Dressed weight (lb) processed per day for a month, by harvest date. */
+function meatDailyForMonth(key) {
+  const arr = Array(daysInMonthKey(key)).fill(0);
+  STATE.birds.forEach(b => {
+    if (b.status !== "Processed" || !b.harvest_date) return;
+    const d = dayInMonth(b.harvest_date, key);
+    if (d > 0) arr[d - 1] += Number(b.harvest_weight) || 0;
+  });
+  return arr;
+}
+/** Count of birds processed in a month (for the "N birds -> X lb" readout). */
+function birdsProcessedInMonth(key) {
+  return STATE.birds.filter(b => b.status === "Processed" && b.harvest_date && monthKeyOf(b.harvest_date) === key).length;
+}
+
+// ---- Money mega-chart series (spend / income / net, per day of a month) ----
+// Income "value" model: egg value = eggs collected x price; meat value =
+// dressed weight x price; plus other income entries (bird sales, etc.). Egg/
+// meat SALE income entries are excluded because that money is already captured
+// in egg/meat value -- selling an egg doesn't add value beyond having produced
+// it. This makes "income" a clean "what the operation produced/earned."
+
+/** Egg value produced per day in a month (count x price on collection days). */
+function eggValueDailyForMonth(key) {
+  const arr = Array(daysInMonthKey(key)).fill(0);
+  const eggFallback = Number(getCoopDefaults().eggPrice) || 0;
+  STATE.eggs.forEach(e => { const dm = dayInMonth(e.date, key); if (dm > 0) arr[dm - 1] += (Number(e.count) || 0) * (Number(e.price_per_egg) || eggFallback); });
+  return arr;
+}
+/** Meat value produced per day in a month (weight x price on harvest days). */
+function meatValueDailyForMonth(key) {
+  const arr = Array(daysInMonthKey(key)).fill(0);
+  const meatFallback = Number(getCoopDefaults().pricePerLb) || 0;
+  STATE.birds.forEach(b => {
+    if (b.status !== "Processed" || !b.harvest_date) return;
+    const dm = dayInMonth(b.harvest_date, key);
+    if (dm > 0) arr[dm - 1] += (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || meatFallback);
+  });
+  return arr;
+}
+/** Other-income (non egg/meat sale) per day for a given category, in a month. */
+function otherIncomeDailyForMonth(key, category) {
+  const arr = Array(daysInMonthKey(key)).fill(0);
+  STATE.expenses.forEach(x => {
+    if (x.entry_type !== "income") return;
+    if (x.category === "Egg Sale" || x.category === "Meat Sale") return; // already in egg/meat value
+    if (category && x.category !== category) return;
+    const dm = dayInMonth(x.date, key);
+    if (dm > 0) arr[dm - 1] += Number(x.amount) || 0;
+  });
+  return arr;
+}
+
+/** Total income value per day for a month, optionally filtered to one source
+ * ("Egg value", "Meat value", or an other-income category). */
+function incomeDailyForMonth(key, source) {
+  const n = daysInMonthKey(key);
+  if (source === "Egg value") return eggValueDailyForMonth(key);
+  if (source === "Meat value") return meatValueDailyForMonth(key);
+  if (source) return otherIncomeDailyForMonth(key, source);
+  // All sources combined.
+  const egg = eggValueDailyForMonth(key), meat = meatValueDailyForMonth(key), other = otherIncomeDailyForMonth(key, null);
+  return Array.from({ length: n }, (_, i) => egg[i] + meat[i] + other[i]);
+}
+
+/** Income sources present (for the income-mode pills): egg/meat value if any
+ * eggs/meat exist, plus each non-sale income category actually logged. */
+function incomeSourcesPresent() {
+  const out = [];
+  if (STATE.eggs.some(e => (Number(e.count) || 0) > 0)) out.push("Egg value");
+  if (STATE.birds.some(b => b.status === "Processed" && b.harvest_date)) out.push("Meat value");
+  const cats = new Set();
+  STATE.expenses.forEach(x => { if (x.entry_type === "income" && x.category && x.category !== "Egg Sale" && x.category !== "Meat Sale") cats.add(x.category); });
+  INCOME_CATEGORIES.forEach(c => { if (cats.has(c)) out.push(c); });
+  return out;
+}
+
+/** Icon spec for an income source (for pills), matching value-source bars. */
+function incomeSourceIcon(source) {
+  if (source === "Egg value") return BIRD_TYPE_ICONS.layer;
+  if (source === "Meat value") return BIRD_TYPE_ICONS.meat;
+  return INCOME_ICONS[source] || INCOME_ICONS["Other Income"];
+}
+
+/** Cumulative feed used (lb) through each day of a month -- a running total,
+ * not a per-day amount. Feed usage is estimated from bag open/empty dates, so
+ * a per-day line drops to 0 between bags and reads as "no feed used" even
+ * though birds are eating the whole time. A within-month running total climbs
+ * on consumption and holds flat between it, which is the honest shape.
+ *
+ * Emptied bags contribute their open->emptied ramp (spread across the days
+ * they were in use). A bag that's currently OPEN but not yet emptied has no
+ * per-day history -- we only know how much is gone RIGHT NOW (its status
+ * slider) -- so its used portion is added as a single step on today's date,
+ * the only date we can honestly attribute it to. That's also what makes a
+ * "used 3/4 of a bag this month" case actually show up, instead of staying
+ * invisible until the bag is finally marked empty. */
+/** How a bag's consumption is spread over time: {start, spanDays, perDay}, or
+ * null if nothing has been consumed yet.
+ *
+ * Birds eat a bit every day, so a bag's contents are spread evenly across the
+ * days it was actually in use -- never dumped on a single date.
+ *  - EMPTIED bag: its full quantity spread over opened_at -> date_emptied.
+ *  - OPEN bag: the portion used so far (from its status) spread over
+ *    opened_at -> today. This is the honest reading: if you opened a bag on
+ *    the 15th and marked it 3/4 full on the 18th, that quarter was eaten
+ *    across those four days, not all at once on the 18th.
+ * A bag with no opened_at can only be attributed to a single day (the emptied
+ * date, or today for an open bag), since there's no window to spread over. */
+function bagRamp(s, today) {
+  const qty = Number(s.quantity) || 0;
+  if (!(qty > 0)) return null;
+  if (s.date_emptied) {
+    const end = s.date_emptied;
+    const start = s.opened_at && s.opened_at < end ? s.opened_at : null;
+    if (!start) return { start: end, spanDays: 1, perDay: qty };
+    // The window is HALF-OPEN: [opened_at, date_emptied). The emptied date is
+    // when the bag was recorded gone, so the feed was eaten on the days
+    // leading up to it. Counting that day too would double up with a
+    // replacement bag opened the same day -- the handoff day would show two
+    // full rations (one from each bag) and spike the chart.
+    const diff = Math.round((new Date(end + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000);
+    const spanDays = Math.max(1, diff); // opened and emptied same day -> one day
+    return { start, spanDays, perDay: qty / spanDays };
+  }
+  const usedNow = qty * (STATUS_USED_FRACTION[s.status] ?? 0);
+  if (!(usedNow > 0)) return null; // still full -- nothing eaten yet
+  const start = s.opened_at && s.opened_at < today ? s.opened_at : null;
+  if (!start) return { start: today, spanDays: 1, perDay: usedNow };
+  const spanDays = Math.round((new Date(today + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000) + 1;
+  return { start, spanDays, perDay: usedNow / spanDays };
+}
+
+function feedCumulativeForMonth(key, feedType = "both") {
+  const n = daysInMonthKey(key);
+  const perDay = Array(n).fill(0);
+  const today = todayStr();
+  const cats = feedType === "layer" ? ["Layer Feed"] : feedType === "meat" ? ["Meat Feed"] : ["Layer Feed", "Meat Feed"];
+  STATE.supplies.filter(s => cats.includes(s.category)).forEach(s => {
+    const ramp = bagRamp(s, today);
+    if (!ramp) return;
+    for (let i = 0; i < ramp.spanDays; i++) {
+      const d = dayInMonth(addDays(ramp.start, i), key);
+      if (d > 0) perDay[d - 1] += ramp.perDay;
+    }
+  });
+  // Turn per-day into a within-month running total.
+  let run = 0;
+  return perDay.map(v => (run += v));
+}
+
+/** Ranked proportion bars with icons -- shared by spend and income breakdowns
+ * on the All-Time and Year Review pages. `rows` is [{label, amount, emoji,
+ * from, to}] (already the caller's choice of icon/colors); renders highest
+ * first with a percent, a gradient bar, and a grand total. */
+function proportionBarsHtml(rows, { title, totalLabel, bare = false }) {
+  const entries = rows.filter(r => r.amount > 0).sort((a, b) => b.amount - a.amount);
+  const wrap = (inner) => bare ? `<div class="bars-bare">${inner}</div>` : `<div class="card">${inner}</div>`;
+  if (!entries.length) return wrap(`<div class="card-title">${esc(title)}</div><div class="empty">Nothing logged.</div>`);
+  const grand = entries.reduce((sum, r) => sum + r.amount, 0);
+  return wrap(`
+    <div class="card-title" style="margin-bottom:10px">${esc(title)}</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${entries.map(r => {
+        const pct = grand > 0 ? (r.amount / grand) * 100 : 0;
+        return `<div class="cat-bar-row">
+          <div class="cat-bar-head">
+            <span class="cat-bar-label">${r.emoji} ${esc(r.label)}</span>
+            <span class="cat-bar-amt">${fmtMoney(r.amount)} <span class="dim">(${pct.toFixed(0)}%)</span></span>
+          </div>
+          <div class="cat-bar-track"><div class="cat-bar-fill" style="width:${pct.toFixed(1)}%;background:linear-gradient(90deg, ${r.from}, ${r.to})"></div></div>
+        </div>`;
+      }).join("")}
+    </div>
+    <div class="cat-bar-total">${esc(totalLabel)}: <strong>${fmtMoney(grand)}</strong></div>`);
+}
+
+/** Spend-by-category bars (wraps proportionBarsHtml with category icons). */
+function spendCategoryBarsHtml(catTotals, opts) {
+  const rows = Object.entries(catTotals).map(([cat, amt]) => {
+    const spec = CATEGORY_ICONS[cat] || CATEGORY_ICONS["Other"];
+    return { label: cat, amount: amt, emoji: spec.emoji, from: spec.from, to: spec.to };
+  });
+  return proportionBarsHtml(rows, opts);
+}
+
+/** Value-by-source bars: egg value + meat value (estimated, at their prices)
+ * plus any other income categories (bird sales, other income) actually logged.
+ * Answers "where does my value come from," mirroring the spend breakdown. */
+function valueSourceBarsHtml({ eggValue, meatValue, otherIncomeByCat }, opts) {
+  const rows = [
+    { label: "Egg value", amount: eggValue || 0, emoji: BIRD_TYPE_ICONS.layer.emoji, from: BIRD_TYPE_ICONS.layer.from, to: BIRD_TYPE_ICONS.layer.to },
+    { label: "Meat value", amount: meatValue || 0, emoji: BIRD_TYPE_ICONS.meat.emoji, from: BIRD_TYPE_ICONS.meat.from, to: BIRD_TYPE_ICONS.meat.to },
+  ];
+  Object.entries(otherIncomeByCat || {}).forEach(([cat, amt]) => {
+    const spec = INCOME_ICONS[cat] || INCOME_ICONS["Other Income"];
+    rows.push({ label: cat, amount: amt, emoji: spec.emoji, from: spec.from, to: spec.to });
+  });
+  return proportionBarsHtml(rows, opts);
+}
+
+/** Value-by-source breakdown for a date window: estimated egg value, estimated
+ * meat value, and actual "other" income (bird sales, other income) logged.
+ * Egg/meat sale income is NOT added separately -- it's already reflected in the
+ * egg/meat value estimates, so counting it again would double it. */
+function valueBreakdownIn(inWindow) {
+  const d = getCoopDefaults();
+  const eggFallback = Number(d.eggPrice) || 0, meatFallback = Number(d.pricePerLb) || 0;
+  let eggValue = 0, meatValue = 0;
+  STATE.eggs.forEach(e => { if (inWindow(e.date)) eggValue += (Number(e.count) || 0) * (Number(e.price_per_egg) || eggFallback); });
+  STATE.birds.forEach(b => {
+    if (b.status === "Processed" && b.harvest_date && inWindow(b.harvest_date)) {
+      meatValue += (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || meatFallback);
+    }
+  });
+  const otherIncomeByCat = {};
+  STATE.expenses.forEach(x => {
+    if (x.entry_type !== "income" || !inWindow(x.date)) return;
+    // Egg/meat sales already counted in the value estimates above; only the
+    // OTHER income categories (bird sales, misc) add new value here.
+    if (x.category === "Egg Sale" || x.category === "Meat Sale") return;
+    const cat = x.category || "Other Income";
+    otherIncomeByCat[cat] = (otherIncomeByCat[cat] || 0) + (Number(x.amount) || 0);
+  });
+  return { eggValue, meatValue, otherIncomeByCat };
+}
+
+/** {category: dollars} of expenses in a month, for the dashboard breakdown. */
+function spendCatTotalsForMonth(key) {
+  const totals = {};
+  STATE.expenses.forEach(x => {
+    if (x.entry_type === "income" || monthKeyOf(x.date) !== key) return;
+    const cat = x.category || "Other";
+    totals[cat] = (totals[cat] || 0) + (Number(x.amount) || 0);
+  });
+  return totals;
+}
+
+/** Spend categories that actually have expenses, for the category pill picker. */
+function spendCategoriesPresent() {
+  const set = new Set();
+  STATE.expenses.forEach(x => { if (x.entry_type !== "income" && x.category) set.add(x.category); });
+  return EXPENSE_CATEGORIES.filter(c => set.has(c));
+}
+
+/** How many days of a month have actually elapsed -- the full month for a past
+ * month, days-so-far for the current month. Used as the honest denominator for
+ * "average per day" (dividing this month's eggs by 31 on the 5th would lie). */
+function elapsedDaysInMonth(key) {
+  const today = todayStr();
+  if (key === monthKeyOf(today)) return Number(today.slice(8, 10)); // day-of-month so far
+  if (key > monthKeyOf(today)) return 0; // a future month hasn't started
+  return daysInMonthKey(key); // a past month is fully elapsed
+}
+
+/** Average eggs per day for a month (total ÷ elapsed days). */
+function avgEggsPerDay(key) {
+  const total = sum(eggsDailyForMonth(key));
+  const days = elapsedDaysInMonth(key);
+  return days > 0 ? total / days : 0;
+}
+
+/** Lbs of a single feed bag consumed within a date window, using the same
+ * open->emptied ramp the charts use. `inWindow(dateStr)` decides which days
+ * count -- pass a month test, a year test, or `() => true` for all-time. */
+function feedBagLbsUsed(s, inWindow) {
+  const ramp = bagRamp(s, todayStr());
+  if (!ramp) return 0;
+  let lbs = 0;
+  for (let i = 0; i < ramp.spanDays; i++) if (inWindow(addDays(ramp.start, i))) lbs += ramp.perDay;
+  return lbs;
+}
+
+/** Cost of the feed of one category actually EATEN in a window, and the priced
+ * lbs behind it. Only bags with a real cost contribute dollars (and only their
+ * lbs count toward the priced total), so the figure is honest about what it
+ * knows -- unpriced feed is excluded rather than guessed. */
+function pricedFeedConsumed(category, inWindow) {
+  let cost = 0, lbs = 0;
+  STATE.supplies.filter(s => s.category === category).forEach(s => {
+    const qty = Number(s.quantity) || 0;
+    const c = Number(s.cost);
+    if (!(qty > 0) || !(c > 0)) return;
+    const used = feedBagLbsUsed(s, inWindow);
+    if (used > 0) { cost += used * (c / qty); lbs += used; }
+  });
+  return { cost, lbs };
+}
+
+/** True layer-feed cost per dozen eggs in a window: cost of layer feed eaten
+ * (each bag's lbs x its real cost/lb) / dozens collected. Null when there's no
+ * priced feed eaten or no eggs -- never a misleading 0. */
+/** The two headline feed-cost figures -- layer cost per dozen eggs and meat
+ * feed cost per lb of meat -- rendered as a prominent pair of cards. These
+ * live only on Year Review and All-Time: over a year or the whole history they
+ * give a true cost-to-produce, whereas a single month is misleading (meat
+ * birds eat for months then get harvested in one, so a monthly meat cost/lb
+ * swings wildly). `scopeLabel` is appended to each caption (e.g. a year or
+ * "all time"). Returns "" when neither figure has data. */
+function feedCostHeadlineHtml(cpDozen, cpLbMeat, scopeLabel) {
+  if (cpDozen == null && cpLbMeat == null) return "";
+  const scope = scopeLabel ? ` <span class="dim" style="font-weight:400">· ${esc(scopeLabel)}</span>` : "";
+  const card = (emoji, from, to, value, caption) => `
+    <div class="cost-headline">
+      <div class="cost-headline-icon" style="background:linear-gradient(135deg, ${from}, ${to})">${emoji}</div>
+      <div class="cost-headline-body">
+        <div class="cost-headline-value">${value}</div>
+        <div class="cost-headline-caption">${caption}${scope}</div>
+      </div>
+    </div>`;
+  const cards = [];
+  if (cpDozen != null) cards.push(card(BIRD_TYPE_ICONS.layer.emoji, BIRD_TYPE_ICONS.layer.from, BIRD_TYPE_ICONS.layer.to, `${fmtMoney(cpDozen)}<span class="cost-headline-unit">/dozen eggs</span>`, "Feed + supplement cost to produce eggs"));
+  if (cpLbMeat != null) cards.push(card(BIRD_TYPE_ICONS.meat.emoji, BIRD_TYPE_ICONS.meat.from, BIRD_TYPE_ICONS.meat.to, `${fmtMoney(displayPricePerLb(cpLbMeat))}<span class="cost-headline-unit">/${getWeightUnit()} meat</span>`, "Feed cost to produce meat"));
+  return `<div class="cost-headline-grid">${cards.join("")}</div>`;
+}
+
+function costPerDozenIn(eggCount, inWindow) {
+  if (!(eggCount > 0)) return null;
+  const { cost: feedCost, lbs } = pricedFeedConsumed("Layer Feed", inWindow);
+  // Layer supplements (oyster shell, grit) are things ONLY layers ingest that
+  // help produce eggs, so they belong in cost-per-egg. Unlike feed they're not
+  // consumption-tracked (no bags/ramp) -- we just use the expenses in the
+  // window, which the user opted into for simplicity. Bedding, treats, and
+  // shelter costs are deliberately excluded: bedding/building are shelter, and
+  // treats get shared with meat birds, so neither cleanly attributes to eggs.
+  const supplementCost = STATE.expenses
+    .filter(x => x.entry_type !== "income" && x.category === "Layer Supplements" && inWindow(x.date))
+    .reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  // Need at least priced feed consumed to anchor the figure; supplements add on
+  // top. (Supplements alone, with no feed cost data, would be an odd partial.)
+  if (!(lbs > 0)) return null;
+  return (feedCost + supplementCost) / (eggCount / 12);
+}
+
+/** True meat-feed cost per lb of dressed weight in a window: cost of meat feed
+ * eaten / lbs of meat produced. Null when there's no priced feed eaten or no
+ * meat. Weight is in lb (the storage unit); callers convert for display. */
+function costPerLbMeatIn(meatWeightLb, inWindow) {
+  if (!(meatWeightLb > 0)) return null;
+  const { cost, lbs } = pricedFeedConsumed("Meat Feed", inWindow);
+  return lbs > 0 ? cost / meatWeightLb : null;
+}
+
 function feedBeddingCumulativeSeries(supplies, days, axisBuckets) {
   // Build each emptied bag's consumption as a per-day amount, spread linearly
   // across its open->emptied window (opened_at = 0 used, date_emptied = full
@@ -4904,10 +5310,16 @@ function computeYearStats(year) {
     meatFeedLbs += activeSum("Meat Feed");
     beddingCuFt += activeSum("Bedding");
   }
-  const costPerLbLayerFeed = layerFeedLbs > 0 ? layerFeedAttributable / layerFeedLbs : null;
-  const costPerLbMeatFeed = meatFeedLbs > 0 ? meatFeedAttributable / meatFeedLbs : null;
+  // Consumption-based cost/lb: cost of feed actually eaten this year (each bag
+  // at its real per-lb cost) / lbs eaten. Not year's feed spend / consumption,
+  // which inflates when a bag is bought this year but not fully used.
+  const layerConsumedYr = pricedFeedConsumed("Layer Feed", inYear);
+  const meatConsumedYr = pricedFeedConsumed("Meat Feed", inYear);
+  const costPerLbLayerFeed = layerConsumedYr.lbs > 0 ? layerConsumedYr.cost / layerConsumedYr.lbs : null;
+  const costPerLbMeatFeed = meatConsumedYr.lbs > 0 ? meatConsumedYr.cost / meatConsumedYr.lbs : null;
+  const layerFeedCost = layerConsumedYr.cost, meatFeedCost = meatConsumedYr.cost;
 
-  return { eggCount, eggValue, totalExpenses, categoryBreakdown, processedCount: processedInYear.length, processedWeight, meatValue, lossesInYear, newBirds: newBirdIds.size, cleanoutsByArea, income, net, actualIncome, eggActualIncome, meatActualIncome, eggTotalValue, meatTotalValue, costPerDozenLayers, costPerLbMeat, layerFeedLbs, meatFeedLbs, beddingCuFt, costPerLbLayerFeed, costPerLbMeatFeed, chicksHatched, hatchClear, hatchQuit, hatchFailed, hatchLoss };
+  return { eggCount, eggValue, totalExpenses, categoryBreakdown, processedCount: processedInYear.length, processedWeight, meatValue, lossesInYear, newBirds: newBirdIds.size, cleanoutsByArea, income, net, actualIncome, eggActualIncome, meatActualIncome, eggTotalValue, meatTotalValue, costPerDozenLayers, costPerLbMeat, layerFeedLbs, meatFeedLbs, beddingCuFt, costPerLbLayerFeed, costPerLbMeatFeed, layerFeedCost, meatFeedCost, chicksHatched, hatchClear, hatchQuit, hatchFailed, hatchLoss };
 }
 
 function renderYearReviewSection() {
@@ -4920,6 +5332,14 @@ function renderYearReviewSection() {
   reviewYear = selectedYear;
   const s = computeYearStats(selectedYear);
   const tm = monthlyTrends(selectedYear); // per-month series for the card sparklines
+  // Prior year's stats for year-over-year deltas, but only when we actually
+  // have data for that year (a coop's first year has nothing to compare to).
+  const prevYear = String(Number(selectedYear) - 1);
+  const hasPrev = years.includes(prevYear);
+  const sp = hasPrev ? computeYearStats(prevYear) : null;
+  // A delta chip comparing this year's value to last year's, labeled with the
+  // actual year. goodUp=false for things where more is worse (losses, spend).
+  const yoy = (cur, prev, goodUp = true) => hasPrev ? deltaChipHtml(cur, prev, { goodUp, label: prevYear }) : "";
 
   el.innerHTML = `
     <div class="toolbar">
@@ -4928,37 +5348,33 @@ function renderYearReviewSection() {
     </div>
 
     <div class="grid-stats-2" style="margin-bottom:16px">
-      <div class="stat tone-gold"><div class="stat-label">Eggs collected</div><div class="stat-value">${s.eggCount}</div><div class="stat-sub">${(s.eggCount / 12).toFixed(1)} dozen · ${valueBreakdownHtml(s.eggValue, s.eggActualIncome)}</div>${statSpark(tm.eggs)}</div>
-      <div class="stat tone-sage"><div class="stat-label">Meat processed</div><div class="stat-value">${meatProcessedValue(s.processedCount, s.processedWeight, s.meatTotalValue)}</div><div class="stat-sub">${s.processedCount > 0 ? `${s.processedCount} bird${s.processedCount !== 1 ? "s" : ""} · ${valueBreakdownHtml(s.meatValue, s.meatActualIncome)}` : ""}</div>${statSpark(tm.meatLb)}</div>
-      <div class="stat" style="${s.lossesInYear ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Losses</div><div class="stat-value">${s.lossesInYear}</div><div class="stat-sub">${s.newBirds} new bird${s.newBirds !== 1 ? "s" : ""} added</div>${statSpark(tm.losses)}</div>
-      <div class="stat tone-slate"><div class="stat-label">Total spent</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${Object.keys(s.categoryBreakdown).length} categories</div>${statSpark(tm.spent)}</div>
-      <div class="stat tone-gold"><div class="stat-label">Value produced</div><div class="stat-value">${fmtMoney(s.income)}</div><div class="stat-sub">eggs + meat</div>${statSpark(tm.value)}</div>
-      <div class="stat ${s.net >= 0 ? "tone-sage" : ""}" style="${s.net < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net for ${selectedYear}</div><div class="stat-value">${fmtMoney(s.net)}</div><div class="stat-sub">value − spend</div>${statSpark(tm.net)}</div>
-      <div class="stat tone-gold"><div class="stat-label">Layer feed used</div><div class="stat-value">${s.layerFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbLayerFeed !== null ? fmtMoney(s.costPerLbLayerFeed) + "/lb" : "no cost data yet"}</div>${statSpark(tm.layerFeed)}</div>
-      <div class="stat tone-rust"><div class="stat-label">Meat feed used</div><div class="stat-value">${s.meatFeedLbs.toFixed(0)} lb</div><div class="stat-sub">${s.costPerLbMeatFeed !== null ? fmtMoney(s.costPerLbMeatFeed) + "/lb" : "no cost data yet"}</div>${statSpark(tm.meatFeed)}</div>
-      <div class="stat tone-slate"><div class="stat-label">Bedding used</div><div class="stat-value">${s.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">bags emptied this year</div>${statSpark(tm.bedding)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Eggs collected</div><div class="stat-value">${s.eggCount}</div><div class="stat-sub">${(s.eggCount / 12).toFixed(1)} dozen · ${valueBreakdownHtml(s.eggValue, s.eggActualIncome)}</div>${statSpark(tm.eggs)}${yoy(s.eggCount, sp && sp.eggCount)}</div>
+      <div class="stat tone-sage"><div class="stat-label">Meat processed</div><div class="stat-value">${meatProcessedValue(s.processedCount, s.processedWeight, s.meatTotalValue)}</div><div class="stat-sub">${s.processedCount > 0 ? `${s.processedCount} bird${s.processedCount !== 1 ? "s" : ""} · ${valueBreakdownHtml(s.meatValue, s.meatActualIncome)}` : ""}</div>${statSpark(tm.meatLb)}${yoy(s.processedWeight, sp && sp.processedWeight)}</div>
+      <div class="stat" style="${s.lossesInYear ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Losses</div><div class="stat-value">${s.lossesInYear}</div><div class="stat-sub">${s.newBirds} new bird${s.newBirds !== 1 ? "s" : ""} added</div>${statSpark(tm.losses)}${yoy(s.lossesInYear, sp && sp.lossesInYear, false)}</div>
+      <div class="stat tone-slate"><div class="stat-label">Total spent</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${Object.keys(s.categoryBreakdown).length} categories</div>${statSpark(tm.spent)}${yoy(s.totalExpenses, sp && sp.totalExpenses, false)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Value produced</div><div class="stat-value">${fmtMoney(s.income)}</div><div class="stat-sub">eggs + meat</div>${statSpark(tm.value)}${yoy(s.income, sp && sp.income)}</div>
+      <div class="stat ${s.net >= 0 ? "tone-sage" : ""}" style="${s.net < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net for ${selectedYear}</div><div class="stat-value">${fmtMoney(s.net)}</div><div class="stat-sub">value − spend</div>${statSpark(tm.net)}${sp && sp.net > 0 && s.net > 0 ? yoy(s.net, sp.net) : ""}</div>
+      <div class="stat tone-gold"><div class="stat-label">Layer feed used</div><div class="stat-value">${displayWeight(s.layerFeedLbs)} ${getWeightUnit()}</div><div class="stat-sub">${s.costPerLbLayerFeed !== null ? `${fmtMoney(s.layerFeedCost)} at ${fmtMoney(displayPricePerLb(s.costPerLbLayerFeed))}/${getWeightUnit()}` : "no cost data yet"}</div>${statSpark(tm.layerFeed)}${yoy(s.layerFeedLbs, sp && sp.layerFeedLbs, false)}</div>
+      <div class="stat tone-rust"><div class="stat-label">Meat feed used</div><div class="stat-value">${displayWeight(s.meatFeedLbs)} ${getWeightUnit()}</div><div class="stat-sub">${s.costPerLbMeatFeed !== null ? `${fmtMoney(s.meatFeedCost)} at ${fmtMoney(displayPricePerLb(s.costPerLbMeatFeed))}/${getWeightUnit()}` : "no cost data yet"}</div>${statSpark(tm.meatFeed)}${yoy(s.meatFeedLbs, sp && sp.meatFeedLbs, false)}</div>
+      <div class="stat tone-slate"><div class="stat-label">Bedding used</div><div class="stat-value">${s.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">bags emptied this year</div>${statSpark(tm.bedding)}${yoy(s.beddingCuFt, sp && sp.beddingCuFt, false)}</div>
       ${(s.chicksHatched + s.hatchLoss) > 0 ? `
-      <div class="stat tone-gold"><div class="stat-label">Chicks hatched</div><div class="stat-value">${s.chicksHatched}</div><div class="stat-sub">from clutches started this year</div>${statSpark(tm.chicks)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Chicks hatched</div><div class="stat-value">${s.chicksHatched}</div><div class="stat-sub">from clutches started this year</div>${statSpark(tm.chicks)}${yoy(s.chicksHatched, sp && sp.chicksHatched)}</div>
       <div class="stat tone-rust"><div class="stat-label">Lost from hatching</div><div class="stat-value">${s.hatchLoss}</div><div class="stat-sub">${s.hatchClear} clear · ${s.hatchQuit} quit · ${s.hatchFailed} failed to hatch</div></div>
       ` : ""}
     </div>
 
-    ${(s.costPerDozenLayers !== null || s.costPerLbMeat !== null) ? `<div class="note-box" style="margin-bottom:16px">
-      ${s.costPerDozenLayers !== null ? `Feed cost per dozen eggs, ${selectedYear}: <strong style="color:var(--text)">${fmtMoney(s.costPerDozenLayers)}</strong><br>` : ""}
-      ${s.costPerLbMeat !== null ? `Feed cost per ${getWeightUnit()} of meat, ${selectedYear}: <strong style="color:var(--text)">${fmtMoney(displayPricePerLb(s.costPerLbMeat))}</strong><br>` : ""}
-      Tag Feed expenses by flock in the Finances tab to sharpen these.
-    </div>` : ""}
+    ${(() => {
+      const yearTest = (d) => d && d.slice(0, 4) === selectedYear;
+      const cpDozen = costPerDozenIn(s.eggCount, yearTest);
+      const cpLbMeat = costPerLbMeatIn(s.processedWeight, yearTest);
+      const cards = feedCostHeadlineHtml(cpDozen, cpLbMeat, selectedYear);
+      if (!cards) return "";
+      return `<div style="margin-bottom:16px">${cards}
+        <div class="dim" style="font-size:11px;margin-top:8px">Based on feed actually consumed this year, valued at each bag's cost.</div>
+      </div>`;
+    })()}
 
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-title">Spend by category — ${selectedYear}</div>
-        ${Object.keys(s.categoryBreakdown).length === 0 ? `<div class="empty">No expenses logged this year.</div>` : `
-        <div style="display:flex;flex-direction:column;gap:8px">
-          ${Object.entries(s.categoryBreakdown).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => `
-            <div style="display:flex;justify-content:space-between;font-size:13px"><span>${esc(cat)}</span><span class="mono">${fmtMoney(amt)}</span></div>
-          `).join("")}
-        </div>`}
-      </div>
+    <div class="grid-2" style="margin-top:16px">
       <div class="card">
         <div class="card-title">Bedding clean-outs — ${selectedYear}</div>
         ${Object.keys(s.cleanoutsByArea).length === 0 ? `<div class="empty">No full clean-outs logged this year.</div>` : `
@@ -4970,14 +5386,80 @@ function renderYearReviewSection() {
       </div>
     </div>
 
-    <div class="chart-grid" style="margin-top:16px">
-      <div class="card"><div class="card-title">Eggs by month — ${selectedYear}</div><div class="chart-box"><canvas id="reviewEggChart"></canvas></div></div>
-      <div class="card"><div class="card-title">Meat produced by month, lbs — ${selectedYear}</div><div class="chart-box"><canvas id="reviewMeatChart"></canvas></div></div>
-      <div class="card"><div class="card-title">Spend by month — ${selectedYear}</div><div class="chart-box"><canvas id="reviewExpenseChart"></canvas></div></div>
-      ${years.includes(String(Number(selectedYear) - 1)) ? `<div class="card"><div class="card-title">${selectedYear} vs ${Number(selectedYear) - 1}</div><div class="chart-box"><canvas id="reviewCompareChart"></canvas></div></div>` : ""}
+    <div class="chart-grid chart-grid-stretch" style="margin-top:16px">
+      <div class="card"><div class="chart-head chart-head-grow">
+        ${reviewProduceType === "meat"
+          ? `<div class="card-title">🍗 Meat by month, ${getWeightUnit()} — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div>`
+          : `<div class="card-title">🥚 Eggs by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div>`}
+        <div class="pill-row" id="reviewProduceType">
+          ${[["eggs", `${BIRD_TYPE_ICONS.layer.emoji} Eggs`], ["meat", `${BIRD_TYPE_ICONS.meat.emoji} Meat`]].map(([v, label]) => `<button class="pill-btn ${reviewProduceType === v ? "range-btn active" : ""}" data-produce-type="${v}">${label}</button>`).join("")}
+        </div>
+      </div><div class="chart-box"><canvas id="reviewProduceChart"></canvas></div></div>
+      <div class="card"><div class="chart-head chart-head-grow">
+        <div class="card-title">🌾 Feed by month${reviewFeedType === "layer" ? " — layer" : reviewFeedType === "meat" ? " — meat" : ""} (${getWeightUnit()}) — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}</div>
+        <div class="pill-row" id="reviewFeedType">
+          ${[["both", "Both"], ["layer", `${BIRD_TYPE_ICONS.layer.emoji} Layer`], ["meat", `${BIRD_TYPE_ICONS.meat.emoji} Meat`]].map(([v, label]) => `<button class="pill-btn ${reviewFeedType === v ? "range-btn active" : ""}" data-feed-type="${v}">${label}</button>`).join("")}
+        </div>
+      </div><div class="chart-box"><canvas id="reviewFeedChart"></canvas></div></div>
+      <div class="card" style="grid-column:1/-1"><div class="chart-head chart-head-grow"><div class="money-mega-head"><div class="card-title">${reviewMoneyMode === "income" ? "💰 Income / value" : reviewMoneyMode === "net" ? "⚖️ Net" : "💵 Spend"} by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}${reviewMoneyMode === "spend" && reviewSpendPill ? ` · ${esc(reviewSpendPill)}` : reviewMoneyMode === "income" && reviewIncomePill ? ` · ${esc(reviewIncomePill)}` : ""}</div>
+        <div class="pill-row money-mode-pills" id="reviewMoneyMode">
+          ${[["spend", "💵 Spend"], ["income", "💰 Income"], ["net", "⚖️ Net"]].map(([v, label]) => `<button class="pill-btn ${reviewMoneyMode === v ? "range-btn active" : ""}" data-money-mode="${v}">${label}</button>`).join("")}
+        </div></div>
+        ${reviewMoneyMode === "spend" ? `<div class="pill-row" id="reviewSpendPills">
+          <button class="pill-btn ${!reviewSpendPill ? "range-btn active" : ""}" data-spend-pill="">All</button>
+          ${spendCategoriesPresent().map(c => `<button class="pill-btn ${reviewSpendPill === c ? "range-btn active" : ""}" data-spend-pill="${esc(c)}">${(CATEGORY_ICONS[c] || CATEGORY_ICONS["Other"]).emoji} ${esc(c)}</button>`).join("")}
+        </div>` : reviewMoneyMode === "income" ? `<div class="pill-row" id="reviewIncomePills">
+          <button class="pill-btn ${!reviewIncomePill ? "range-btn active" : ""}" data-income-pill="">All</button>
+          ${incomeSourcesPresent().map(src => { const ic = incomeSourceIcon(src); return `<button class="pill-btn ${reviewIncomePill === src ? "range-btn active" : ""}" data-income-pill="${esc(src)}">${ic.emoji} ${esc(src)}</button>`; }).join("")}
+        </div>` : ""}
+      </div><div class="chart-box"><canvas id="reviewExpenseChart"></canvas></div>
+        ${(() => {
+          const inYearTest = (d) => d && d.slice(0, 4) === selectedYear;
+          const spendBars = () => spendCategoryBarsHtml(s.categoryBreakdown, { title: "Where it went", totalLabel: `Total spent in ${selectedYear}`, bare: true });
+          const valueBars = () => valueSourceBarsHtml(valueBreakdownIn(inYearTest), { title: "Where it came from", totalLabel: `Total value in ${selectedYear}`, bare: true });
+          if (reviewMoneyMode === "spend") return `<div class="money-breakdown">${spendBars()}</div>`;
+          if (reviewMoneyMode === "income") return `<div class="money-breakdown">${valueBars()}</div>`;
+          return `<div class="money-breakdown money-breakdown-2">${valueBars()}${spendBars()}</div>`;
+        })()}
+      </div>
     </div>
   `;
   document.getElementById("reviewYearSelect").addEventListener("change", (e) => { reviewYear = e.target.value; renderYearReviewSection(); });
+  const moneyModeToggle = document.getElementById("reviewMoneyMode");
+  if (moneyModeToggle) moneyModeToggle.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-money-mode]");
+    if (!btn) return;
+    reviewMoneyMode = btn.dataset.moneyMode;
+    renderYearReviewSection();
+  });
+  const reviewSpendPillsEl = document.getElementById("reviewSpendPills");
+  if (reviewSpendPillsEl) reviewSpendPillsEl.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-spend-pill]");
+    if (!btn) return;
+    reviewSpendPill = btn.dataset.spendPill || null;
+    renderYearReviewSection();
+  });
+  const reviewIncomePillsEl = document.getElementById("reviewIncomePills");
+  if (reviewIncomePillsEl) reviewIncomePillsEl.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-income-pill]");
+    if (!btn) return;
+    reviewIncomePill = btn.dataset.incomePill || null;
+    renderYearReviewSection();
+  });
+  const reviewProduceToggle = document.getElementById("reviewProduceType");
+  if (reviewProduceToggle) reviewProduceToggle.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-produce-type]");
+    if (!btn) return;
+    reviewProduceType = btn.dataset.produceType;
+    renderYearReviewSection();
+  });
+  const reviewFeedToggle = document.getElementById("reviewFeedType");
+  if (reviewFeedToggle) reviewFeedToggle.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-feed-type]");
+    if (!btn) return;
+    reviewFeedType = btn.dataset.feedType;
+    renderYearReviewSection();
+  });
   drawYearReviewCharts(selectedYear);
 }
 
@@ -4994,57 +5476,140 @@ function monthlyBuckets(items, year, valueFn) {
 }
 
 let reviewCharts = {};
+
+/** Feed consumed (lb) per month across a year, by feed type. Uses the same
+ * bag ramp as everywhere else, so a bag spanning a month boundary splits by
+ * the days it was actually eaten in each. Per-month totals (not cumulative):
+ * birds eat every month, so each bucket is meaningfully non-zero. */
+function feedMonthlyForYear(year, feedType = "both") {
+  const arr = new Array(12).fill(0);
+  const today = todayStr();
+  const cats = feedType === "layer" ? ["Layer Feed"] : feedType === "meat" ? ["Meat Feed"] : ["Layer Feed", "Meat Feed"];
+  STATE.supplies.filter(s => cats.includes(s.category)).forEach(s => {
+    const ramp = bagRamp(s, today);
+    if (!ramp) return;
+    for (let i = 0; i < ramp.spanDays; i++) {
+      const day = addDays(ramp.start, i);
+      if (day.slice(0, 4) !== year) continue;
+      const m = parseInt(day.slice(5, 7), 10) - 1;
+      if (m >= 0 && m < 12) arr[m] += ramp.perDay;
+    }
+  });
+  return arr;
+}
+
+/** 12-month array of money for a year, honoring mode (spend/income/net) and an
+ * optional pill. Income value = egg value + meat value + other income (egg/
+ * meat sales washed out); net = income − spend. Mirrors the dashboard's daily
+ * money series but bucketed by month. */
+function moneyMonthlyForYear(year, mode, pill) {
+  const eggFallback = Number(getCoopDefaults().eggPrice) || 0, meatFallback = Number(getCoopDefaults().pricePerLb) || 0;
+  const eggVal = monthlyBuckets(STATE.eggs.map(e => ({ date: e.date, v: (Number(e.count) || 0) * (Number(e.price_per_egg) || eggFallback) })), year, it => it.v);
+  const meatVal = monthlyBuckets(STATE.birds.filter(b => b.status === "Processed" && b.harvest_date).map(b => ({ date: b.harvest_date, v: (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || meatFallback) })), year, it => it.v);
+  const otherIncome = (cat) => monthlyBuckets(STATE.expenses.filter(x => x.entry_type === "income" && x.category !== "Egg Sale" && x.category !== "Meat Sale" && (!cat || x.category === cat)), year, x => Number(x.amount) || 0);
+  const spend = (cat) => monthlyBuckets(STATE.expenses.filter(x => x.entry_type !== "income" && (!cat || x.category === cat)), year, x => Number(x.amount) || 0);
+  const add = (...arrs) => arrs[0].map((_, i) => arrs.reduce((s, a) => s + a[i], 0));
+
+  if (mode === "spend") return spend(pill);
+  if (mode === "income") {
+    if (pill === "Egg value") return eggVal;
+    if (pill === "Meat value") return meatVal;
+    if (pill) return otherIncome(pill);
+    return add(eggVal, meatVal, otherIncome(null));
+  }
+  // net = running total of (income value − spend) across the months, so the
+  // line ends at the year's net and a zero-crossing marks break-even.
+  const income = add(eggVal, meatVal, otherIncome(null));
+  const sp = spend(null);
+  let run = 0;
+  return income.map((v, i) => (run += v - sp[i]));
+}
+
 function drawYearReviewCharts(year) {
   Object.values(reviewCharts).forEach(c => c && c.destroy());
   const s = computeYearStats(year);
+  const lastYear = String(Number(year) - 1);
+  const hasPrev = allCoopYears().includes(lastYear);
+  // Dotted last-year overlay, matching the dashboard's month-comparison style,
+  // so each monthly chart shows this year solid vs last year dotted.
+  const prevDash = (color) => ({ borderColor: color, borderDash: [4, 4], backgroundColor: "transparent", pointRadius: 0, tension: 0.25, fill: false });
+  const withPrev = (mainDs, prevData, prevColor) => hasPrev
+    ? [mainDs, { label: lastYear, data: prevData, ...prevDash(prevColor) }]
+    : [mainDs];
 
-  const eggMonthly = monthlyBuckets(STATE.eggs, year, e => Number(e.count) || 0);
-  reviewCharts.eggs = new Chart(document.getElementById("reviewEggChart"), {
-    type: "bar",
-    data: { labels: MONTH_LABELS, datasets: [{ label: "Eggs", data: eggMonthly, backgroundColor: "#D4A017" }] },
-    options: chartOpts()
-  });
+  // ---- Produce: eggs (line) or meat (bars), toggled -- mirrors the dashboard
+  const produceEl = document.getElementById("reviewProduceChart");
+  if (produceEl) {
+    if (reviewProduceType === "meat") {
+      const meatItems = STATE.birds.filter(b => b.status === "Processed" && b.harvest_date).map(b => ({ date: b.harvest_date, weight: Number(b.harvest_weight) || 0 }));
+      const meatMonthly = monthlyBuckets(meatItems, year, (it) => it.weight);
+      const meatPrev = hasPrev ? monthlyBuckets(meatItems, lastYear, (it) => it.weight) : null;
+      const ds = [{ label: year, data: meatMonthly, backgroundColor: "#C1502E", borderColor: "#C1502E", type: "bar" }];
+      if (hasPrev) ds.push({ label: lastYear, data: meatPrev, ...prevDash("#C7B9A6"), type: "line" });
+      reviewCharts.produce = new Chart(produceEl, {
+        data: { labels: MONTH_LABELS, datasets: ds },
+        options: yearChartOpts(hasPrev, (v) => `${displayWeight(v)} ${getWeightUnit()}`)
+      });
+    } else {
+      const eggMonthly = monthlyBuckets(STATE.eggs, year, e => Number(e.count) || 0);
+      const eggPrev = hasPrev ? monthlyBuckets(STATE.eggs, lastYear, e => Number(e.count) || 0) : null;
+      reviewCharts.produce = new Chart(produceEl, {
+        type: "line",
+        data: { labels: MONTH_LABELS, datasets: withPrev({ label: year, data: eggMonthly, borderColor: "#D4A017", backgroundColor: "#D4A01733", tension: 0.25, pointRadius: 2, fill: true }, eggPrev, "#C7B9A6") },
+        options: yearChartOpts(hasPrev)
+      });
+    }
+  }
 
-  const processedBirds = STATE.birds.filter(b => b.status === "Processed" && b.harvest_date);
-  const meatMonthly = monthlyBuckets(processedBirds.map(b => ({ date: b.harvest_date, weight: Number(b.harvest_weight) || 0 })), year, (it) => it.weight);
-  reviewCharts.meat = new Chart(document.getElementById("reviewMeatChart"), {
-    type: "bar",
-    data: { labels: MONTH_LABELS, datasets: [{ label: "Lbs processed", data: meatMonthly, backgroundColor: "#C1502E" }] },
-    options: chartOpts((v) => `${displayWeight(v)} ${getWeightUnit()}`)
-  });
-
-  const expenseMonthly = monthlyBuckets(STATE.expenses.filter(x => x.entry_type !== "income"), year, x => Number(x.amount) || 0);
-  reviewCharts.expenses = new Chart(document.getElementById("reviewExpenseChart"), {
-    type: "bar",
-    data: { labels: MONTH_LABELS, datasets: [{ label: "Spend", data: expenseMonthly, backgroundColor: "#7A8FA6" }] },
-    options: chartOpts((v) => fmtMoney(v))
-  });
-
-  const compareCanvas = document.getElementById("reviewCompareChart");
-  if (compareCanvas) {
-    const lastYear = String(Number(year) - 1);
-    const prev = computeYearStats(lastYear);
-    // Percentage change rather than raw numbers -- egg counts (hundreds)
-    // and dollar amounts don't share a sensible axis, but "% change" puts
-    // every metric on the same comparable scale, which is what actually
-    // shows a trend at a glance.
-    const pctChange = (curr, prevVal) => prevVal === 0 ? (curr > 0 ? 100 : 0) : ((curr - prevVal) / Math.abs(prevVal)) * 100;
-    const compareLabels = ["Eggs", "Meat (lb)", "Spent", "Net"];
-    const compareData = [
-      pctChange(s.eggCount, prev.eggCount),
-      pctChange(s.processedWeight, prev.processedWeight),
-      pctChange(s.totalExpenses, prev.totalExpenses),
-      pctChange(s.net, prev.net),
-    ];
-    reviewCharts.compare = new Chart(compareCanvas, {
-      type: "bar",
-      data: {
-        labels: compareLabels,
-        datasets: [{ label: `vs ${lastYear}`, data: compareData, backgroundColor: compareData.map(v => v >= 0 ? "#8A9A5B" : "#C1502E") }]
-      },
-      options: { ...chartOpts((v) => `${v >= 0 ? "+" : ""}${v.toFixed(0)}%`), plugins: { legend: { display: false } } }
+  // ---- Feed by month, by type -- same toggle and colors as the dashboard ----
+  const feedEl = document.getElementById("reviewFeedChart");
+  if (feedEl) {
+    const feedMonthly = feedMonthlyForYear(year, reviewFeedType).map(weightNum);
+    const feedPrev = hasPrev ? feedMonthlyForYear(lastYear, reviewFeedType).map(weightNum) : null;
+    const fc = reviewFeedType === "layer" ? "#D4A017" : reviewFeedType === "meat" ? "#C1502E" : "#7A8FA6";
+    reviewCharts.feed = new Chart(feedEl, {
+      type: "line",
+      data: { labels: MONTH_LABELS, datasets: withPrev({ label: year, data: feedMonthly, borderColor: fc, backgroundColor: fc + "33", tension: 0.25, pointRadius: 2, fill: true }, feedPrev, "#C7B9A6") },
+      options: yearChartOpts(hasPrev, (v) => `${v.toFixed(1)} ${getWeightUnit()}`)
     });
   }
+
+  // Money mega chart: spend/income/net (reviewMoneyMode) with an optional pill
+  // (category for spend, source for income). Income uses the value model (egg
+  // value + meat value + other income, egg/meat sales washed out). Net colors
+  // per segment -- green above zero, red below.
+  const moneyData = moneyMonthlyForYear(year, reviewMoneyMode, reviewMoneyMode === "spend" ? reviewSpendPill : reviewMoneyMode === "income" ? reviewIncomePill : null);
+  const moneyPrev = hasPrev ? moneyMonthlyForYear(lastYear, reviewMoneyMode, reviewMoneyMode === "spend" ? reviewSpendPill : reviewMoneyMode === "income" ? reviewIncomePill : null) : null;
+  const isNet = reviewMoneyMode === "net";
+  const moneyColor = reviewMoneyMode === "income" ? "#8A9A5B" : reviewMoneyMode === "net" ? "#8A9A5B" : "#7A8FA6";
+  const mainDs = { label: year, data: moneyData, borderColor: moneyColor, backgroundColor: moneyColor + "33", tension: 0.25, pointRadius: 2, fill: !isNet };
+  if (isNet) mainDs.segment = { borderColor: (ctx) => (ctx.p1.parsed.y != null && ctx.p1.parsed.y < 0 ? "#B84C3E" : "#8A9A5B") };
+  const moneyOpts = yearChartOpts(hasPrev, (v) => fmtMoney(v));
+  if (isNet) moneyOpts.scales.y.beginAtZero = false;
+  reviewCharts.expenses = new Chart(document.getElementById("reviewExpenseChart"), {
+    type: "line",
+    data: { labels: MONTH_LABELS, datasets: withPrev(mainDs, moneyPrev, "#C7B9A6") },
+    options: moneyOpts
+  });
+
+}
+
+/** Year Review monthly chart options: legend shown only when a prior-year
+ * overlay is present, x-axis is the 12 month labels. */
+function yearChartOpts(showLegend, yFormatter) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: "index", intersect: false },
+    plugins: {
+      legend: showLegend ? { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } } : { display: false },
+      tooltip: { callbacks: yFormatter ? { label: (ctx) => `${ctx.dataset.label}: ${yFormatter(ctx.parsed.y)}` } : undefined },
+    },
+    scales: {
+      x: { ticks: { color: "#C7B9A6", font: { size: 10 }, maxRotation: 0 }, grid: { color: "#5A4B3C40" } },
+      y: { ticks: { color: "#C7B9A6", font: { size: 10 } }, grid: { color: "#5A4B3C40" }, beginAtZero: true }
+    }
+  };
 }
 
 function beddingStatsFor(area) {
@@ -5097,6 +5662,13 @@ function parseWeightInput(displayValue) {
  * scales the opposite way from a plain quantity. $5/lb is about $11.02/kg
  * (dividing by the lb-to-kg factor), not $2.27/kg -- a kg costs more
  * because it's the bigger unit, not less. */
+/** Numeric form of displayWeight, for chart series data (displayWeight returns
+ * a string, which Chart.js would treat as a category rather than a value). */
+function weightNum(lbValue) {
+  const n = Number(lbValue) || 0;
+  return getWeightUnit() === "kg" ? +(n * LB_TO_KG).toFixed(2) : +n.toFixed(2);
+}
+
 function displayPricePerLb(dollarsPerLb) {
   if (dollarsPerLb == null || dollarsPerLb === "") return "";
   const n = Number(dollarsPerLb);
@@ -5155,13 +5727,13 @@ function sparklineSvg(values) {
  * number of days into last month -- comparing 13 days of July against all
  * 31 of June would make every month look like a collapse until the 20th.
  * goodUp flips the coloring for numbers where rising is bad (spending). */
-function deltaChipHtml(current, previous, { goodUp = true } = {}) {
+function deltaChipHtml(current, previous, { goodUp = true, label = "last month" } = {}) {
   if (!(previous > 0)) return ""; // nothing meaningful to compare against yet
   const pct = Math.round(((current - previous) / previous) * 100);
-  if (Math.abs(pct) < 1) return `<span class="delta-chip tone-slate">≈ last month</span>`;
+  if (Math.abs(pct) < 1) return `<span class="delta-chip tone-slate">≈ ${label}</span>`;
   const up = pct > 0;
   const tone = up === goodUp ? "sage" : "rust";
-  return `<span class="delta-chip tone-${tone}">${up ? "▲" : "▼"} ${Math.abs(pct)}% vs last month</span>`;
+  return `<span class="delta-chip tone-${tone}">${up ? "▲" : "▼"} ${Math.abs(pct)}% vs ${label}</span>`;
 }
 
 /** Weekly trend series (oldest -> newest, 8 buckets) and month-over-month
@@ -5205,7 +5777,16 @@ function computeCardTrends() {
     const b = bucketOf(x.date);
     if (b >= 0) spentW[b] += Number(x.amount) || 0;
   });
-  const netW = valueW.map((v, i) => v - spentW[i]);
+  // Net is a RUNNING total across the 8 weeks, not a per-week figure. As a
+  // per-week value it mostly showed when transactions happened -- a feed
+  // purchase dropped one week hard negative, egg weeks pushed it back up --
+  // which is timing noise, not a trend. A running total answers the question
+  // the card is actually for: am I still sinking, or has income started to
+  // outweigh spending and pulled the line back upward?
+  const netW = (() => {
+    let run = 0;
+    return valueW.map((v, i) => (run += v - spentW[i]));
+  })();
 
   // Flock size at the end of each weekly bucket.
   const flockW = zeros();
@@ -5285,6 +5866,8 @@ function renderCoopOverview() {
     </div>`;
   el.innerHTML = `
     <div class="section-gap">
+      <div class="dash-top">
+      <div class="dash-top-main">
       <div class="grid-stats-2">
         ${statCard({ tone: "sage", goto: "flock", label: "Active Birds", value: s.active,
           sub: `${BIRD_TYPE_ICONS.layer.emoji} ${s.layers} layer · ${BIRD_TYPE_ICONS.meat.emoji} ${s.meatActive} meat`,
@@ -5355,77 +5938,172 @@ function renderCoopOverview() {
         </div>`;
       })()}
 
+      </div>
+      <div class="dash-top-side">
       <div class="card">
         <div class="card-title">Bedding freshness</div>
-        <div style="display:flex;gap:24px;flex-wrap:wrap;padding:6px 2px">
+        <div class="bedding-fresh-list">
           ${getBeddingAreas().map(area => {
             const bs = beddingStatsFor(area);
             const t = getBeddingThresholds(area);
             const daysSinceCleanout = bs.lastCleanout ? daysSince(bs.lastCleanout.date) : null;
-            const daysSinceActivity = bs.lastActivity ? daysSince(bs.lastActivity.date) : null;
             const daysSinceChurn = bs.lastChurn ? daysSince(bs.lastChurn.date) : null;
             const cleanoutToneInfo = cleanoutTone(daysSinceCleanout, area);
             const daysUntilCleanout = daysSinceCleanout !== null ? t.danger - daysSinceCleanout : null;
             const daysUntilChurn = daysSinceChurn !== null ? t.churn - daysSinceChurn : null;
-            const cleanoutLabel = daysUntilCleanout === null ? "no clean-out logged"
+            // Worst of the two schedules drives the row's status dot, so a
+            // glance down the list shows what needs attention.
+            const cleanoutState = daysUntilCleanout === null ? 0 : daysUntilCleanout < 0 ? 2 : daysUntilCleanout === 0 ? 1 : (cleanoutToneInfo.tone === "gold" ? 1 : 0);
+            const churnState = daysUntilChurn === null ? 0 : daysUntilChurn < 0 ? 2 : daysUntilChurn === 0 ? 1 : 0;
+            const worst = Math.max(cleanoutState, churnState);
+            const dotTone = worst === 2 ? "danger" : worst === 1 ? "gold" : "sage";
+            // Compact captions: clean-out is the headline, churn a secondary note.
+            const cleanoutTxt = daysUntilCleanout === null ? "no clean-out logged"
               : daysUntilCleanout < 0 ? `clean-out overdue ${-daysUntilCleanout}d`
               : daysUntilCleanout === 0 ? "clean-out due today"
               : `clean-out in ${daysUntilCleanout}d`;
-            const churnTone = daysUntilChurn === null ? "slate" : daysUntilChurn <= 0 ? "gold" : "sage";
-            const churnLabel = daysUntilChurn === null ? "no churn logged"
-              : daysUntilChurn < 0 ? `churn overdue ${-daysUntilChurn}d`
-              : daysUntilChurn === 0 ? "churn due today"
-              : `churn in ${daysUntilChurn}d`;
-            return `<div style="min-width:190px;display:flex;flex-direction:column;gap:4px">
-              <div style="font-weight:600">${esc(area)}</div>
-              <div class="dim" style="font-size:11px">Last activity: ${daysSinceActivity !== null ? daysSinceActivity + "d ago" : "never"}</div>
-              <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:2px">
-                <span class="stamp tone-${cleanoutToneInfo.tone}">${cleanoutLabel}</span>
-                <span class="stamp tone-${churnTone}">${churnLabel}</span>
-              </div>
+            const churnTxt = daysUntilChurn === null ? "" 
+              : daysUntilChurn < 0 ? ` · churn overdue ${-daysUntilChurn}d`
+              : daysUntilChurn === 0 ? " · churn due today"
+              : ` · churn in ${daysUntilChurn}d`;
+            return `<div class="bedding-fresh-row">
+              <span class="status-dot tone-${dotTone}" title="${dotTone === "danger" ? "Overdue" : dotTone === "gold" ? "Due soon" : "OK"}"></span>
+              <span class="bedding-fresh-area">${esc(area)}</span>
+              <span class="bedding-fresh-info dim">${cleanoutTxt}${churnTxt}</span>
             </div>`;
           }).join("")}
         </div>
         <div class="dim" style="font-size:11px;margin-top:10px">Thresholds are per-area and adjustable in the <strong style="color:var(--text)">Settings</strong> tab.</div>
       </div>
-
-      <div class="range-select" id="rangeSelect">
-        ${RANGES.map(r => `<button class="range-btn ${chartRangeDays === r.days ? "active" : ""}" data-days="${r.days}">${r.label}</button>`).join("")}
       </div>
-      ${rangeHiddenDataHint()}
-
-      <div class="chart-grid">
-        <div class="card"><div class="chart-head"><div class="card-title">Flock size over time</div></div><div class="chart-box"><canvas id="flockSizeChart"></canvas></div></div>
-        <div class="card"><div class="chart-head"><div class="card-title">Egg production</div></div><div class="chart-box"><canvas id="eggChart"></canvas></div></div>
-        <div class="card"><div class="chart-head"><div class="card-title">Cumulative meat produced (lbs)</div></div><div class="chart-box"><canvas id="meatChart"></canvas></div></div>
-        <div class="card">
-          <div class="chart-head">
-            <div class="card-title">Cumulative feed used (lbs)</div>
-            <div class="dim" style="font-size:11px;margin-bottom:6px">Ramps up over each bag's open-to-emptied window; today's point also includes a partial estimate from bags currently open.</div>
-          </div>
-          <div class="chart-box"><canvas id="feedUsedChart"></canvas></div>
-        </div>
-        <div class="card">
-          <div class="chart-head">
-            <div class="card-title">Cumulative bedding used (cu ft)</div>
-            <div class="dim" style="font-size:11px;margin-bottom:6px">Same idea -- ramps over each bag's usage window, today's point includes what's currently in progress.</div>
-          </div>
-          <div class="chart-box"><canvas id="beddingUsedChart"></canvas></div>
-        </div>
-        <div class="card"><div class="chart-head"><div class="card-title">Spend by category</div></div><div class="chart-box"><canvas id="catChart"></canvas></div></div>
-        <div class="card"><div class="chart-head"><div class="card-title">Value produced vs. spend over time</div></div><div class="chart-box"><canvas id="incomeChart"></canvas></div></div>
-        <div class="card"><div class="chart-head"><div class="card-title">Cumulative balance over time</div></div><div class="chart-box"><canvas id="cumChart"></canvas></div></div>
       </div>
+
+      ${(() => {
+        // Initialize the month view on first render: this month vs last month.
+        const thisMonth = monthKeyOf(todayStr());
+        if (!dashMonthKey) dashMonthKey = thisMonth;
+        if (!dashCompareKey) dashCompareKey = shiftMonthKey(thisMonth, -1);
+        const monthOptions = dashboardMonthOptions();
+        return `
+        <div class="month-picker">
+          <div class="month-picker-row">
+            <label class="month-field"><span>Showing</span>
+              <select id="dashMonthSelect">${monthOptions.map(k => `<option value="${k}" ${k === dashMonthKey ? "selected" : ""}>${monthLabelOf(k)}</option>`).join("")}</select>
+            </label>
+            <label class="month-field"><span>Compare to</span>
+              <select id="dashCompareSelect">
+                <option value="">— none —</option>
+                ${monthOptions.filter(k => k !== dashMonthKey).map(k => `<option value="${k}" ${k === dashCompareKey ? "selected" : ""}>${monthLabelOf(k)}</option>`).join("")}
+              </select>
+            </label>
+          </div>
+          <div class="dim" style="font-size:11px;margin-top:6px">Each chart shows ${monthLabelOf(dashMonthKey)} by day${dashCompareKey ? `, with ${monthLabelOf(dashCompareKey)} as a dotted overlay for comparison` : ""}. All-time cumulative totals live on the <strong style="color:var(--text)">All-Time</strong> page.</div>
+        </div>
+
+        <div class="chart-grid chart-grid-stretch">
+          <div class="card"><div class="chart-head chart-head-grow">
+            ${dashProduceType === "meat" ? `<div class="card-title">🍗 Meat processed (${getWeightUnit()})</div>${dashTotalBlock(sum(meatDailyForMonth(dashMonthKey)), dashCompareKey ? sum(meatDailyForMonth(dashCompareKey)) : 0, (v) => `${displayWeight(v)} ${getWeightUnit()}`)}${(() => {
+              const shownBirds = birdsProcessedInMonth(dashMonthKey);
+              const compBirds = dashCompareKey ? birdsProcessedInMonth(dashCompareKey) : null;
+              if (!shownBirds && !compBirds) return `<div class="dash-substat">no birds processed this month</div>`;
+              const shownTxt = shownBirds ? `${shownBirds} bird${shownBirds === 1 ? "" : "s"} processed` : "no birds processed";
+              return `<div class="dash-substat">${shownTxt}${compBirds !== null ? ` · ${compBirds} in ${monthLabelShort(dashCompareKey)}` : ""}</div>`;
+            })()}` : `<div class="card-title">🥚 Eggs collected</div>${dashTotalBlock(sum(eggsDailyForMonth(dashMonthKey)), dashCompareKey ? sum(eggsDailyForMonth(dashCompareKey)) : 0, (v) => `${Math.round(v)} egg${Math.round(v) === 1 ? "" : "s"}`)}${(() => {
+              const avg = avgEggsPerDay(dashMonthKey);
+              return avg > 0 ? `<div class="dash-substat">${avg.toFixed(1)}/day avg</div>` : "";
+            })()}`}
+            <div class="pill-row" id="dashProduceType">
+              ${[["eggs", `${BIRD_TYPE_ICONS.layer.emoji} Eggs`], ["meat", `${BIRD_TYPE_ICONS.meat.emoji} Meat`]].map(([v, label]) => `<button class="pill-btn ${dashProduceType === v ? "range-btn active" : ""}" data-produce-type="${v}">${label}</button>`).join("")}
+            </div>
+          </div><div class="chart-box"><canvas id="dashProduceChart"></canvas></div></div>
+          <div class="card"><div class="chart-head chart-head-grow"><div class="card-title">🌾 Feed used, month-to-date${dashFeedType === "layer" ? " — layer" : dashFeedType === "meat" ? " — meat" : ""} (${getWeightUnit()})</div>${dashTotalBlock(weightNum(feedTotalForMonth(dashMonthKey, dashFeedType)), dashCompareKey ? weightNum(feedTotalForMonth(dashCompareKey, dashFeedType)) : 0, (v) => `${v.toFixed(1)} ${getWeightUnit()}`, { invertColors: true })}
+            <div class="pill-row" id="dashFeedType">
+              ${[["both", "Both"], ["layer", `${BIRD_TYPE_ICONS.layer.emoji} Layer`], ["meat", `${BIRD_TYPE_ICONS.meat.emoji} Meat`]].map(([v, label]) => `<button class="pill-btn ${dashFeedType === v ? "range-btn active" : ""}" data-feed-type="${v}">${label}</button>`).join("")}
+            </div>
+          </div><div class="chart-box"><canvas id="dashFeedChart"></canvas></div></div>
+          <div class="card" style="grid-column:1/-1">
+            <div class="chart-head chart-head-grow">
+              <div class="money-mega-head">
+                <div class="card-title">${dashMoneyMode === "income" ? "💰 Income / value" : dashMoneyMode === "net" ? "⚖️ Net (value − spend)" : "💵 Spending"}${dashMoneyMode === "spend" && dashSpendPill ? ` — ${esc(dashSpendPill)}` : dashMoneyMode === "income" && dashIncomePill ? ` — ${esc(dashIncomePill)}` : ""}</div>
+                <div class="pill-row money-mode-pills" id="dashMoneyMode">
+                  ${[["spend", "💵 Spend"], ["income", "💰 Income"], ["net", "⚖️ Net"]].map(([v, label]) => `<button class="pill-btn ${dashMoneyMode === v ? "range-btn active" : ""}" data-money-mode="${v}">${label}</button>`).join("")}
+                </div>
+              </div>
+              ${(() => {
+                const shown = dashMoneySeriesTotal(dashMonthKey);
+                const comp = dashCompareKey ? dashMoneySeriesTotal(dashCompareKey) : 0;
+                // Spend: less is good (invert). Income/net: more is good.
+                return dashTotalBlock(shown, comp, (v) => fmtMoney(v), { invertColors: dashMoneyMode === "spend" });
+              })()}
+              ${dashMoneyMode === "spend" ? `<div class="pill-row" id="dashSpendPills">
+                <button class="pill-btn ${!dashSpendPill ? "range-btn active" : ""}" data-spend-pill="">All</button>
+                ${spendCategoriesPresent().map(c => `<button class="pill-btn ${dashSpendPill === c ? "range-btn active" : ""}" data-spend-pill="${esc(c)}">${(CATEGORY_ICONS[c] || CATEGORY_ICONS["Other"]).emoji} ${esc(c)}</button>`).join("")}
+              </div>` : dashMoneyMode === "income" ? `<div class="pill-row" id="dashIncomePills">
+                <button class="pill-btn ${!dashIncomePill ? "range-btn active" : ""}" data-income-pill="">All</button>
+                ${incomeSourcesPresent().map(src => { const ic = incomeSourceIcon(src); return `<button class="pill-btn ${dashIncomePill === src ? "range-btn active" : ""}" data-income-pill="${esc(src)}">${ic.emoji} ${esc(src)}</button>`; }).join("")}
+              </div>` : `<div class="dash-substat">Value produced minus money spent, per day</div>`}
+            </div>
+            <div class="chart-box"><canvas id="dashMoneyChart"></canvas></div>
+            ${(() => {
+              // Breakdown beneath the chart, matching the current mode: where
+              // the money went (spend) or where the value came from (income).
+              // Net shows both side by side -- out vs in for the month.
+              const inMonth = (d) => monthKeyOf(d) === dashMonthKey;
+              const spendBars = () => spendCategoryBarsHtml(spendCatTotalsForMonth(dashMonthKey), { title: "Where it went", totalLabel: "Total spent", bare: true });
+              const valueBars = () => valueSourceBarsHtml(valueBreakdownIn(inMonth), { title: "Where it came from", totalLabel: "Total value", bare: true });
+              if (dashMoneyMode === "spend") return `<div class="money-breakdown">${spendBars()}</div>`;
+              if (dashMoneyMode === "income") return `<div class="money-breakdown">${valueBars()}</div>`;
+              return `<div class="money-breakdown money-breakdown-2">${valueBars()}${spendBars()}</div>`;
+            })()}
+          </div>
+        </div>`;
+      })()}
     </div>
   `;
-  document.getElementById("rangeSelect").addEventListener("click", (e) => {
-    const btn = e.target.closest(".range-btn");
-    if (!btn) return;
-    chartRangeDays = btn.dataset.days === "null" ? null : Number(btn.dataset.days);
+  const monthSel = document.getElementById("dashMonthSelect");
+  if (monthSel) monthSel.addEventListener("change", (e) => {
+    dashMonthKey = e.target.value;
+    // Keep comparison valid: if it now equals the shown month, clear it.
+    if (dashCompareKey === dashMonthKey) dashCompareKey = null;
     renderCoopOverview();
   });
-  const jumpBtn = document.getElementById("jumpToAll");
-  if (jumpBtn) jumpBtn.addEventListener("click", () => { chartRangeDays = null; renderCoopOverview(); });
+  const compareSel = document.getElementById("dashCompareSelect");
+  if (compareSel) compareSel.addEventListener("change", (e) => { dashCompareKey = e.target.value || null; renderCoopOverview(); });
+  const moneyMode = document.getElementById("dashMoneyMode");
+  if (moneyMode) moneyMode.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-money-mode]");
+    if (!btn) return;
+    dashMoneyMode = btn.dataset.moneyMode;
+    renderCoopOverview();
+  });
+  const spendPills = document.getElementById("dashSpendPills");
+  if (spendPills) spendPills.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-spend-pill]");
+    if (!btn) return;
+    dashSpendPill = btn.dataset.spendPill || null;
+    renderCoopOverview();
+  });
+  const incomePills = document.getElementById("dashIncomePills");
+  if (incomePills) incomePills.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-income-pill]");
+    if (!btn) return;
+    dashIncomePill = btn.dataset.incomePill || null;
+    renderCoopOverview();
+  });
+  const feedTypeToggle = document.getElementById("dashFeedType");
+  if (feedTypeToggle) feedTypeToggle.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-feed-type]");
+    if (!btn) return;
+    dashFeedType = btn.dataset.feedType;
+    renderCoopOverview();
+  });
+  const produceToggle = document.getElementById("dashProduceType");
+  if (produceToggle) produceToggle.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-produce-type]");
+    if (!btn) return;
+    dashProduceType = btn.dataset.produceType;
+    renderCoopOverview();
+  });
   el.querySelectorAll("[data-goto-hatching]").forEach(row => row.addEventListener("click", () => {
     switchTab("eggs");
     eggsSubTab = "hatching";
@@ -5439,15 +6117,7 @@ function renderCoopOverview() {
     card.addEventListener("click", go);
     card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
   });
-  drawCharts();
-}
-
-function rangeHiddenDataHint() {
-  if (!chartRangeDays) return "";
-  const hasHiddenEggs = STATE.eggs.length > 0 && !STATE.eggs.some(e => withinRange(e.date, chartRangeDays));
-  const hasHiddenExpenses = STATE.expenses.length > 0 && !STATE.expenses.some(x => withinRange(x.date, chartRangeDays));
-  if (!hasHiddenEggs && !hasHiddenExpenses) return "";
-  return `<div class="note-box">You have entries older than this range, so the charts below look empty. <button class="btn ghost small" id="jumpToAll" style="margin-left:6px">Show All</button></div>`;
+  drawDashboardCharts();
 }
 
 /** Every distinct bucket (day/week/month, matching pickBucketMode) between the
@@ -5479,221 +6149,191 @@ function allBucketsInRange(mode, days) {
   return order.map(key => ({ key, asOfDate: asOf[key] }));
 }
 
-/** Active flock size (layers vs meat) at the end of each bucket, using the
- * same shared range/bucket-mode as every other chart on this tab. A bird
- * counts as "in the flock" as of a given date if it had arrived (acquired or
- * hatched) by then and hadn't yet been processed/lost on or before that day. */
-
-function computeFlockSizeSeries() {
-  const mode = pickBucketMode(chartRangeDays);
-  const buckets = allBucketsInRange(mode, chartRangeDays);
-  const layers = [], meat = [];
-  buckets.forEach(({ asOfDate }) => {
-    let l = 0, m = 0;
-    STATE.birds.forEach(b => {
-      const acq = b.acquired_date || b.hatch_date;
-      if (!acq || acq > asOfDate) return;
-      const leftDate = b.status === "Processed" ? b.harvest_date : b.status === "Deceased" ? b.death_date : null;
-      if (leftDate && leftDate <= asOfDate) return;
-      if (b.type === "Meat") m++; else l++;
-    });
-    layers.push(l); meat.push(m);
-  });
-  return { labels: buckets.map(b => b.key), layers, meat };
+const sum = (arr) => arr.reduce((a, b) => a + (Number(b) || 0), 0);
+/** Feed used total for a month: the last value of its cumulative series, which
+ * is the month-to-date total for the current month and the full-month total
+ * for a past month (and correctly includes an open bag's used-so-far portion). */
+function feedTotalForMonth(key, feedType = "both") {
+  const series = feedCumulativeForMonth(key, feedType);
+  return series.length ? series[series.length - 1] : 0;
 }
 
-function drawCharts() {
+/** A clean "this month vs comparison" total for a dashboard card header.
+ * `fmt` formats the raw number (eggs → plain count, feed → "X lb", spend →
+ * money). Shows the shown-month total prominently, the comparison-month total
+ * dim beside it, and a small up/down delta so you don't have to subtract in
+ * your head. When there's no comparison month, just the one total. */
+function dashTotalBlock(shownTotal, compareTotal, fmt, { invertColors = false } = {}) {
+  const main = `<span class="dash-total-main">${fmt(shownTotal)}</span>`;
+  if (dashCompareKey == null) return `<div class="dash-total">${main}</div>`;
+  const diff = shownTotal - compareTotal;
+  // For spend, up is "bad" (red) and down is "good" (green); for eggs/feed
+  // it's neutral -- we just color the direction, not judge it, except spend.
+  const good = invertColors ? diff < 0 : diff > 0;
+  const cls = diff === 0 ? "flat" : good ? "up-good" : "up-bad";
+  const arrow = diff > 0 ? "▲" : diff < 0 ? "▼" : "–";
+  const deltaLabel = diff === 0 ? "same as" : `${arrow} ${fmt(Math.abs(diff))} vs`;
+  return `<div class="dash-total">
+    ${main}
+    <span class="dash-total-compare"><span class="dash-delta ${cls}">${deltaLabel}</span> ${fmt(compareTotal)} <span class="dim">(${monthLabelShort(dashCompareKey)})</span></span>
+  </div>`;
+}
+function monthLabelShort(key) {
+  const [y, m] = key.split("-").map(Number);
+  return `${MONTH_NAMES_SHORT[m - 1]} ${y}`;
+}
+
+/** Months offered in the dashboard picker: every month that has any data,
+ * plus the current month, newest first. */
+function dashboardMonthOptions() {
+  const keys = new Set();
+  STATE.eggs.forEach(e => { const k = monthKeyOf(e.date); if (k) keys.add(k); });
+  STATE.expenses.forEach(x => { const k = monthKeyOf(x.date); if (k) keys.add(k); });
+  STATE.supplies.forEach(s => { const k = monthKeyOf(s.date_emptied); if (k) keys.add(k); });
+  keys.add(monthKeyOf(todayStr()));
+  return [...keys].sort().reverse();
+}
+
+/** Draws the three dashboard month charts (eggs, feed, spend), each showing the
+ * selected month by day with an optional dotted overlay of the comparison
+ * month. Comparison uses day-of-month alignment so different-length months
+ * still line up. */
+/** Per-day money series for the dashboard mega chart, honoring the current
+ * mode (spend/income/net) and any selected pill. Net = income value − spend. */
+function dashMoneySeries(key) {
+  if (dashMoneyMode === "income") return incomeDailyForMonth(key, dashIncomePill);
+  if (dashMoneyMode === "net") {
+    // Net is a RUNNING total through the month: start at 0, each day add that
+    // day's income and subtract that day's spend. The line's endpoint equals
+    // the month's net total, and a zero-crossing marks the day the month got
+    // back to break-even -- unlike isolated per-day values, which jump around
+    // and never match the headline total.
+    const inc = incomeDailyForMonth(key, null);
+    const spend = spendDailyForMonth(key, null);
+    let run = 0;
+    return inc.map((v, i) => (run += v - spend[i]));
+  }
+  return spendDailyForMonth(key, dashSpendPill);
+}
+/** Money total for a card header. Net is a running total, so its "total" is
+ * the final running value; spend/income are per-day, so we sum them. */
+function dashMoneySeriesTotal(key) {
+  const series = dashMoneySeries(key);
+  if (dashMoneyMode === "net") return series.length ? series[series.length - 1] : 0;
+  return sum(series);
+}
+
+function drawDashboardCharts() {
   Object.values(charts).forEach(c => c && c.destroy());
-  const mode = pickBucketMode(chartRangeDays);
+  const shownDays = daysInMonthKey(dashMonthKey);
+  const labels = Array.from({ length: shownDays }, (_, i) => String(i + 1)); // "1".."31"
+  const compareOn = !!dashCompareKey;
 
-  // ONE shared axis for every time-series chart on this tab. Previously each
-  // chart built its labels only where it had data, so at "90 days" the eggs
-  // chart might start at the first egg entry, the balance chart at the first
-  // expense, and the flock chart at day -90 -- all different windows, which
-  // made them impossible to compare and made a chart look like it "started
-  // late." Now they all span the same today-minus-range through today (or, on
-  // All Time, the full data extent), so switching ranges moves every chart in
-  // lockstep and a flat leading stretch honestly shows "nothing happened yet."
-  const sharedBuckets = allBucketsInRange(mode, chartRangeDays);
-  const axisLabels = sharedBuckets.map(b => b.key);
-  // Map a sparse {bucketLabel: value} onto the shared axis. `carry` = true
-  // fills gaps forward from the last known value (for cumulative/running
-  // series that should hold flat between events); `carry` = false leaves gaps
-  // as the zero-default (for per-bucket sums like eggs or spend-per-period).
-  const onAxis = (sparse, { carry = false } = {}) => {
-    let last = 0;
-    return axisLabels.map(l => {
-      if (sparse[l] !== undefined) { last = sparse[l]; return sparse[l]; }
-      return carry ? last : 0;
+  // A comparison series is padded/truncated to the shown month's length so the
+  // overlay aligns by day-of-month (day 5 over day 5), even across 28 vs 31.
+  const alignCompare = (arr) => labels.map((_, i) => (i < arr.length ? arr[i] : null));
+
+  const mainLabel = monthLabelOf(dashMonthKey);
+  const compLabel = compareOn ? monthLabelOf(dashCompareKey) : "";
+  const dashLine = (color) => ({ borderColor: color, borderDash: [4, 4], backgroundColor: "transparent", pointRadius: 0, tension: 0.25 });
+
+  // ---- Produce: eggs (line) or meat (bars), toggled ----
+  const produceEl = document.getElementById("dashProduceChart");
+  if (produceEl) {
+    if (dashProduceType === "meat") {
+      const meatMain = meatDailyForMonth(dashMonthKey);
+      const meatDatasets = [{ label: mainLabel, data: meatMain, backgroundColor: "#C1502E", borderColor: "#C1502E", type: "bar" }];
+      if (compareOn) meatDatasets.push({ label: compLabel, data: alignCompare(meatDailyForMonth(dashCompareKey)), ...dashLine("#C7B9A6"), type: "line" });
+      charts.dashProduce = new Chart(produceEl, {
+        data: { labels, datasets: meatDatasets },
+        options: monthChartOpts(compareOn, (v) => `${displayWeight(v)} ${getWeightUnit()}`),
+      });
+    } else {
+      const eggMain = eggsDailyForMonth(dashMonthKey);
+      const eggDatasets = [{ label: mainLabel, data: eggMain, borderColor: "#D4A017", backgroundColor: "#D4A01733", tension: 0.25, pointRadius: 2, fill: true }];
+      if (compareOn) eggDatasets.push({ label: compLabel, data: alignCompare(eggsDailyForMonth(dashCompareKey)), ...dashLine("#C7B9A6") });
+      charts.dashProduce = new Chart(produceEl, {
+        type: "line", data: { labels, datasets: eggDatasets },
+        options: monthChartOpts(compareOn),
+      });
+    }
+  }
+
+  // ---- Feed (cumulative within the month) ----
+  // Series converted to the display unit so the axis matches the label.
+  const feedMain = feedCumulativeForMonth(dashMonthKey, dashFeedType).map(weightNum);
+  // For the CURRENT month, don't draw a flat line stretching to the end of the
+  // month past today -- cut the series off at today so it doesn't imply "no
+  // more feed forecast." Past months show the whole month.
+  const isCurrentMonth = dashMonthKey === monthKeyOf(todayStr());
+  const todayDom = Number(todayStr().slice(8, 10));
+  const truncateToToday = (arr) => isCurrentMonth ? arr.map((v, i) => (i < todayDom ? v : null)) : arr;
+  // Distinct color per feed type: layer gold, meat rust, and Both its own
+  // slate -- previously Both reused the meat rust, which read as "meat feed."
+  const feedColor = dashFeedType === "layer" ? "#D4A017" : dashFeedType === "meat" ? "#C1502E" : "#7A8FA6";
+  const feedFill = dashFeedType === "layer" ? "#D4A01733" : dashFeedType === "meat" ? "#C1502E33" : "#7A8FA633";
+  const feedDatasets = [{ label: mainLabel, data: truncateToToday(feedMain), borderColor: feedColor, backgroundColor: feedFill, tension: 0.2, pointRadius: 2, fill: true, spanGaps: false }];
+  if (compareOn) feedDatasets.push({ label: compLabel, data: alignCompare(feedCumulativeForMonth(dashCompareKey, dashFeedType).map(weightNum)), ...dashLine("#C7B9A6") });
+  charts.dashFeed = new Chart(document.getElementById("dashFeedChart"), {
+    type: "line", data: { labels, datasets: feedDatasets },
+    options: monthChartOpts(compareOn, (v) => `${v.toFixed(2)} ${getWeightUnit()}`),
+  });
+
+  // ---- Money mega chart (spend / income / net) ----
+  const moneyEl = document.getElementById("dashMoneyChart");
+  if (moneyEl) {
+    let moneyMain = dashMoneySeries(dashMonthKey);
+    const isNet = dashMoneyMode === "net";
+    // A running total (net) shouldn't draw a flat line from today to month-end;
+    // cut it off at today for the current month, same as the feed chart.
+    if (isNet) {
+      const isCurrentM = dashMonthKey === monthKeyOf(todayStr());
+      const todayD = Number(todayStr().slice(8, 10));
+      if (isCurrentM) moneyMain = moneyMain.map((v, i) => (i < todayD ? v : null));
+    }
+    // Color: spend slate, income sage, net split by sign per segment (green
+    // above zero, red below) via a segment callback that looks at each point.
+    const baseColor = dashMoneyMode === "income" ? "#8A9A5B" : dashMoneyMode === "spend" ? "#7A8FA6" : "#D4A017";
+    const mainDs = {
+      label: mainLabel, data: moneyMain, borderColor: baseColor, backgroundColor: baseColor + "22",
+      tension: 0.2, pointRadius: 2, fill: !isNet, spanGaps: false,
+    };
+    if (isNet) {
+      // Per-segment coloring: a segment is green if it ends non-negative, red
+      // if it ends negative -- so the line visibly flips color as it crosses
+      // zero between two days.
+      mainDs.borderColor = "#8A9A5B";
+      mainDs.segment = {
+        borderColor: (ctx) => (ctx.p1.parsed.y != null && ctx.p1.parsed.y < 0 ? "#B84C3E" : "#8A9A5B"),
+      };
+      mainDs.fill = false;
+    }
+    const moneyDatasets = [mainDs];
+    if (compareOn) moneyDatasets.push({ label: compLabel, data: alignCompare(dashMoneySeries(dashCompareKey)), ...dashLine("#C7B9A6") });
+    const opts = monthChartOpts(compareOn, (v) => fmtMoney(v));
+    if (isNet) opts.scales.y.beginAtZero = false; // let it show negative territory
+    charts.dashMoney = new Chart(moneyEl, {
+      type: "line", data: { labels, datasets: moneyDatasets }, options: opts,
     });
-  };
+  }
+}
 
-  const flockSize = computeFlockSizeSeries();
-  charts.flockSize = new Chart(document.getElementById("flockSizeChart"), {
-    type: "line",
-    data: {
-      labels: flockSize.labels,
-      datasets: [
-        { label: "Layers", data: flockSize.layers, borderColor: "#D4A017", backgroundColor: "#D4A01722", tension: 0.2, pointRadius: 2 },
-        { label: "Meat", data: flockSize.meat, borderColor: "#C1502E", backgroundColor: "#C1502E22", tension: 0.2, pointRadius: 2 },
-      ]
+/** Chart options for the month view: legend shown only when comparing, x-axis
+ * labeled by day-of-month. */
+function monthChartOpts(showLegend, yFormatter) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: "index", intersect: false },
+    plugins: {
+      legend: showLegend ? { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } } : { display: false },
+      tooltip: { callbacks: yFormatter ? { label: (ctx) => `${ctx.dataset.label}: ${yFormatter(ctx.parsed.y)}` } : undefined },
     },
-    options: {
-      ...chartOpts(),
-      plugins: { legend: { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } } },
-    },
-  });
-
-  const eggMap = {};
-  STATE.eggs.filter(e => withinRange(e.date, chartRangeDays)).forEach(e => {
-    const k = bucketLabel(e.date, mode);
-    eggMap[k] = (eggMap[k] || 0) + (Number(e.count) || 0);
-  });
-  charts.egg = new Chart(document.getElementById("eggChart"), {
-    type: "line",
-    data: { labels: axisLabels, datasets: [{ label: "Eggs", data: onAxis(eggMap), borderColor: "#D4A017", backgroundColor: "#D4A01733", tension: 0.25, pointRadius: 2 }] },
-    options: chartOpts()
-  });
-
-  const feedBedding = feedBeddingCumulativeSeries(STATE.supplies, chartRangeDays, sharedBuckets);
-  charts.feedUsed = new Chart(document.getElementById("feedUsedChart"), {
-    type: "line",
-    data: {
-      labels: feedBedding.labels,
-      datasets: [
-        { label: "Layer Feed", data: feedBedding.layer, borderColor: "#D4A017", backgroundColor: "#D4A01722", tension: 0.15, pointRadius: 2 },
-        { label: "Meat Feed", data: feedBedding.meat, borderColor: "#C1502E", backgroundColor: "#C1502E22", tension: 0.15, pointRadius: 2 },
-      ]
-    },
-    options: { ...chartOpts((v) => `${v.toFixed(1)} lb`), plugins: { legend: { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } } } },
-  });
-  charts.beddingUsed = new Chart(document.getElementById("beddingUsedChart"), {
-    type: "line",
-    data: { labels: feedBedding.labels, datasets: [{ label: "Bedding (cu ft)", data: feedBedding.bedding, borderColor: "#7A8FA6", backgroundColor: "#7A8FA622", tension: 0.15, pointRadius: 2 }] },
-    options: chartOpts((v) => `${v.toFixed(1)} cu ft`),
-  });
-
-  const catMap = {};
-  STATE.expenses.filter(x => x.entry_type !== "income" && withinRange(x.date, chartRangeDays)).forEach(x => {
-    catMap[x.category] = (catMap[x.category] || 0) + (Number(x.amount) || 0);
-  });
-  const catLabels = Object.keys(catMap);
-  charts.cat = new Chart(document.getElementById("catChart"), {
-    type: "pie",
-    data: { labels: catLabels, datasets: [{ data: catLabels.map(l => catMap[l]), backgroundColor: PIE_COLORS }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } } } }
-  });
-
-  // Income vs. spend, bucketed the same way as the other charts
-  const chartDefaults = getCoopDefaults();
-  const chartEggsInRange = STATE.eggs.filter(e => withinRange(e.date, chartRangeDays));
-  const chartProcessedInRange = STATE.birds.filter(b => b.status === "Processed" && b.harvest_date && withinRange(b.harvest_date, chartRangeDays));
-  const chartEggPrice = weightedAvgEggPrice(chartEggsInRange, Number(chartDefaults.eggPrice) || 0);
-  const chartMeatPrice = weightedAvgMeatPrice(chartProcessedInRange, Number(chartDefaults.pricePerLb) || 0);
-  const incomeMap = {}, spendMap = {};
-  chartEggsInRange.forEach(e => {
-    const k = bucketLabel(e.date, mode);
-    incomeMap[k] = (incomeMap[k] || 0) + (Number(e.count) || 0) * (Number(e.price_per_egg) || 0);
-  });
-  chartProcessedInRange.forEach(b => {
-    const k = bucketLabel(b.harvest_date, mode);
-    incomeMap[k] = (incomeMap[k] || 0) + (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || 0);
-  });
-  STATE.expenses.filter(x => x.entry_type === "income" && withinRange(x.date, chartRangeDays)).forEach(x => {
-    const k = bucketLabel(x.date, mode);
-    const washedOut = x.category === "Egg Sale" ? (Number(x.quantity) || 0) * (x.washout_unit_price != null ? Number(x.washout_unit_price) : chartEggPrice)
-      : x.category === "Meat Sale" ? (Number(x.quantity) || 0) * (x.washout_unit_price != null ? Number(x.washout_unit_price) : chartMeatPrice)
-      : 0;
-    incomeMap[k] = (incomeMap[k] || 0) + (Number(x.amount) || 0) - washedOut;
-  });
-  STATE.expenses.filter(x => x.entry_type !== "income" && withinRange(x.date, chartRangeDays)).forEach(x => {
-    const k = bucketLabel(x.date, mode);
-    spendMap[k] = (spendMap[k] || 0) + (Number(x.amount) || 0);
-  });
-  const incomeLabels = axisLabels;
-  charts.income = new Chart(document.getElementById("incomeChart"), {
-    type: "bar",
-    data: {
-      labels: incomeLabels,
-      datasets: [
-        { label: "Value produced", data: onAxis(incomeMap), backgroundColor: "#8A9A5B" },
-        { label: "Spend", data: onAxis(spendMap), backgroundColor: "#C1502E" },
-      ]
-    },
-    options: {
-      ...chartOpts((v) => fmtMoney(v)),
-      plugins: { legend: { labels: { color: "#C7B9A6", font: { size: 11 } } }, tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${fmtMoney(ctx.parsed.y)}` } } },
+    scales: {
+      x: { ticks: { color: "#C7B9A6", font: { size: 10 }, autoSkip: true, maxTicksLimit: 10, maxRotation: 0 }, grid: { color: "#5A4B3C40" }, title: { display: true, text: "Day of month", color: "#8A7A68", font: { size: 9 } } },
+      y: { ticks: { color: "#C7B9A6", font: { size: 10 } }, grid: { color: "#5A4B3C40" }, beginAtZero: true }
     }
-  });
-
-  // Cumulative balance: income and spend accumulated over time, plus the net.
-  // Plotted on the shared axis so it lines up with every other chart. Each
-  // bucket shows the TRUE running total as of that bucket's end date --
-  // including everything before the visible window -- so "90 days" and "all
-  // time" agree on the balance at any shared date, rather than the window
-  // secretly resetting the total to 0 at its left edge (which made the same
-  // day read as a different balance depending on the range).
-  const spendEventsAll = [...STATE.expenses].filter(x => x.entry_type !== "income")
-    .map(x => ({ date: x.date, amount: Number(x.amount) || 0 }))
-    .sort((a, b) => a.date.localeCompare(b.date));
-
-  const allTimeEggPrice = weightedAvgEggPrice(STATE.eggs, Number(chartDefaults.eggPrice) || 0);
-  const allTimeMeatPrice = weightedAvgMeatPrice(STATE.birds.filter(b => b.status === "Processed" && b.harvest_date), Number(chartDefaults.pricePerLb) || 0);
-  const incomeEventsAll = [
-    ...STATE.eggs.map(e => ({ date: e.date, amount: (Number(e.count) || 0) * (Number(e.price_per_egg) || 0) })),
-    ...STATE.birds.filter(b => b.status === "Processed" && b.harvest_date).map(b => ({ date: b.harvest_date, amount: (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || 0) })),
-    // A real sale contributes its NET effect at its date: the amount received
-    // minus whatever it washes out of the estimate above (weighted average of
-    // what was actually logged), so the running total stays correct all along.
-    ...STATE.expenses.filter(x => x.entry_type === "income").map(x => {
-      const washedOut = x.category === "Egg Sale" ? (Number(x.quantity) || 0) * (x.washout_unit_price != null ? Number(x.washout_unit_price) : allTimeEggPrice)
-        : x.category === "Meat Sale" ? (Number(x.quantity) || 0) * (x.washout_unit_price != null ? Number(x.washout_unit_price) : allTimeMeatPrice)
-        : 0;
-      return { date: x.date, amount: (Number(x.amount) || 0) - washedOut };
-    }),
-  ].sort((a, b) => a.date.localeCompare(b.date));
-
-  // runningAsOf(events, dayStr): sum of every event on or before dayStr.
-  const runningAsOf = (events, dayStr) => {
-    let sum = 0;
-    for (const e of events) { if (e.date <= dayStr) sum += e.amount; else break; }
-    return sum;
   };
-  const incomeSeries = sharedBuckets.map(({ asOfDate }) => runningAsOf(incomeEventsAll, asOfDate));
-  const spendSeries = sharedBuckets.map(({ asOfDate }) => runningAsOf(spendEventsAll, asOfDate));
-  const netSeries = incomeSeries.map((v, i) => v - spendSeries[i]);
-  const balanceLabels = axisLabels;
-
-  charts.cum = new Chart(document.getElementById("cumChart"), {
-    type: "line",
-    data: {
-      labels: balanceLabels,
-      datasets: [
-        { label: "Cumulative income", data: incomeSeries, borderColor: "#8A9A5B", backgroundColor: "#8A9A5B22", tension: 0.2, pointRadius: 2 },
-        { label: "Cumulative spend", data: spendSeries, borderColor: "#C1502E", backgroundColor: "#C1502E22", tension: 0.2, pointRadius: 2 },
-        { label: "Net balance", data: netSeries, borderColor: "#D4A017", backgroundColor: "#D4A01722", borderDash: [5, 4], tension: 0.2, pointRadius: 2 },
-      ]
-    },
-    options: {
-      ...chartOpts((v) => fmtMoney(v)),
-      plugins: { legend: { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } }, tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${fmtMoney(ctx.parsed.y)}` } } },
-    }
-  });
-
-  // Cumulative meat produced (lbs) — processing happens rarely (maybe once or twice a year for a
-  // home flock), so a running total that steps up on each batch tells the story better than a bar
-  // chart full of empty buckets would. Plotted on the shared axis with a true running total (all
-  // batches on or before each bucket's date), so it lines up with every other chart.
-  const meatEventsAll = STATE.birds
-    .filter(b => b.status === "Processed" && b.harvest_date && b.harvest_weight)
-    .map(b => ({ date: b.harvest_date, amount: Number(b.harvest_weight) || 0 }))
-    .sort((a, b) => a.date.localeCompare(b.date));
-  const meatSeries = sharedBuckets.map(({ asOfDate }) => runningAsOf(meatEventsAll, asOfDate));
-  charts.meat = new Chart(document.getElementById("meatChart"), {
-    type: "line",
-    data: { labels: axisLabels, datasets: [{ label: "Dressed weight", data: meatSeries, borderColor: "#C1502E", backgroundColor: "#C1502E22", stepped: true, pointRadius: 2 }] },
-    options: { ...chartOpts((v) => `${displayWeight(v)} ${getWeightUnit()}`) },
-  });
 }
 
 function chartOpts(yFormatter) {
@@ -8268,7 +8908,28 @@ function openEggModal(editing) {
 
 // ================= EXPENSES =================
 const EXPENSE_FOR_TYPES = ["All Birds", "Layers Only", "Meat Birds Only"];
-const EXPENSE_UNITS = ["lb", "kg", "cu ft", "bag", "bale", "gallon", "unit", "eggs"];
+// Weight is stored canonically in lb; the coop's weight toggle decides how it
+// is shown. "kg" is deliberately NOT an option here -- picking a weight unit
+// per item is what let a 20 kg bag get summed as "20" against a 50 lb bag's
+// "50". The lb option renders with whatever label the toggle is set to.
+const EXPENSE_UNITS = ["lb", "cu ft", "bag", "bale", "gallon", "unit", "eggs"];
+function isWeightUnit(u) { return u === "lb" || u === "kg"; }
+/** How a unit is labeled in the UI: weights follow the toggle, others are literal. */
+function unitLabel(u) { return isWeightUnit(u) ? getWeightUnit() : (u || ""); }
+/** A stored quantity shown in the user's units: weights convert, others don't. */
+function displayQty(qty, unit) {
+  if (qty == null || qty === "") return "";
+  return isWeightUnit(unit) ? displayWeight(qty) : String(+Number(qty).toFixed(2));
+}
+/** A quantity the user typed converted back to storage units (lb for weights). */
+function parseQtyInput(val, unit) {
+  if (val === "" || val == null) return null;
+  return isWeightUnit(unit) ? parseWeightInput(val) : Number(val);
+}
+/** Unit <option> list, labeling the weight unit per the toggle. */
+function unitOptionsHtml(selected) {
+  return EXPENSE_UNITS.map(u => `<option value="${u}" ${selected === u || (isWeightUnit(selected) && u === "lb") ? "selected" : ""}>${unitLabel(u)}</option>`).join("");
+}
 const QUANTITY_CATEGORIES = new Set(["Layer Feed", "Meat Feed", "Treats", "Bedding"]); // categories where "how much did I buy" is worth tracking
 
 function yearsFromDates(items, field) {
@@ -8478,7 +9139,7 @@ function renderExpenses() {
               <span class="expense-cat-name">${esc(x.category)}</span>
               ${!isIncome && x.for_type && x.for_type !== "All Birds" ? audienceTile(x.for_type) : ""}
             </div>
-            <div class="list-card-desc dim">${fmtDate(x.date)}${x.quantity ? ` · ${x.quantity} ${esc(x.unit || "")}` : ""}${x.description ? " · " + esc(x.description) : ""}</div>
+            <div class="list-card-desc dim">${fmtDate(x.date)}${x.quantity ? ` · ${displayQty(x.quantity, x.unit)} ${esc(unitLabel(x.unit))}` : ""}${x.description ? " · " + esc(x.description) : ""}</div>
             ${isIncome && QUANTITY_RELEVANT_INCOME.has(x.category) ? (() => { const rate = saleRateLabel(x.amount, x.quantity, x.category); return rate ? `<div class="list-card-desc dim">${rate}</div>` : ""; })() : ""}
           </div>
           <div class="list-card-side list-card-side-amount">
@@ -8617,8 +9278,8 @@ function expenseFormHtml(editing) {
       <label class="field"><span>Date</span><input type="date" id="x_date" value="${editing ? editing.date : todayStr()}"></label>
       <label class="field"><span>Category</span><select id="x_cat">${(expenseFormEntryType === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map(c => `<option ${(editing ? editing.category === c : pendingExpenseCategory === c) ? "selected" : ""}>${c}</option>`).join("")}</select></label>
       <label class="field"><span>Amount ($, total)</span><input type="number" step="0.01" id="x_amount" value="${editing ? editing.amount : ""}"></label>
-      ${showQuantityFields ? `<label class="field"><span>Quantity${expenseFormEntryType === "income" ? "" : " (per bag/item)"}</span><input type="number" step="0.01" id="x_qty" placeholder="e.g. 50" value="${editing && editing.quantity != null ? editing.quantity : ""}"></label>` : ""}
-      ${showQuantityFields ? `<label class="field"><span>Unit</span><select id="x_unit"><option value="">—</option>${EXPENSE_UNITS.map(u => `<option ${editing && editing.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>` : ""}
+      ${showQuantityFields ? `<label class="field"><span>Quantity${expenseFormEntryType === "income" ? "" : " (per bag/item)"}</span><input type="number" step="0.01" id="x_qty" placeholder="e.g. 50" value="${editing && editing.quantity != null ? displayQty(editing.quantity, editing.unit) : ""}"></label>` : ""}
+      ${showQuantityFields ? `<label class="field"><span>Unit</span><select id="x_unit"><option value="">—</option>${unitOptionsHtml(editing && editing.unit)}</select></label>` : ""}
       ${showQuantityFields && !editing && expenseFormEntryType === "expense" ? `<label class="field"><span>Number of bags/items</span><input type="number" min="1" max="200" step="1" id="x_count" value="1"></label>` : ""}
       ${expenseFormEntryType === "expense" ? `<label class="field"><span>Applies to</span><select id="x_for">${EXPENSE_FOR_TYPES.map(t => `<option ${editing ? (editing.for_type === t ? "selected" : "") : (t === "All Birds" ? "selected" : "")}>${t}</option>`).join("")}</select></label>` : ""}
       <label class="field"><span>Description</span><input id="x_desc" placeholder="${expenseFormEntryType === "income" ? "e.g. Sold to neighbor" : "e.g. 50lb layer feed, or Heat lamp"}" value="${editing ? esc(editing.description || "") : ""}"></label>
@@ -8663,11 +9324,13 @@ function wireExpenseFormModal(editing) {
   document.getElementById("saveExpense").addEventListener("click", async () => {
     const amount = document.getElementById("x_amount").value;
     if (!amount) return;
-    const qtyEl = document.getElementById("x_qty");
-    const perItemQty = qtyEl ? qtyEl.value : "";
     const category = document.getElementById("x_cat").value;
     const unitEl = document.getElementById("x_unit");
     const unit = unitEl ? (unitEl.value || null) : null;
+    // Quantity is typed in the toggle unit; store canonically (lb for weights)
+    // since this value becomes the supply bag's quantity.
+    const qtyEl = document.getElementById("x_qty");
+    const perItemQty = qtyEl ? (parseQtyInput(qtyEl.value, unit) ?? "") : "";
     const description = document.getElementById("x_desc").value;
     const date = document.getElementById("x_date").value;
     const countEl = document.getElementById("x_count");
@@ -8702,10 +9365,16 @@ function wireExpenseFormModal(editing) {
           const productAfter = await localSupplyProductUpdate(selectedProductId, { last_used_at: todayStr() }, { suppressUndo: true });
           undoOps.push({ resource: "supply_products", id: selectedProductId, before: productBefore, after: productAfter });
         }
+        // Split the expense's total across the bags it created, so each bag
+        // carries its own cost. That per-bag cost divided by its quantity is
+        // the cost per lb, which is what makes a true "feed cost per dozen"
+        // (feed actually eaten x its real cost) possible. The user can still
+        // override any bag's cost later in the supply edit form.
+        const perBagCost = count > 0 ? (Number(created.amount) || 0) / count : null;
         const createdSupplies = await localBulkCreate("supplies", Array.from({ length: count }, () => ({
           coop_id: currentCoopId, category, description: (selectedProduct && selectedProduct.default_description) || description || category, brand: selectedProduct ? selectedProduct.brand : null,
           quantity: Number(perItemQty), unit, status: "Full", date_added: date, source_expense_id: created.id,
-          product_id: selectedProductId || null,
+          product_id: selectedProductId || null, cost: perBagCost,
         })), { suppressUndo: true });
         undoOps.push(...createdSupplies.map(s => ({ resource: "supplies", id: s.id, before: null, after: s })));
         showToast(count > 1 ? `${count} items added to inventory` : `Added to inventory: ${description || category}`, "create");
@@ -8759,10 +9428,10 @@ function renderProductEditFormHtml(editingProduct, category, standalone = false)
         <label class="field"><span>Brand</span><input id="np_brand" placeholder="e.g. Purina Layena" value="${editingProduct ? esc(editingProduct.brand || "") : ""}"></label>
         <label class="field"><span>Photo${editingProduct ? " (leave blank to keep current)" : ""}</span><input type="file" id="np_photo" accept="image/*"></label>
         <label class="field"><span>Description</span><input id="np_desc" placeholder="e.g. large bag" value="${editingProduct ? esc(editingProduct.default_description || "") : ""}"></label>
-        <label class="field"><span>Usual quantity</span><input type="number" step="0.01" id="np_qty" placeholder="e.g. 50" value="${editingProduct && editingProduct.default_quantity != null ? editingProduct.default_quantity : ""}"></label>
+        <label class="field"><span>Usual quantity</span><input type="number" step="0.01" id="np_qty" placeholder="e.g. 50" value="${editingProduct && editingProduct.default_quantity != null ? displayQty(editingProduct.default_quantity, editingProduct.default_unit) : ""}"></label>
         <label class="field"><span>Usual unit</span><select id="np_unit" ${lockedUnit ? "disabled" : ""}>${lockedUnit
           ? `<option selected>${lockedUnit}</option>`
-          : `<option value="">—</option>${EXPENSE_UNITS.map(u => `<option ${editingProduct && editingProduct.default_unit === u ? "selected" : ""}>${u}</option>`).join("")}`
+          : `<option value="">—</option>${unitOptionsHtml(editingProduct && editingProduct.default_unit)}`
         }</select></label>
       </div>
       <div class="dim" style="font-size:11px;margin-top:6px">Selecting this product will fill in the brand (and description/quantity/unit, if set here) automatically -- keeps bags of the same product consistent instead of drifting apart by typo.</div>
@@ -8796,7 +9465,7 @@ function renderProductPickerRow(category) {
   const editingProduct = editingProductId ? STATE.supplyProducts.find(p => p.id === editingProductId) : null;
   const formOpen = newProductFormOpen || !!editingProduct;
   const tileHtml = (p) => {
-    const qtyPart = p.default_quantity != null ? `${p.default_quantity} ${p.default_unit || ""}`.trim() : "";
+    const qtyPart = p.default_quantity != null ? `${displayQty(p.default_quantity, p.default_unit)} ${unitLabel(p.default_unit)}`.trim() : "";
     const label = [p.default_description, qtyPart].filter(Boolean).join(" -- ") || p.brand || p.category;
     return `
         <div class="product-picker-item${selectedProductId === p.id ? " selected" : ""}" data-product="${p.id}">
@@ -8890,7 +9559,7 @@ function wireProductPicker(el, { categoryFieldId, brandFieldId, descFieldId, qty
     let productId;
     if (editingProductId) {
       await localSupplyProductUpdate(editingProductId, {
-        brand, default_quantity: qtyVal ? Number(qtyVal) : null, default_unit: unitVal || null, default_description: descVal || null,
+        brand, default_quantity: parseQtyInput(qtyVal, unitVal), default_unit: unitVal || null, default_description: descVal || null,
       });
       productId = editingProductId;
     } else {
@@ -8898,7 +9567,7 @@ function wireProductPicker(el, { categoryFieldId, brandFieldId, descFieldId, qty
       const category = categoryField ? categoryField.value : "";
       const created = await localSupplyProductCreate({
         coop_id: currentCoopId, category, brand, last_used_at: todayStr(),
-        default_quantity: qtyVal ? Number(qtyVal) : null, default_unit: unitVal || null, default_description: descVal || null,
+        default_quantity: parseQtyInput(qtyVal, unitVal), default_unit: unitVal || null, default_description: descVal || null,
       });
       productId = created.id;
     }
@@ -8929,7 +9598,7 @@ const FULLNESS_STEPS = [
 function supplyCardHtml(s) {
   const tone = supplyStatusTone(s.status); // "sage" | "gold" | "rust" | "slate"
   const catTone = supplyCategoryTone(s.category);
-  const amountLabel = s.quantity ? `${s.quantity} ${esc(s.unit || "")}` : "";
+  const amountLabel = s.quantity ? `${displayQty(s.quantity, s.unit)} ${esc(unitLabel(s.unit))}` : "";
   const product = s.product_id ? STATE.supplyProducts.find(p => p.id === s.product_id) : null;
   const photo = product ? productPhotoUrl(product) : null;
   const line1 = s.brand || s.description || s.category;
@@ -8963,8 +9632,8 @@ function supplyGroupFormHtml(members) {
       <label class="field"><span>Category</span><select id="grp_category">${[...QUANTITY_CATEGORIES].map(c => `<option ${first.category === c ? "selected" : ""}>${c}</option>`).join("")}</select></label>
       <label class="field"><span>Brand</span><input id="grp_brand" value="${esc(first.brand || "")}"></label>
       <label class="field"><span>Description</span><input id="grp_desc" value="${esc(first.description || "")}"></label>
-      <label class="field"><span>Quantity (per item)</span><input type="number" step="0.01" id="grp_qty" value="${first.quantity ?? ""}"></label>
-      <label class="field"><span>Unit</span><select id="grp_unit">${EXPENSE_UNITS.map(u => `<option ${first.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>
+      <label class="field"><span>Quantity (per item)</span><input type="number" step="0.01" id="grp_qty" value="${displayQty(first.quantity, first.unit)}"></label>
+      <label class="field"><span>Unit</span><select id="grp_unit">${unitOptionsHtml(first.unit)}</select></label>
       <label class="field"><span>Date added</span><input type="date" id="grp_date" value="${first.date_added || todayStr()}"></label>
       <label class="field"><span>Count</span><input type="number" min="0" max="500" step="1" id="grp_count" value="${members.length}"></label>
     </div>
@@ -8987,7 +9656,7 @@ function openSupplyGroupModal(key) {
       category: document.getElementById("grp_category").value,
       brand: document.getElementById("grp_brand").value,
       description: document.getElementById("grp_desc").value,
-      quantity: document.getElementById("grp_qty").value ? Number(document.getElementById("grp_qty").value) : null,
+      quantity: parseQtyInput(document.getElementById("grp_qty").value, document.getElementById("grp_unit").value),
       unit: document.getElementById("grp_unit").value,
       date_added: document.getElementById("grp_date").value,
       status: "Full",
@@ -9048,7 +9717,7 @@ function emptySupplyModalHtml() {
           ${photo ? `<div style="width:44px;height:44px;border-radius:6px;overflow:hidden;flex:0 0 auto;margin-right:2px"><img src="${photo}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(product)};${photoTransformStyle(product)}opacity:0.75"></div>` : ""}
           <div class="list-card-main">
             <div style="font-weight:600">${esc(s.brand || s.description || s.category)}</div>
-            <div class="list-card-desc dim">${esc(s.category)}${s.quantity ? ` · ${s.quantity} ${esc(s.unit || "")}` : ""}</div>
+            <div class="list-card-desc dim">${esc(s.category)}${s.quantity ? ` · ${displayQty(s.quantity, s.unit)} ${esc(unitLabel(s.unit))}` : ""}</div>
             <div class="list-card-desc dim">${s.date_added ? `added ${fmtDate(s.date_added)}` : ""}${s.opened_at ? ` · opened ${fmtDate(s.opened_at)}` : ""}${s.date_emptied ? ` · emptied ${fmtDate(s.date_emptied)}` : ""}${s.opened_at && s.date_emptied ? ` · used over ${Math.max(1, daysSince(s.opened_at) - daysSince(s.date_emptied))}d` : ""}</div>
           </div>
           <div class="list-card-side">
@@ -9112,7 +9781,7 @@ function supplyGroupCardHtml(items) {
   const count = items.length;
   const key = supplyGroupKey(first);
   const catTone = supplyCategoryTone(first.category);
-  const amountLabel = first.quantity ? `${first.quantity} ${esc(first.unit || "")} each` : "";
+  const amountLabel = first.quantity ? `${displayQty(first.quantity, first.unit)} ${esc(unitLabel(first.unit))} each` : "";
   // Any item in the group with a resolvable photo, not just whichever
   // happens to be first -- a group can end up mixing older items (created
   // before they were linked to a product) with newer, correctly-linked
@@ -9330,8 +9999,23 @@ function supplyFormHtml(editingSupply) {
       <label class="field"><span>Category</span><select id="sp_category">${[...QUANTITY_CATEGORIES].map(c => `<option ${editingSupply && editingSupply.category === c ? "selected" : ""}>${c}</option>`).join("")}</select></label>
       <label class="field"><span>Brand</span><input id="sp_brand" placeholder="e.g. Purina Layena" value="${editingSupply ? esc(editingSupply.brand || "") : ""}"></label>
       <label class="field"><span>Description</span><input id="sp_desc" placeholder="e.g. large bag, opened" value="${editingSupply ? esc(editingSupply.description || "") : ""}"></label>
-      <label class="field"><span>Quantity (per item)</span><input type="number" step="0.01" id="sp_qty" value="${editingSupply && editingSupply.quantity != null ? editingSupply.quantity : ""}"></label>
-      <label class="field"><span>Unit</span><select id="sp_unit">${EXPENSE_UNITS.map(u => `<option ${editingSupply && editingSupply.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></label>
+      <label class="field"><span>Quantity (per item)</span><input type="number" step="0.01" id="sp_qty" value="${editingSupply && editingSupply.quantity != null ? displayQty(editingSupply.quantity, editingSupply.unit) : ""}"></label>
+      <label class="field"><span>Unit</span><select id="sp_unit">${unitOptionsHtml(editingSupply && editingSupply.unit)}</select></label>
+      <label class="field"><span>Cost for this item ${editingSupply && editingSupply.source_expense_id ? "(from its expense)" : "*"}</span><input type="number" step="0.01" min="0" id="sp_cost" value="${(() => {
+        if (!editingSupply) return "";
+        if (editingSupply.cost != null) return editingSupply.cost;
+        // Legacy bag created from an expense before costs were stored: derive
+        // its share of that expense (expense total / bags it created) so the
+        // field is pre-filled rather than blank.
+        if (editingSupply.source_expense_id) {
+          const exp = STATE.expenses.find(x => x.id === editingSupply.source_expense_id);
+          if (exp) {
+            const siblingCount = STATE.supplies.filter(s => s.source_expense_id === editingSupply.source_expense_id).length || 1;
+            return ((Number(exp.amount) || 0) / siblingCount).toFixed(2);
+          }
+        }
+        return "";
+      })()}" placeholder="e.g. 22.50"><span class="dim" style="font-size:11px;margin-top:4px">Required. Auto-filled from the linked expense when there is one; you can override it. Powers the feed cost per lb, cost per dozen eggs, and cost per lb of meat figures.</span></label>
       <label class="field"><span>Status</span><select id="sp_status">${SUPPLY_STATUSES.map(s => `<option ${(editingSupply ? editingSupply.status === s : s === "Full") ? "selected" : ""}>${s}</option>`).join("")}</select></label>
       <label class="field"><span>Date added</span><input type="date" id="sp_date" value="${editingSupply ? (editingSupply.date_added || todayStr()) : todayStr()}"></label>
       ${editingSupply ? `<label class="field"><span>Date emptied${editingSupply.status !== "Empty" ? " (if applicable)" : ""}</span><input type="date" id="sp_date_emptied" value="${editingSupply.date_emptied || ""}"></label>` : ""}
@@ -9371,6 +10055,16 @@ function wireSupplyForm(editingSupply) {
   }
   document.getElementById("saveSupply").addEventListener("click", async () => {
     const status = document.getElementById("sp_status").value;
+    // Cost is required -- every bag needs a cost so feed cost-per-lb, cost per
+    // dozen, and cost per lb of meat are always complete (no unpriced feed
+    // silently dragging the figures down). Bags created from an expense get it
+    // auto-filled; a bag added directly must have one entered.
+    const costEl = document.getElementById("sp_cost");
+    if (costEl && (costEl.value === "" || !(Number(costEl.value) >= 0))) {
+      alert("Please enter the cost for this item. Every inventory item needs a cost so feed and production cost figures stay accurate.");
+      costEl.focus();
+      return;
+    }
     const dateEmptiedEl = document.getElementById("sp_date_emptied");
     const openedEl = document.getElementById("sp_opened");
     // Guard: an opened date after the emptied date would produce a negative
@@ -9389,8 +10083,10 @@ function wireSupplyForm(editingSupply) {
       category: document.getElementById("sp_category").value,
       brand: document.getElementById("sp_brand").value,
       description: document.getElementById("sp_desc").value,
-      quantity: document.getElementById("sp_qty").value ? Number(document.getElementById("sp_qty").value) : null,
+      // Weights are typed in the toggle unit and stored canonically in lb.
+      quantity: parseQtyInput(document.getElementById("sp_qty").value, document.getElementById("sp_unit").value),
       unit: document.getElementById("sp_unit").value,
+      cost: document.getElementById("sp_cost") && document.getElementById("sp_cost").value !== "" ? Number(document.getElementById("sp_cost").value) : null,
       status,
       date_added: document.getElementById("sp_date").value,
       // Respects an explicitly back-dated value, but only when the final
