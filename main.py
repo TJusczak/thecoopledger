@@ -58,7 +58,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.13-204"
+SERVER_VERSION = "2026.07.13-205"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
@@ -1918,6 +1918,11 @@ async def _on_startup():
     migrate_repair_orphaned_photo_refs()
     migrate_repair_orphaned_hatch_eggs()
     migrate_normalize_supply_weight_units()
+    # Repairs push tables left in an older shape by builds that created them
+    # through SCHEMA (no created_at, no unique endpoint).
+    with get_db() as conn:
+        _ensure_push_tables(conn)
+        conn.commit()
     _maybe_auto_rotate_invite_code()  # catch anything overdue from while the server was down
     _prune_old_activity_log()
     _prune_old_failed_logins()
@@ -2264,22 +2269,47 @@ PUSH_CATEGORIES = ("bedding", "hatch", "supplies")
 
 
 def _ensure_push_tables(conn):
-    """Push tables are created here rather than declared in SCHEMA on purpose.
+    """Creates the push tables, and migrates them if an older build already made
+    them a different shape.
 
-    Anything in SCHEMA is served by the generic /api/{resource} route, which
+    Push tables are created here rather than declared in SCHEMA on purpose:
+    anything in SCHEMA is served by the generic /api/{resource} route, which
     would hand every device's push endpoint and auth secret to any logged-in
     user. These are server-internal and must never sync to clients.
+
+    CREATE TABLE IF NOT EXISTS is not a migration -- it does nothing at all when
+    the table already exists. Earlier builds created push_subscriptions through
+    SCHEMA, which only ever adds updated_at/deleted_at, so those installs have a
+    table with no created_at column and every INSERT fails. Missing columns are
+    therefore added explicitly, the same way init_db migrates the main schema.
     """
+    wanted = {
+        "push_subscriptions": {
+            "endpoint": "TEXT", "p256dh": "TEXT", "auth": "TEXT", "user_agent": "TEXT",
+            "notify_bedding": "INTEGER DEFAULT 1", "notify_hatch": "INTEGER DEFAULT 1",
+            "notify_supplies": "INTEGER DEFAULT 1", "last_error": "TEXT",
+            "failure_count": "INTEGER DEFAULT 0", "created_at": "TEXT", "updated_at": "TEXT",
+        },
+        "push_sent_log": {
+            "subject_key": "TEXT", "sent_on": "TEXT", "created_at": "TEXT", "updated_at": "TEXT",
+        },
+    }
+    for table, cols in wanted.items():
+        col_defs = ", ".join(f'"{c}" {t}' for c, t in cols.items())
+        conn.execute(f"CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, {col_defs})")
+        existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for c, t in cols.items():
+            if c not in existing:
+                conn.execute(f'ALTER TABLE {table} ADD COLUMN "{c}" {t}')
+
+    # One row per device. UNIQUE can't be bolted on with ALTER, so a unique
+    # index does the same job -- after clearing any duplicates an older build
+    # may have left, since it had no constraint at all.
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS push_subscriptions ("
-        "id TEXT PRIMARY KEY, endpoint TEXT UNIQUE, p256dh TEXT, auth TEXT, user_agent TEXT, "
-        "notify_bedding INTEGER DEFAULT 1, notify_hatch INTEGER DEFAULT 1, notify_supplies INTEGER DEFAULT 1, "
-        "last_error TEXT, failure_count INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)"
+        "DELETE FROM push_subscriptions WHERE rowid NOT IN "
+        "(SELECT MAX(rowid) FROM push_subscriptions GROUP BY endpoint)"
     )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS push_sent_log ("
-        "id TEXT PRIMARY KEY, subject_key TEXT, sent_on TEXT, created_at TEXT, updated_at TEXT)"
-    )
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_push_endpoint ON push_subscriptions(endpoint)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_push_sent ON push_sent_log(subject_key, sent_on)")
 
 
