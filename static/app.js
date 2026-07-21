@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-203";
+const APP_VERSION = "2026.07.13-204";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -11074,26 +11074,62 @@ async function getPushSubscription() {
   return reg.pushManager.getSubscription();
 }
 
-/** Asks permission if needed, subscribes, and registers with the server. */
+/** Asks permission if needed, subscribes, and registers with the server.
+ *
+ * Each step is labelled, because they fail for completely different reasons and
+ * a bare "Failed to fetch" doesn't say whether the server was unreachable, the
+ * push service refused, or the browser blocked us. The step name is what makes
+ * the toast actionable.
+ */
 async function enablePushNotifications() {
   if (!pushSupported()) throw new Error("This browser doesn't support push notifications.");
-  const permission = await Notification.requestPermission();
+  const step = async (label, fn) => {
+    try { return await fn(); }
+    catch (e) {
+      const raw = (e && (e.detail || e.message)) || String(e);
+      const err = new Error(`${label}: ${raw}`);
+      err.step = label;
+      err.cause = e;
+      console.error(`[push] ${label} failed`, e);
+      throw err;
+    }
+  };
+
+  const permission = await step("Permission", () => Notification.requestPermission());
   if (permission !== "granted") {
     throw new Error(permission === "denied"
-      ? "Notifications are blocked for this site. You'll need to re-allow them in your browser or Android app settings."
+      ? "Notifications are blocked for this site. Re-allow them in your browser or Android app settings."
       : "Notification permission wasn't granted.");
   }
-  const { public_key } = await apiGet("/api/push/public-key");
-  if (!public_key) throw new Error("The server hasn't got push configured.");
-  const reg = await navigator.serviceWorker.ready;
+
+  const keyUrl = apiUrl("/api/push/public-key");
+  const res = await step(`Reaching server (${keyUrl})`, () => apiGet("/api/push/public-key"));
+  const public_key = res && res.public_key;
+  if (!public_key) throw new Error("The server didn't return a push key -- is pywebpush installed?");
+
+  const reg = await step("Service worker", async () => {
+    const r = await navigator.serviceWorker.ready;
+    if (!r || !r.pushManager) throw new Error("no pushManager on the registration");
+    return r;
+  });
+
   let sub = await reg.pushManager.getSubscription();
+  if (sub) {
+    // A subscription made against a different VAPID key can't be reused --
+    // the server would be unable to sign for it. Drop and re-create.
+    const existingKey = sub.options && sub.options.applicationServerKey;
+    const sameKey = existingKey && btoa(String.fromCharCode(...new Uint8Array(existingKey)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") === public_key;
+    if (!sameKey) { try { await sub.unsubscribe(); } catch (_) {} sub = null; }
+  }
   if (!sub) {
-    sub = await reg.pushManager.subscribe({
+    sub = await step("Push service", () => reg.pushManager.subscribe({
       userVisibleOnly: true, // required by Chrome: every push must show a notification
       applicationServerKey: urlBase64ToUint8Array(public_key),
-    });
+    }));
   }
-  await apiPost("/api/push/subscribe", { subscription: sub.toJSON(), prefs: getPushPrefs() });
+
+  await step("Saving subscription", () => apiPost("/api/push/subscribe", { subscription: sub.toJSON(), prefs: getPushPrefs() }));
   return true;
 }
 

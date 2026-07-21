@@ -1,4 +1,4 @@
-const CACHE_NAME = "coop-ledger-shell-v6";
+const CACHE_NAME = "coop-ledger-shell-v7";
 const SHELL_ASSETS = [
   "./",
   "style.css",
