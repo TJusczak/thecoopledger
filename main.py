@@ -58,7 +58,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.13-201"
+SERVER_VERSION = "2026.07.13-202"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
@@ -166,14 +166,6 @@ SCHEMA = {
     },
     "notes": {
         "coop_id": "TEXT", "category": "TEXT", "title": "TEXT", "body": "TEXT", "created_date": "TEXT", "color": "TEXT",
-    },
-    "push_subscriptions": {
-        "endpoint": "TEXT", "p256dh": "TEXT", "auth": "TEXT", "user_agent": "TEXT",
-        "notify_bedding": "INTEGER", "notify_hatch": "INTEGER", "notify_supplies": "INTEGER",
-        "last_error": "TEXT", "failure_count": "INTEGER",
-    },
-    "push_sent_log": {
-        "subject_key": "TEXT", "sent_on": "TEXT",
     },
     "supplies": {
         "coop_id": "TEXT", "category": "TEXT", "description": "TEXT", "brand": "TEXT", "quantity": "REAL", "unit": "TEXT",
@@ -2271,6 +2263,26 @@ app.mount("/photos", StaticFiles(directory=PHOTOS_DIR), name="photos")
 PUSH_CATEGORIES = ("bedding", "hatch", "supplies")
 
 
+def _ensure_push_tables(conn):
+    """Push tables are created here rather than declared in SCHEMA on purpose.
+
+    Anything in SCHEMA is served by the generic /api/{resource} route, which
+    would hand every device's push endpoint and auth secret to any logged-in
+    user. These are server-internal and must never sync to clients.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS push_subscriptions ("
+        "id TEXT PRIMARY KEY, endpoint TEXT UNIQUE, p256dh TEXT, auth TEXT, user_agent TEXT, "
+        "notify_bedding INTEGER DEFAULT 1, notify_hatch INTEGER DEFAULT 1, notify_supplies INTEGER DEFAULT 1, "
+        "last_error TEXT, failure_count INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS push_sent_log ("
+        "id TEXT PRIMARY KEY, subject_key TEXT, sent_on TEXT, created_at TEXT, updated_at TEXT)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_push_sent ON push_sent_log(subject_key, sent_on)")
+
+
 def _push_config():
     """Returns the VAPID keypair, generating and storing it on first use.
 
@@ -2283,6 +2295,7 @@ def _push_config():
             "CREATE TABLE IF NOT EXISTS push_config (id INTEGER PRIMARY KEY CHECK (id = 1), "
             "private_pem TEXT NOT NULL, public_key TEXT NOT NULL, created_at TEXT)"
         )
+        _ensure_push_tables(conn)
         row = conn.execute("SELECT private_pem, public_key FROM push_config WHERE id = 1").fetchone()
         if row:
             return row["private_pem"], row["public_key"]
@@ -2332,6 +2345,7 @@ async def push_subscribe(request: Request):
     prefs = body.get("prefs") or {}
     now = _now_iso()
     with get_db() as conn:
+        _ensure_push_tables(conn)
         existing = conn.execute("SELECT id FROM push_subscriptions WHERE endpoint = ?", (endpoint,)).fetchone()
         fields = {
             "endpoint": endpoint,
@@ -2426,6 +2440,7 @@ def _notify(category, title, body, subject_key, url="/"):
     without it "Coop Floor is due for a clean-out" would fire 24 times a day."""
     today = date.today().isoformat()
     with get_db() as conn:
+        _ensure_push_tables(conn)
         already = conn.execute(
             "SELECT 1 FROM push_sent_log WHERE subject_key = ? AND sent_on = ?", (subject_key, today)
         ).fetchone()

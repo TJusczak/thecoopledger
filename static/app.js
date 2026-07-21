@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-201";
+const APP_VERSION = "2026.07.13-202";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -45,7 +45,7 @@ let dashMonthKey = null;       // set on first render to current month
 let dashCompareKey = null;     // set to previous month
 let dashFeedType = "both";     // dashboard feed chart: "layer" | "meat" | "both"
 let dashProduceType = "eggs";  // combined produce card: "eggs" | "meat" (eggs default -- daily data; meat only a few months/yr)
-let reviewMoneyMode = "spend"; // Year Review money chart: "spend" | "income" | "net"
+let reviewMoneyMode = "net";   // Year Review money chart -- net first, same as the dashboard: "spend" | "income" | "net"
 // Dashboard "money" mega-chart: mode (spend/income/net) plus which pill is
 // selected within spend and income modes (null = all).
 let dashMoneyMode = "net";
@@ -3363,6 +3363,70 @@ function renderConnectionSection() {
     } catch (err) { showToast("Couldn't save -- offline?", "delete"); }
   });
   renderPushSettings();
+  renderIntegrationSettings();
+}
+
+/** Integrations card: a long-lived read-only API key for Home Assistant,
+ * Grafana and friends. Rendered after the fact like the push card because it
+ * has to fetch current key state from the server. */
+async function renderIntegrationSettings() {
+  const host = document.getElementById("settingsContent");
+  if (!host) return;
+  const wrap = document.createElement("div");
+  wrap.className = "card";
+  host.appendChild(wrap);
+
+  let key = null;
+  try { key = (await apiGet("/api/integrations/key")).api_key || null; }
+  catch (_) { wrap.innerHTML = `<div class="card-title">Integrations</div><div class="dim" style="font-size:12px">Couldn't reach the server.</div>`; return; }
+
+  wrap.innerHTML = `
+    <div class="card-title">Integrations</div>
+    <div class="dim" style="font-size:12px;margin-bottom:10px">
+      A read-only feed of your stats for Home Assistant, Grafana or a dashboard.
+      The key is separate from your login and only reaches <span class="mono">/api/integrations/stats</span> -- it can't change anything.
+    </div>
+    ${key ? `
+      <label class="field"><span>API key</span>
+        <input type="text" id="intKey" readonly value="${esc(key)}" style="font-family:'JetBrains Mono',monospace;font-size:12px">
+      </label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <button class="btn ghost small" id="intCopy">Copy key</button>
+        <button class="btn ghost small" id="intUrl">Copy URL</button>
+        <button class="btn ghost small" id="intRotate">Rotate</button>
+        <button class="btn ghost small" id="intRevoke" style="color:var(--danger)">Revoke</button>
+      </div>
+      <div class="dim" style="font-size:11px;margin-top:10px">Rotating or revoking immediately breaks anything still using the old key. Setup examples are in <span class="mono">INTEGRATIONS.md</span>.</div>
+    ` : `
+      <button class="btn btn-confirm small" id="intGen">Generate key</button>
+    `}
+  `;
+
+  const gen = wrap.querySelector("#intGen");
+  if (gen) gen.addEventListener("click", async () => {
+    try { await apiPost("/api/integrations/key/rotate", {}); showToast("Key generated", "create"); renderConnectionSection(); }
+    catch (_) { showToast("Couldn't generate a key", "delete"); }
+  });
+  const copyText = async (text, label) => {
+    try { await navigator.clipboard.writeText(text); showToast(`${label} copied`, "update"); }
+    catch (_) { showToast("Couldn't copy", "delete"); }
+  };
+  const copyBtn = wrap.querySelector("#intCopy");
+  if (copyBtn) copyBtn.addEventListener("click", () => copyText(key, "Key"));
+  const urlBtn = wrap.querySelector("#intUrl");
+  if (urlBtn) urlBtn.addEventListener("click", () => copyText(`${getServerUrl() || location.origin}/api/integrations/stats`, "URL"));
+  const rotateBtn = wrap.querySelector("#intRotate");
+  if (rotateBtn) rotateBtn.addEventListener("click", async () => {
+    if (!confirm("Rotate the key? Anything using the current key will stop working until you update it.")) return;
+    try { await apiPost("/api/integrations/key/rotate", {}); showToast("Key rotated", "update"); renderConnectionSection(); }
+    catch (_) { showToast("Couldn't rotate", "delete"); }
+  });
+  const revokeBtn = wrap.querySelector("#intRevoke");
+  if (revokeBtn) revokeBtn.addEventListener("click", async () => {
+    if (!confirm("Revoke the key? The stats feed will stop responding until you generate a new one.")) return;
+    try { await apiDelete("/api/integrations/key"); showToast("Key revoked", "delete"); renderConnectionSection(); }
+    catch (_) { showToast("Couldn't revoke", "delete"); }
+  });
 }
 
 /** Notifications card, appended to the Connection settings tab. Rendered
