@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-202";
+const APP_VERSION = "2026.07.13-203";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -651,9 +651,30 @@ function authHeaders() {
   return token ? { "Authorization": `Bearer ${token}` } : {};
 }
 
-async function apiGet(path) { return (await fetch(apiUrl(path), { headers: authHeaders() })).json(); }
-async function apiPost(path, body) { return (await fetch(apiUrl(path), { method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify(body) })).json(); }
-async function apiDelete(path) { return (await fetch(apiUrl(path), { method: "DELETE", headers: authHeaders() })).json(); }
+/** Turns a response into either its JSON body or a readable Error.
+ *
+ * Previously these blindly called .json() on whatever came back, so a server
+ * error rendered as an HTML page produced "Unexpected token '<'" -- which says
+ * nothing about what actually failed. Surfacing the status and the server's
+ * own `detail` makes a failure diagnosable from the toast alone. */
+async function apiResult(res) {
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (_) { /* not JSON */ }
+  if (!res.ok) {
+    const detail = (data && (data.detail || data.message)) || (text || "").slice(0, 120).trim();
+    const err = new Error(detail ? `${res.status}: ${detail}` : `Request failed (${res.status})`);
+    err.status = res.status;
+    // Callers that already read `err.detail` for a server-supplied message keep
+    // working unchanged.
+    err.detail = detail || null;
+    throw err;
+  }
+  return data;
+}
+async function apiGet(path) { return apiResult(await fetch(apiUrl(path), { headers: authHeaders() })); }
+async function apiPost(path, body) { return apiResult(await fetch(apiUrl(path), { method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify(body) })); }
+async function apiDelete(path) { return apiResult(await fetch(apiUrl(path), { method: "DELETE", headers: authHeaders() })); }
 
 // Local-only mode: a deliberate choice to never attempt to reach a server at
 // all, distinct from "has a server configured but it's currently
