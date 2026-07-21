@@ -58,7 +58,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.13-196"
+SERVER_VERSION = "2026.07.13-201"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
@@ -166,6 +166,14 @@ SCHEMA = {
     },
     "notes": {
         "coop_id": "TEXT", "category": "TEXT", "title": "TEXT", "body": "TEXT", "created_date": "TEXT", "color": "TEXT",
+    },
+    "push_subscriptions": {
+        "endpoint": "TEXT", "p256dh": "TEXT", "auth": "TEXT", "user_agent": "TEXT",
+        "notify_bedding": "INTEGER", "notify_hatch": "INTEGER", "notify_supplies": "INTEGER",
+        "last_error": "TEXT", "failure_count": "INTEGER",
+    },
+    "push_sent_log": {
+        "subject_key": "TEXT", "sent_on": "TEXT",
     },
     "supplies": {
         "coop_id": "TEXT", "category": "TEXT", "description": "TEXT", "brand": "TEXT", "quantity": "REAL", "unit": "TEXT",
@@ -705,6 +713,13 @@ class AuthMiddleware:
     async def __call__(self, scope, receive, send):
         path = scope.get("path", "")
         is_protected = path.startswith("/api/") or path.startswith("/photos/")
+        # The integration feed authenticates with its own long-lived API key
+        # (checked inside the route), so it must bypass the session gate --
+        # a polling client like Home Assistant can't hold a login session.
+        # Only the read-only stats path is exempt; key management still
+        # requires an admin session.
+        if path == "/api/integrations/stats":
+            is_protected = False
         if (
             scope["type"] != "http"
             or scope["method"] == "OPTIONS"  # CORS preflight requests never carry auth headers by design
@@ -1822,6 +1837,7 @@ async def _periodic_maintenance_loop():
             _prune_old_failed_logins()
             _prune_idle_sessions()
             _maybe_run_scheduled_backup()
+            _push_reminder_sweep()
         except Exception as e:
             print(f"Periodic maintenance error: {e}")
 
@@ -2238,4 +2254,421 @@ def sync_resource(resource: str, coop_id: str | None = None, since: str | None =
 app.mount("/photos", StaticFiles(directory=PHOTOS_DIR), name="photos")
 
 # Static frontend (mounted last so /api/* and /photos above take precedence)
+# ===========================================================================
+# Web Push notifications
+#
+# Reminders that reach the phone with the app closed: bedding due for a change,
+# a hatch hitting a milestone, supplies running low. Everything is opt-in --
+# nothing is sent until the browser grants permission AND the person turns on
+# the individual categories.
+#
+# Delivery is standard Web Push, so the server needs outbound HTTPS to the
+# browser vendor's push endpoint (FCM for Chrome/Android). Self-hosters behind
+# a firewall that blocks egress simply won't see notifications; the rest of the
+# app is unaffected.
+# ===========================================================================
+
+PUSH_CATEGORIES = ("bedding", "hatch", "supplies")
+
+
+def _push_config():
+    """Returns the VAPID keypair, generating and storing it on first use.
+
+    The keypair identifies this server to the push services. It must stay
+    stable: regenerating invalidates every existing subscription, so it's
+    created once and then read back forever after.
+    """
+    with get_db() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS push_config (id INTEGER PRIMARY KEY CHECK (id = 1), "
+            "private_pem TEXT NOT NULL, public_key TEXT NOT NULL, created_at TEXT)"
+        )
+        row = conn.execute("SELECT private_pem, public_key FROM push_config WHERE id = 1").fetchone()
+        if row:
+            return row["private_pem"], row["public_key"]
+        try:
+            from py_vapid import Vapid02
+            from cryptography.hazmat.primitives import serialization
+        except ImportError:
+            return None, None
+        v = Vapid02()
+        v.generate_keys()
+        private_pem = v.private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode()
+        raw_pub = v.public_key.public_bytes(
+            encoding=serialization.Encoding.X962,
+            format=serialization.PublicFormat.UncompressedPoint,
+        )
+        public_key = base64.urlsafe_b64encode(raw_pub).decode().rstrip("=")
+        conn.execute(
+            "INSERT INTO push_config (id, private_pem, public_key, created_at) VALUES (1, ?, ?, ?)",
+            (private_pem, public_key, _now_iso()),
+        )
+        conn.commit()
+        return private_pem, public_key
+
+
+@app.get("/api/push/public-key")
+def push_public_key(request: Request):
+    _require_auth(request)
+    _, public_key = _push_config()
+    if not public_key:
+        raise HTTPException(status_code=503, detail="Push is unavailable: the pywebpush package is not installed on the server.")
+    return {"public_key": public_key}
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(request: Request):
+    _require_auth(request)
+    body = await request.json()
+    sub = body.get("subscription") or {}
+    endpoint = sub.get("endpoint")
+    keys = sub.get("keys") or {}
+    if not endpoint or not keys.get("p256dh") or not keys.get("auth"):
+        raise HTTPException(status_code=400, detail="Incomplete push subscription")
+    prefs = body.get("prefs") or {}
+    now = _now_iso()
+    with get_db() as conn:
+        existing = conn.execute("SELECT id FROM push_subscriptions WHERE endpoint = ?", (endpoint,)).fetchone()
+        fields = {
+            "endpoint": endpoint,
+            "p256dh": keys["p256dh"],
+            "auth": keys["auth"],
+            "user_agent": (request.headers.get("user-agent") or "")[:300],
+            "failure_count": 0,
+            "last_error": None,
+            "updated_at": now,
+        }
+        for cat in PUSH_CATEGORIES:
+            fields[f"notify_{cat}"] = 1 if prefs.get(cat, True) else 0
+        if existing:
+            sets = ", ".join(f'"{k}" = ?' for k in fields)
+            conn.execute(f"UPDATE push_subscriptions SET {sets} WHERE id = ?", (*fields.values(), existing["id"]))
+            sub_id = existing["id"]
+        else:
+            sub_id = uuid.uuid4().hex[:12]
+            fields["id"] = sub_id
+            fields["created_at"] = now
+            cols = ", ".join(f'"{k}"' for k in fields)
+            marks = ", ".join("?" for _ in fields)
+            conn.execute(f"INSERT INTO push_subscriptions ({cols}) VALUES ({marks})", tuple(fields.values()))
+        conn.commit()
+    return {"ok": True, "id": sub_id}
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe(request: Request):
+    _require_auth(request)
+    body = await request.json()
+    endpoint = body.get("endpoint")
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="endpoint required")
+    with get_db() as conn:
+        conn.execute("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+        conn.commit()
+    return {"ok": True}
+
+
+def _send_push(sub_row, title, body, tag, url="/"):
+    """Sends one notification. Returns True if it was accepted.
+
+    A 404 or 410 means the browser has permanently discarded the subscription
+    (app uninstalled, permission revoked), so the row is deleted rather than
+    retried forever. Other failures are counted, and a subscription that keeps
+    failing is dropped so a dead endpoint can't slow the hourly sweep.
+    """
+    private_pem, _ = _push_config()
+    if not private_pem:
+        return False
+    try:
+        from pywebpush import webpush, WebPushException
+    except ImportError:
+        return False
+    payload = json.dumps({"title": title, "body": body, "tag": tag, "url": url})
+    try:
+        webpush(
+            subscription_info={
+                "endpoint": sub_row["endpoint"],
+                "keys": {"p256dh": sub_row["p256dh"], "auth": sub_row["auth"]},
+            },
+            data=payload,
+            vapid_private_key=private_pem,
+            vapid_claims={"sub": "mailto:admin@thecoopledger.local"},
+            timeout=10,
+        )
+        return True
+    except WebPushException as e:
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        with get_db() as conn:
+            if status in (404, 410):
+                conn.execute("DELETE FROM push_subscriptions WHERE id = ?", (sub_row["id"],))
+            else:
+                count = (sub_row["failure_count"] or 0) + 1
+                if count >= 10:
+                    conn.execute("DELETE FROM push_subscriptions WHERE id = ?", (sub_row["id"],))
+                else:
+                    conn.execute(
+                        "UPDATE push_subscriptions SET failure_count = ?, last_error = ? WHERE id = ?",
+                        (count, str(e)[:300], sub_row["id"]),
+                    )
+            conn.commit()
+        return False
+    except Exception:
+        return False
+
+
+def _notify(category, title, body, subject_key, url="/"):
+    """Sends to every device opted in to `category`, at most once per day for
+    a given subject_key. The dedupe matters because the sweep runs hourly --
+    without it "Coop Floor is due for a clean-out" would fire 24 times a day."""
+    today = date.today().isoformat()
+    with get_db() as conn:
+        already = conn.execute(
+            "SELECT 1 FROM push_sent_log WHERE subject_key = ? AND sent_on = ?", (subject_key, today)
+        ).fetchone()
+        if already:
+            return 0
+        subs = conn.execute(
+            f"SELECT * FROM push_subscriptions WHERE notify_{category} = 1"
+        ).fetchall()
+    if not subs:
+        return 0
+    sent = sum(1 for s in subs if _send_push(s, title, body, tag=subject_key, url=url))
+    if sent:
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO push_sent_log (id, subject_key, sent_on, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (uuid.uuid4().hex[:12], subject_key, today, _now_iso(), _now_iso()),
+            )
+            conn.execute("DELETE FROM push_sent_log WHERE sent_on < date('now', '-14 day')")
+            conn.commit()
+    return sent
+
+
+@app.post("/api/push/test")
+def push_test(request: Request):
+    _require_auth(request)
+    with get_db() as conn:
+        subs = conn.execute("SELECT * FROM push_subscriptions").fetchall()
+    if not subs:
+        raise HTTPException(status_code=400, detail="No devices are subscribed yet.")
+    sent = sum(1 for s in subs if _send_push(s, "The Coop Ledger", "Notifications are working.", tag="test"))
+    return {"ok": True, "sent": sent, "devices": len(subs)}
+
+
+def _push_reminder_sweep():
+    """Hourly check for anything worth a nudge. Each subject dedupes to once a
+    day, so this can run every hour without becoming a nuisance.
+
+    Bedding thresholds live in each coop's settings; the defaults here mirror
+    the app's own so a coop that never customised them still gets sensible
+    reminders."""
+    today = date.today()
+    with get_db() as conn:
+        coops = conn.execute("SELECT id, name, settings FROM coops WHERE deleted_at IS NULL").fetchall()
+        for coop in coops:
+            try:
+                settings = json.loads(coop["settings"] or "{}")
+            except Exception:
+                settings = {}
+            areas = settings.get("beddingAreas") or ["Coop Floor", "Nest Boxes"]
+            thresholds = settings.get("beddingThresholds") or {}
+
+            # --- Bedding: how long since the last full clean-out of each area
+            for area in areas:
+                t = thresholds.get(area) or {}
+                danger = int(t.get("danger") or 60)
+                last = conn.execute(
+                    "SELECT date FROM bedding WHERE coop_id = ? AND area = ? AND entry_type = 'Full Clean-Out' "
+                    "AND deleted_at IS NULL ORDER BY date DESC LIMIT 1",
+                    (coop["id"], area),
+                ).fetchone()
+                if not last or not last["date"]:
+                    continue  # never cleaned: no baseline to measure against
+                try:
+                    days = (today - date.fromisoformat(last["date"])).days
+                except ValueError:
+                    continue
+                if days >= danger:
+                    over = days - danger
+                    _notify(
+                        "bedding",
+                        f"{area} needs a clean-out",
+                        f"It has been {days} days" + (f", {over} past due" if over > 0 else "") + f" in {coop['name']}.",
+                        subject_key=f"bedding:{coop['id']}:{area}",
+                    )
+
+            # --- Hatching: lockdown (day 18) and hatch day (day 21)
+            hatches = conn.execute(
+                "SELECT id, name, start_date, status FROM hatches WHERE coop_id = ? AND deleted_at IS NULL "
+                "AND (status IS NULL OR status NOT IN ('Complete', 'Cancelled'))",
+                (coop["id"],),
+            ).fetchall()
+            for h in hatches:
+                if not h["start_date"]:
+                    continue
+                try:
+                    day = (today - date.fromisoformat(h["start_date"])).days
+                except ValueError:
+                    continue
+                label = h["name"] or "Clutch"
+                if day == 18:
+                    _notify("hatch", f"{label}: lockdown day",
+                            "Day 18 -- stop turning and raise the humidity.",
+                            subject_key=f"hatch:lockdown:{h['id']}")
+                elif day == 21:
+                    _notify("hatch", f"{label}: hatch day",
+                            "Day 21 -- chicks are due today.",
+                            subject_key=f"hatch:due:{h['id']}")
+
+            # --- Supplies: feed bags that are nearly gone
+            low = conn.execute(
+                "SELECT COUNT(*) AS n FROM supplies WHERE coop_id = ? AND deleted_at IS NULL "
+                "AND date_emptied IS NULL AND status = '1/4' AND category IN ('Layer Feed', 'Meat Feed')",
+                (coop["id"],),
+            ).fetchone()
+            if low and low["n"]:
+                _notify("supplies", "Feed running low",
+                        f"{low['n']} bag(s) down to a quarter in {coop['name']}.",
+                        subject_key=f"supplies:{coop['id']}:{today.isoformat()}")
+
+
+# ===========================================================================
+# Integrations: a read-only stats feed for Home Assistant, Grafana, dashboards
+#
+# Authenticated with a long-lived API key rather than a session token, because
+# a polling integration can't complete a login flow and shouldn't hold one.
+# The key is read-only by construction: this endpoint runs SELECTs and there is
+# no integration route that writes. Revoking regenerates the key, immediately
+# invalidating anything still using the old one.
+# ===========================================================================
+
+def _integration_key(create=False):
+    with get_db() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS integration_config ("
+            "id INTEGER PRIMARY KEY CHECK (id = 1), api_key TEXT, created_at TEXT)"
+        )
+        row = conn.execute("SELECT api_key FROM integration_config WHERE id = 1").fetchone()
+        if row and row["api_key"] and not create:
+            return row["api_key"]
+        if not create:
+            return None
+        key = secrets.token_urlsafe(32)
+        if row:
+            conn.execute("UPDATE integration_config SET api_key = ?, created_at = ? WHERE id = 1", (key, _now_iso()))
+        else:
+            conn.execute("INSERT INTO integration_config (id, api_key, created_at) VALUES (1, ?, ?)", (key, _now_iso()))
+        conn.commit()
+        return key
+
+
+def _require_integration_key(request: Request):
+    supplied = request.headers.get("x-api-key") or request.query_params.get("key")
+    actual = _integration_key()
+    if not actual:
+        raise HTTPException(status_code=503, detail="No integration key has been generated yet.")
+    # Constant-time compare so a wrong key can't be discovered by timing.
+    if not supplied or not secrets.compare_digest(str(supplied), str(actual)):
+        raise HTTPException(status_code=401, detail="Invalid integration key")
+
+
+@app.post("/api/integrations/key/rotate")
+def integration_key_rotate(request: Request):
+    _require_admin(request)
+    return {"api_key": _integration_key(create=True)}
+
+
+@app.get("/api/integrations/key")
+def integration_key_get(request: Request):
+    _require_admin(request)
+    return {"api_key": _integration_key()}
+
+
+@app.delete("/api/integrations/key")
+def integration_key_delete(request: Request):
+    _require_admin(request)
+    with get_db() as conn:
+        conn.execute("DELETE FROM integration_config WHERE id = 1")
+        conn.commit()
+    return {"ok": True}
+
+
+@app.get("/api/integrations/stats")
+def integration_stats(request: Request, coop_id: str = None):
+    """Flat, poll-friendly JSON. Values are deliberately shallow and
+    consistently named so a Home Assistant REST sensor can pull any of them
+    with a one-line template and never see a null appear or vanish."""
+    _require_integration_key(request)
+    today = date.today()
+    month = today.strftime("%Y-%m")
+    year = today.strftime("%Y")
+
+    with get_db() as conn:
+        if coop_id:
+            coop = conn.execute("SELECT id, name FROM coops WHERE id = ? AND deleted_at IS NULL", (coop_id,)).fetchone()
+        else:
+            coop = conn.execute("SELECT id, name FROM coops WHERE deleted_at IS NULL ORDER BY created_date LIMIT 1").fetchone()
+        if not coop:
+            raise HTTPException(status_code=404, detail="No coop found")
+        cid = coop["id"]
+
+        def one(sql, params=()):
+            r = conn.execute(sql, params).fetchone()
+            return (r[0] if r and r[0] is not None else 0)
+
+        eggs_today = one("SELECT SUM(count) FROM eggs WHERE coop_id=? AND date=? AND deleted_at IS NULL", (cid, today.isoformat()))
+        eggs_month = one("SELECT SUM(count) FROM eggs WHERE coop_id=? AND substr(date,1,7)=? AND deleted_at IS NULL", (cid, month))
+        eggs_year = one("SELECT SUM(count) FROM eggs WHERE coop_id=? AND substr(date,1,4)=? AND deleted_at IS NULL", (cid, year))
+        eggs_all = one("SELECT SUM(count) FROM eggs WHERE coop_id=? AND deleted_at IS NULL", (cid,))
+
+        birds_active = one("SELECT COUNT(*) FROM birds WHERE coop_id=? AND status='Active' AND deleted_at IS NULL", (cid,))
+        layers = one("SELECT COUNT(*) FROM birds WHERE coop_id=? AND status='Active' AND type IN ('Layer','Dual Purpose') AND deleted_at IS NULL", (cid,))
+        meat_birds = one("SELECT COUNT(*) FROM birds WHERE coop_id=? AND status='Active' AND type='Meat' AND deleted_at IS NULL", (cid,))
+
+        spend_month = one("SELECT SUM(amount) FROM expenses WHERE coop_id=? AND substr(date,1,7)=? AND entry_type IS NOT 'income' AND deleted_at IS NULL", (cid, month))
+        spend_year = one("SELECT SUM(amount) FROM expenses WHERE coop_id=? AND substr(date,1,4)=? AND entry_type IS NOT 'income' AND deleted_at IS NULL", (cid, year))
+        income_year = one("SELECT SUM(amount) FROM expenses WHERE coop_id=? AND substr(date,1,4)=? AND entry_type='income' AND deleted_at IS NULL", (cid, year))
+
+        meat_year = one("SELECT SUM(harvest_weight) FROM birds WHERE coop_id=? AND status='Processed' AND substr(harvest_date,1,4)=? AND deleted_at IS NULL", (cid, year))
+        birds_processed_year = one("SELECT COUNT(*) FROM birds WHERE coop_id=? AND status='Processed' AND substr(harvest_date,1,4)=? AND deleted_at IS NULL", (cid, year))
+
+        feed_open = one("SELECT COUNT(*) FROM supplies WHERE coop_id=? AND date_emptied IS NULL AND category IN ('Layer Feed','Meat Feed') AND deleted_at IS NULL", (cid,))
+        feed_low = one("SELECT COUNT(*) FROM supplies WHERE coop_id=? AND date_emptied IS NULL AND status='1/4' AND category IN ('Layer Feed','Meat Feed') AND deleted_at IS NULL", (cid,))
+
+        # Days since the most recent full clean-out of each bedding area, so a
+        # dashboard can show "worst area" without replicating the thresholds.
+        bedding = {}
+        for r in conn.execute(
+            "SELECT area, MAX(date) AS last FROM bedding WHERE coop_id=? AND entry_type='Full Clean-Out' AND deleted_at IS NULL GROUP BY area",
+            (cid,),
+        ):
+            try:
+                bedding[r["area"]] = (today - date.fromisoformat(r["last"])).days
+            except (TypeError, ValueError):
+                pass
+
+        active_hatches = one("SELECT COUNT(*) FROM hatches WHERE coop_id=? AND deleted_at IS NULL AND (status IS NULL OR status NOT IN ('Complete','Cancelled'))", (cid,))
+
+    return {
+        "coop": {"id": cid, "name": coop["name"]},
+        "generated_at": _now_iso(),
+        "eggs": {"today": int(eggs_today), "this_month": int(eggs_month), "this_year": int(eggs_year), "all_time": int(eggs_all),
+                 "dozen_this_year": round(eggs_year / 12, 2)},
+        "flock": {"active": int(birds_active), "layers": int(layers), "meat_birds": int(meat_birds),
+                  "processed_this_year": int(birds_processed_year), "active_hatches": int(active_hatches)},
+        "meat": {"lb_this_year": round(float(meat_year), 2)},
+        "money": {"spent_this_month": round(float(spend_month), 2), "spent_this_year": round(float(spend_year), 2),
+                  "income_this_year": round(float(income_year), 2),
+                  "net_this_year": round(float(income_year) - float(spend_year), 2)},
+        "feed": {"bags_open": int(feed_open), "bags_low": int(feed_low)},
+        "bedding_days_since_cleanout": bedding,
+    }
+
+
+# NOTE: this catch-all mount must stay LAST -- any route registered after it
+# is shadowed by the static file handler and will 404.
 app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="static")

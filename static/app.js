@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-196";
+const APP_VERSION = "2026.07.13-201";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -586,7 +586,46 @@ const AUTH_TOKEN_KEY = "coopLedgerAuthToken";
 const AUTH_NAME_KEY = "coopLedgerAuthName";
 const AUTH_ROLE_KEY = "coopLedgerAuthRole";
 function getAuthToken() { return localStorage.getItem(AUTH_TOKEN_KEY) || ""; }
-function setAuthToken(token) { localStorage.setItem(AUTH_TOKEN_KEY, token || ""); }
+function setAuthToken(token) { localStorage.setItem(AUTH_TOKEN_KEY, token || ""); mirrorTokenForServiceWorker(token || ""); }
+
+/** Copies the auth token into a tiny standalone IndexedDB the service worker
+ * can read. Service workers have no access to localStorage, and Background
+ * Sync runs with the app closed, so without this the worker couldn't
+ * authenticate the queued requests it's trying to finish.
+ *
+ * Deliberately a separate database from the app's: the worker then never needs
+ * to know the main schema version, so migrations on either side stay
+ * independent. Same-origin storage either way, so this exposes nothing that
+ * localStorage didn't already. */
+function mirrorTokenForServiceWorker(token) {
+  try {
+    const req = indexedDB.open("coopLedgerSwState", 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains("kv")) db.createObjectStore("kv", { keyPath: "key" });
+    };
+    req.onsuccess = (e) => {
+      const db = e.target.result;
+      try {
+        const tx = db.transaction("kv", "readwrite");
+        if (token) tx.objectStore("kv").put({ key: "authToken", value: token });
+        else tx.objectStore("kv").delete("authToken"); // signing out revokes the worker's access too
+      } catch (_) { /* best effort -- sync just falls back to in-app draining */ }
+    };
+  } catch (_) { /* no IndexedDB: Background Sync simply won't engage */ }
+}
+
+/** Asks the browser to drain the outbox once connectivity returns, even if the
+ * app has been closed by then. A no-op where Background Sync isn't supported
+ * (Safari), which is fine -- the existing "online" listener still covers the
+ * app-is-open case everywhere. */
+async function requestBackgroundOutboxSync() {
+  try {
+    if (!("serviceWorker" in navigator)) return;
+    const reg = await navigator.serviceWorker.ready;
+    if (reg && reg.sync) await reg.sync.register("coop-outbox");
+  } catch (_) { /* not supported or permission denied -- no action needed */ }
+}
 function getUserRole() { return localStorage.getItem(AUTH_ROLE_KEY) || "admin"; } // existing sessions from before roles existed are implicitly admin
 function setUserRole(role) { localStorage.setItem(AUTH_ROLE_KEY, role || "admin"); }
 function isReadOnlyRole() { return getUserRole() === "readonly"; }
@@ -1259,7 +1298,11 @@ async function pushOutboxOnce() {
         res = await fetch(apiUrl(`/api/${entry.resource}/bulk-update-items`), { method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify({ updates: entry.payload.map(u => ({ id: u.id, fields: u.fields })) }) });
       }
     } catch (networkErr) {
-      break; // genuine network failure -- stop and retry the whole queue later
+      // Genuine network failure -- stop and retry the whole queue later. Also
+      // hand the rest to Background Sync so it drains once the device is back
+      // online even if the app has been closed by then.
+      requestBackgroundOutboxSync();
+      break;
     }
     if (res.ok) {
       await clearOutboxEntry(entry.outboxId);
@@ -3319,6 +3362,85 @@ function renderConnectionSection() {
       showToast(days ? `Auto-rotating every ${days} days` : "Auto-rotate turned off", "update");
     } catch (err) { showToast("Couldn't save -- offline?", "delete"); }
   });
+  renderPushSettings();
+}
+
+/** Notifications card, appended to the Connection settings tab. Rendered
+ * separately because it has to inspect async browser state (permission and
+ * existing subscription) that isn't available while building the page HTML. */
+async function renderPushSettings() {
+  const host = document.getElementById("settingsContent");
+  if (!host) return;
+  const wrap = document.createElement("div");
+  wrap.className = "card";
+  host.appendChild(wrap);
+
+  const supported = pushSupported();
+  const permission = supported ? Notification.permission : "unsupported";
+  const sub = supported ? await getPushSubscription() : null;
+  const on = !!sub && permission === "granted";
+  const prefs = getPushPrefs();
+
+  if (!supported) {
+    wrap.innerHTML = `<div class="card-title">Notifications</div>
+      <div class="dim" style="font-size:12px">This browser doesn't support push notifications. On iPhone, add the app to your Home Screen first -- Safari only allows them for installed apps.</div>`;
+    return;
+  }
+
+  wrap.innerHTML = `
+    <div class="card-title">Notifications</div>
+    <div class="dim" style="font-size:12px;margin-bottom:10px">Reminders arrive even when the app is closed. ${permission === "denied"
+      ? `<strong style="color:var(--danger)">Blocked in your browser settings</strong> -- re-allow notifications for this site to turn them on.`
+      : "Your device's own notification settings always have the final say."}</div>
+    <label class="switch-row">
+      <span>Push notifications</span>
+      <input type="checkbox" id="pushMaster" ${on ? "checked" : ""} ${permission === "denied" ? "disabled" : ""}>
+    </label>
+    <div id="pushCats" style="margin-top:10px;${on ? "" : "opacity:.45;pointer-events:none"}">
+      ${PUSH_CATEGORIES.map(c => `
+        <label class="switch-row">
+          <span>${c.emoji} ${esc(c.label)}</span>
+          <input type="checkbox" data-push-cat="${c.key}" ${prefs[c.key] ? "checked" : ""}>
+        </label>`).join("")}
+    </div>
+    <div style="margin-top:12px"><button class="btn ghost small" id="pushTest" ${on ? "" : "disabled"}>Send a test notification</button></div>
+  `;
+
+  wrap.querySelector("#pushMaster").addEventListener("change", async (e) => {
+    const want = e.target.checked;
+    e.target.disabled = true;
+    try {
+      if (want) { await enablePushNotifications(); showToast("Notifications on", "create"); }
+      else { await disablePushNotifications(); showToast("Notifications off", "update"); }
+    } catch (err) {
+      showToast(err.message || "Couldn't change that", "delete");
+    }
+    renderConnectionSection();
+  });
+  wrap.querySelectorAll("[data-push-cat]").forEach(cb => cb.addEventListener("change", async () => {
+    const prefs = getPushPrefs();
+    prefs[cb.dataset.pushCat] = cb.checked;
+    setPushPrefs(prefs);
+    // Every category off means nothing would ever be delivered -- drop the
+    // subscription rather than keep a live channel that stays silent.
+    if (PUSH_CATEGORIES.every(c => !prefs[c.key])) {
+      await disablePushNotifications();
+      showToast("All categories off -- notifications disabled", "update");
+      renderConnectionSection();
+      return;
+    }
+    try { await syncPushPrefs(); showToast("Saved", "update"); }
+    catch (_) { showToast("Couldn't save -- offline?", "delete"); }
+  }));
+  const testBtn = wrap.querySelector("#pushTest");
+  if (testBtn) testBtn.addEventListener("click", async () => {
+    testBtn.disabled = true;
+    try {
+      const r = await apiPost("/api/push/test", {});
+      showToast(r.sent ? `Sent to ${r.sent} device(s)` : "Nothing sent -- check the server log", r.sent ? "create" : "delete");
+    } catch (_) { showToast("Couldn't send test", "delete"); }
+    testBtn.disabled = false;
+  });
 }
 
 const LOCAL_FIRST_RESOURCES = ["eggs", "expenses", "supplies", "bedding", "notes", "bird_logs", "birds", "coops", "hatches", "hatch_eggs", "bird_photos", "activity_log", "supply_products"];
@@ -3589,6 +3711,23 @@ function meatProcessedValue(count, weight, value) {
   return `${count} bird${count !== 1 ? "s" : ""}`;
 }
 
+/** Months elapsed since the coop's first recorded activity, at least 1.
+ * Used for all-time "per month" averages -- dividing a lifetime total by the
+ * months it accumulated over is the honest denominator, and a brand-new coop
+ * shouldn't divide by zero. */
+function monthsSinceCoopStart() {
+  const dates = [];
+  STATE.expenses.forEach(x => { if (x.date) dates.push(x.date); });
+  STATE.eggs.forEach(e => { if (e.date) dates.push(e.date); });
+  STATE.birds.forEach(b => { const d = b.acquired_date || b.hatch_date; if (d) dates.push(d); });
+  if (!dates.length) return 1;
+  const first = dates.reduce((a, b) => (a < b ? a : b));
+  const [fy, fm] = first.split("-").map(Number);
+  const today = todayStr();
+  const [ty, tm] = today.split("-").map(Number);
+  return Math.max(1, (ty - fy) * 12 + (tm - fm) + 1);
+}
+
 function renderAllTimeStatsSection() {
   const el = document.getElementById("coopSubContent");
   if (!currentCoopId) { el.innerHTML = noCoopMessage(); return; }
@@ -3618,7 +3757,7 @@ function renderAllTimeStatsSection() {
       <div class="stat tone-slate"><div class="stat-label">Losses, all time</div><div class="stat-value">${s.lossesAll}</div><div class="stat-sub">${s.lossesThisYear} this year</div>${statSpark(ty.losses)}</div>
       <div class="stat tone-gold"><div class="stat-label">Eggs collected, all time</div><div class="stat-value">${s.totalEggs}</div><div class="stat-sub">${(s.totalEggs / 12).toFixed(1)} dozen · ${valueBreakdownHtml(s.eggIncomeAll, s.eggActualIncomeAll)}</div>${statSpark(ty.eggs)}</div>
       <div class="stat tone-sage"><div class="stat-label">Meat processed, all time</div><div class="stat-value">${meatProcessedValue(s.processed, s.totalWeight, s.meatTotalValueAll)}</div><div class="stat-sub">${s.processed > 0 ? `${s.processed} bird${s.processed !== 1 ? "s" : ""} · ${valueBreakdownHtml(s.meatIncomeAll, s.meatActualIncomeAll)}` : ""}</div>${statSpark(ty.meatLb)}</div>
-      <div class="stat tone-slate"><div class="stat-label">Spent, all time</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${fmtMoney(s.thisMonth)} this month</div>${statSpark(ty.spent)}</div>
+      <div class="stat tone-slate"><div class="stat-label">Spent, all time</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${fmtMoney(s.totalExpenses / monthsSinceCoopStart())}/month average</div>${statSpark(ty.spent)}</div>
       <div class="stat tone-gold"><div class="stat-label">Value produced, all time</div><div class="stat-value">${fmtMoney(s.incomeAll)}</div><div class="stat-sub">eggs + meat + other income</div>${statSpark(ty.value)}</div>
       <div class="stat ${s.netAll >= 0 ? "tone-sage" : ""}" style="${s.netAll < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net savings, all time</div><div class="stat-value">${fmtMoney(s.netAll)}</div><div class="stat-sub">value − spend</div>${statSpark(ty.net)}</div>
       <div class="stat tone-gold"><div class="stat-label">Full clean-outs, all time</div><div class="stat-value">${totalCleanouts}</div><div class="stat-sub">across ${getBeddingAreas().length} tracked area${getBeddingAreas().length !== 1 ? "s" : ""}</div>${statSpark(ty.cleanouts)}</div>
@@ -5191,7 +5330,10 @@ function monthlyTrends(year) {
   const hatchMonth = {}; STATE.hatches.forEach(h => { hatchMonth[h.id] = idx(h.date_started); });
   STATE.hatchEggs.forEach(e => { const m = hatchMonth[e.hatch_id]; if (m >= 0 && e.status === "Hatched") out.chicks[m]++; });
   out.value = out.eggValue.map((v, i) => v + out.meatValue[i] + out.income[i]);
-  out.net = out.value.map((v, i) => v - out.spent[i]);
+  // Running total, matching the dashboard's net sparkline: a per-bucket net
+  // just showed which periods carried a big purchase, whereas the card is
+  // really asking about trajectory -- am I climbing back or still sinking?
+  out.net = (() => { let r = 0; return out.value.map((v, i) => (r += v - out.spent[i])); })();
   return out;
 }
 
@@ -5216,7 +5358,10 @@ function yearlyTrends() {
   const hatchYear = {}; STATE.hatches.forEach(h => { hatchYear[h.id] = yr(h.date_started); });
   STATE.hatchEggs.forEach(e => { const i = hatchYear[e.hatch_id]; if (i >= 0 && e.status === "Hatched") out.chicks[i]++; });
   out.value = out.eggValue.map((v, i) => v + out.meatValue[i] + out.income[i]);
-  out.net = out.value.map((v, i) => v - out.spent[i]);
+  // Running total, matching the dashboard's net sparkline: a per-bucket net
+  // just showed which periods carried a big purchase, whereas the card is
+  // really asking about trajectory -- am I climbing back or still sinking?
+  out.net = (() => { let r = 0; return out.value.map((v, i) => (r += v - out.spent[i])); })();
   return out;
 }
 
@@ -5510,12 +5655,14 @@ function moneyMonthlyForYear(year, mode, pill) {
   const spend = (cat) => monthlyBuckets(STATE.expenses.filter(x => x.entry_type !== "income" && (!cat || x.category === cat)), year, x => Number(x.amount) || 0);
   const add = (...arrs) => arrs[0].map((_, i) => arrs.reduce((s, a) => s + a[i], 0));
 
-  if (mode === "spend") return spend(pill);
+  // Cumulative across the year for every mode, matching the dashboard.
+  const runningTotal = (arr) => { let r = 0; return arr.map(v => (r += v)); };
+  if (mode === "spend") return runningTotal(spend(pill));
   if (mode === "income") {
-    if (pill === "Egg value") return eggVal;
-    if (pill === "Meat value") return meatVal;
-    if (pill) return otherIncome(pill);
-    return add(eggVal, meatVal, otherIncome(null));
+    if (pill === "Egg value") return runningTotal(eggVal);
+    if (pill === "Meat value") return runningTotal(meatVal);
+    if (pill) return runningTotal(otherIncome(pill));
+    return runningTotal(add(eggVal, meatVal, otherIncome(null)));
   }
   // net = running total of (income value − spend) across the months, so the
   // line ends at the year's net and a zero-crossing marks break-even.
@@ -5581,7 +5728,7 @@ function drawYearReviewCharts(year) {
   const moneyData = moneyMonthlyForYear(year, reviewMoneyMode, reviewMoneyMode === "spend" ? reviewSpendPill : reviewMoneyMode === "income" ? reviewIncomePill : null);
   const moneyPrev = hasPrev ? moneyMonthlyForYear(lastYear, reviewMoneyMode, reviewMoneyMode === "spend" ? reviewSpendPill : reviewMoneyMode === "income" ? reviewIncomePill : null) : null;
   const isNet = reviewMoneyMode === "net";
-  const moneyColor = reviewMoneyMode === "income" ? "#8A9A5B" : reviewMoneyMode === "net" ? "#8A9A5B" : "#7A8FA6";
+  const moneyColor = reviewMoneyMode === "income" ? "#8A9A5B" : reviewMoneyMode === "net" ? "#8A9A5B" : "#B84C3E";
   const mainDs = { label: year, data: moneyData, borderColor: moneyColor, backgroundColor: moneyColor + "33", tension: 0.25, pointRadius: 2, fill: !isNet };
   if (isNet) mainDs.segment = { borderColor: (ctx) => (ctx.p1.parsed.y != null && ctx.p1.parsed.y < 0 ? "#B84C3E" : "#8A9A5B") };
   const moneyOpts = yearChartOpts(hasPrev, (v) => fmtMoney(v));
@@ -6200,8 +6347,13 @@ function dashboardMonthOptions() {
  * still line up. */
 /** Per-day money series for the dashboard mega chart, honoring the current
  * mode (spend/income/net) and any selected pill. Net = income value − spend. */
+/** Running total through the month for whichever mode is selected. All three
+ * are cumulative so the line always answers "where do I stand so far", and the
+ * endpoint always equals the headline figure. Per-day values were only really
+ * showing when transactions happened. */
 function dashMoneySeries(key) {
-  if (dashMoneyMode === "income") return incomeDailyForMonth(key, dashIncomePill);
+  const runningTotal = (arr) => { let r = 0; return arr.map(v => (r += v)); };
+  if (dashMoneyMode === "income") return runningTotal(incomeDailyForMonth(key, dashIncomePill));
   if (dashMoneyMode === "net") {
     // Net is a RUNNING total through the month: start at 0, each day add that
     // day's income and subtract that day's spend. The line's endpoint equals
@@ -6213,14 +6365,13 @@ function dashMoneySeries(key) {
     let run = 0;
     return inc.map((v, i) => (run += v - spend[i]));
   }
-  return spendDailyForMonth(key, dashSpendPill);
+  return runningTotal(spendDailyForMonth(key, dashSpendPill));
 }
-/** Money total for a card header. Net is a running total, so its "total" is
- * the final running value; spend/income are per-day, so we sum them. */
+/** Every mode is a running total now, so the headline is simply where the line
+ * ends. */
 function dashMoneySeriesTotal(key) {
   const series = dashMoneySeries(key);
-  if (dashMoneyMode === "net") return series.length ? series[series.length - 1] : 0;
-  return sum(series);
+  return series.length ? series[series.length - 1] : 0;
 }
 
 function drawDashboardCharts() {
@@ -6284,16 +6435,16 @@ function drawDashboardCharts() {
   if (moneyEl) {
     let moneyMain = dashMoneySeries(dashMonthKey);
     const isNet = dashMoneyMode === "net";
-    // A running total (net) shouldn't draw a flat line from today to month-end;
-    // cut it off at today for the current month, same as the feed chart.
-    if (isNet) {
-      const isCurrentM = dashMonthKey === monthKeyOf(todayStr());
+    // Every mode is a running total now, and none of them should draw a flat
+    // line from today to month-end -- that would imply the rest of the month
+    // is already known. Cut the current month off at today, same as feed.
+    if (dashMonthKey === monthKeyOf(todayStr())) {
       const todayD = Number(todayStr().slice(8, 10));
-      if (isCurrentM) moneyMain = moneyMain.map((v, i) => (i < todayD ? v : null));
+      moneyMain = moneyMain.map((v, i) => (i < todayD ? v : null));
     }
     // Color: spend slate, income sage, net split by sign per segment (green
     // above zero, red below) via a segment callback that looks at each point.
-    const baseColor = dashMoneyMode === "income" ? "#8A9A5B" : dashMoneyMode === "spend" ? "#7A8FA6" : "#D4A017";
+    const baseColor = dashMoneyMode === "income" ? "#8A9A5B" : dashMoneyMode === "spend" ? "#B84C3E" : "#D4A017";
     const mainDs = {
       label: mainLabel, data: moneyMain, borderColor: baseColor, backgroundColor: baseColor + "22",
       tension: 0.2, pointRadius: 2, fill: !isNet, spanGaps: false,
@@ -10652,6 +10803,12 @@ init();
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("sw.js").then((reg) => {
+      // Carry any session that predates this build into the worker-readable
+      // store, so Background Sync works without waiting for the next sign-in.
+      if (getAuthToken()) mirrorTokenForServiceWorker(getAuthToken());
+      // Nudge the queue whenever a worker is ready, in case changes were left
+      // behind by a previous session that closed while offline.
+      requestBackgroundOutboxSync();
       reg.addEventListener("updatefound", () => {
         const newWorker = reg.installing;
         if (!newWorker) return;
@@ -10790,3 +10947,83 @@ window.addEventListener("appinstalled", () => {
   if (banner) banner.remove();
   showToast("Installed! Launch it from your home screen next time.", "create");
 });
+
+// ---------------------------------------------------------------------------
+// Push notification opt-in
+//
+// Two separate gates, deliberately: the browser's own permission prompt, and
+// per-category switches in Settings. Turning every category off unsubscribes
+// the device entirely rather than leaving a live subscription that receives
+// nothing -- so "off" really means the server stops holding a channel to this
+// phone. Android's own app notification settings remain the final say, and
+// revoking there simply stops delivery.
+// ---------------------------------------------------------------------------
+const PUSH_PREF_KEY = "coopLedgerPushPrefs";
+const PUSH_CATEGORIES = [
+  { key: "bedding", label: "Bedding due for a clean-out", emoji: "🍂" },
+  { key: "hatch", label: "Hatch milestones (lockdown, hatch day)", emoji: "🐣" },
+  { key: "supplies", label: "Feed running low", emoji: "🌾" },
+];
+
+function getPushPrefs() {
+  try { return { bedding: true, hatch: true, supplies: true, ...JSON.parse(localStorage.getItem(PUSH_PREF_KEY) || "{}") }; }
+  catch (_) { return { bedding: true, hatch: true, supplies: true }; }
+}
+function setPushPrefs(prefs) { localStorage.setItem(PUSH_PREF_KEY, JSON.stringify(prefs)); }
+
+function pushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+/** base64url VAPID key -> the Uint8Array the PushManager expects. */
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+async function getPushSubscription() {
+  if (!pushSupported()) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+
+/** Asks permission if needed, subscribes, and registers with the server. */
+async function enablePushNotifications() {
+  if (!pushSupported()) throw new Error("This browser doesn't support push notifications.");
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    throw new Error(permission === "denied"
+      ? "Notifications are blocked for this site. You'll need to re-allow them in your browser or Android app settings."
+      : "Notification permission wasn't granted.");
+  }
+  const { public_key } = await apiGet("/api/push/public-key");
+  if (!public_key) throw new Error("The server hasn't got push configured.");
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true, // required by Chrome: every push must show a notification
+      applicationServerKey: urlBase64ToUint8Array(public_key),
+    });
+  }
+  await apiPost("/api/push/subscribe", { subscription: sub.toJSON(), prefs: getPushPrefs() });
+  return true;
+}
+
+/** Drops the subscription both locally and on the server, so nothing is left
+ * pointing at this device. */
+async function disablePushNotifications() {
+  const sub = await getPushSubscription();
+  if (!sub) return;
+  try { await apiPost("/api/push/unsubscribe", { endpoint: sub.endpoint }); } catch (_) {}
+  try { await sub.unsubscribe(); } catch (_) {}
+}
+
+/** Re-sends the current category choices for an already-subscribed device. */
+async function syncPushPrefs() {
+  const sub = await getPushSubscription();
+  if (!sub) return;
+  await apiPost("/api/push/subscribe", { subscription: sub.toJSON(), prefs: getPushPrefs() });
+}

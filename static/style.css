@@ -1041,3 +1041,8 @@ tr:hover td { background: var(--surface-raised); }
 .note-check-item { display: flex; align-items: flex-start; gap: 6px; margin: 2px 0; cursor: pointer; }
 .note-check-item.checked { color: var(--text-dim); text-decoration: line-through; }
 .note-check-box { flex: 0 0 auto; }
+
+/* Notification settings rows: label left, switch right, hairline between. */
+.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); font-size: 13px; }
+.switch-row:last-child { border-bottom: none; }
+.switch-row input[type="checkbox"] { flex: 0 0 auto; width: 18px; height: 18px; accent-color: var(--sage); cursor: pointer; }
