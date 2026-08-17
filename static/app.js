@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-208";
+const APP_VERSION = "2026.07.13-210";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -131,7 +131,7 @@ const FLOCK_DATE_FIELDS = [
 ];
 let flockFilters = { status: "Active", type: "", dateField: "", year: "", location: "" };
 let flockFiltersOpen = false;
-let flockSort = "name"; // "name" | "age" | "target"
+let flockSort = "newest"; // "newest" | "name" | "age" | "target"
 // Health log scope. Defaults to active birds only -- once a bird is
 // processed or lost, its old health notes are history that would otherwise
 // pile up at the bottom of the list and bury the entries you'd actually act
@@ -5890,6 +5890,17 @@ function displayWeight(lbValue) {
   if (isNaN(n)) return "";
   return getWeightUnit() === "kg" ? String(+(n * LB_TO_KG).toFixed(2)) : String(+n.toFixed(2));
 }
+/** Weight as read-only display text, honoring the same lb+oz convention as
+ * weightEntryFieldHtml -- "5 lb 15 oz" in lb mode (how a kitchen scale reads
+ * out), a plain decimal ("2.69 kg") in kg mode. Used anywhere a weight shows
+ * as a label rather than an editable field (flock cards, list rows). */
+function weightLabel(lbValue) {
+  if (lbValue == null || lbValue === "") return "";
+  if (getWeightUnit() !== "lb") return `${displayWeight(lbValue)} ${getWeightUnit()}`;
+  const { lb, oz } = lbToLbOz(lbValue);
+  if (lb == null) return "";
+  return oz > 0 ? `${lb} lb ${oz} oz` : `${lb} lb`;
+}
 /** Converts a value the user typed (in their preferred unit) back to lb
  * for storage -- the inverse of displayWeight. Returns null for empty
  * input so it's safe to drop straight into a payload's numeric field. */
@@ -7215,14 +7226,23 @@ function applyFlockFilters(birds) {
 }
 
 function flockSortValue(rep, mode) {
+  // Ascending modes push "no known date" to the end with a fallback that
+  // sorts after everything real; "newest" is descending, so it needs the
+  // opposite fallback -- otherwise reversing the comparator would also
+  // reverse where the undated ones land, putting them first instead of last.
   if (mode === "age") return rep.hatch_date || rep.acquired_date || "9999-99-99";
+  if (mode === "newest") return rep.hatch_date || rep.acquired_date || "0000-00-00";
   if (mode === "target") return rep.target_harvest_date || "9999-99-99";
   return (rep.name || "").toLowerCase();
 }
 function flockSortComparator(mode) {
+  // "newest" reuses the same hatch/acquired date as "age" -- just descending
+  // instead of ascending, so the most recently started batch or bird lands at
+  // the top without needing its own date logic to drift out of sync.
+  const dir = mode === "newest" ? -1 : 1;
   return (a, b) => {
     const va = flockSortValue(a, mode), vb = flockSortValue(b, mode);
-    return va < vb ? -1 : va > vb ? 1 : 0;
+    return (va < vb ? -1 : va > vb ? 1 : 0) * dir;
   };
 }
 
@@ -7249,7 +7269,17 @@ function summarizeGroup(birds) {
   const weighedCount = processed.filter(b => Number(b.harvest_weight) > 0).length;
   const avgWeight = weighedCount > 0 ? totalWeight / weighedCount : 0;
   const first = birds[0];
-  return { count: birds.length, statusSummary, totalWeight, totalValue, avgWeight, processedCount: processed.length, breed: first.breed, type: first.type, hatch_date: first.hatch_date, acquired_date: first.acquired_date, target_harvest_date: first.target_harvest_date };
+  // A batch's birds don't all have to share a breed -- a "2026 Layers" batch
+  // might be a mix of Rhode Island Reds, Leghorns, and whatever else. Rather
+  // than silently showing just whichever bird happened to be first (which
+  // used to make a mixed batch look single-breed), list distinct breeds when
+  // there are few enough to read at a glance, or say plainly that it's mixed.
+  const distinctBreeds = [...new Set(birds.map(b => b.breed).filter(Boolean))];
+  const breedLabel = distinctBreeds.length === 0 ? null
+    : distinctBreeds.length === 1 ? distinctBreeds[0]
+    : distinctBreeds.length <= 3 ? distinctBreeds.join(", ")
+    : `${distinctBreeds.length} breeds mixed`;
+  return { count: birds.length, statusSummary, totalWeight, totalValue, avgWeight, processedCount: processed.length, breed: breedLabel, type: first.type, hatch_date: first.hatch_date, acquired_date: first.acquired_date, target_harvest_date: first.target_harvest_date };
 }
 
 function statusTone(status) {
@@ -7275,7 +7305,7 @@ function birdCardHtml(b) {
   const displayName = esc(b.name);
   const age = ageFromDate(b.hatch_date || b.acquired_date);
   const statusDetail = b.status === "Processed"
-    ? (b.harvest_weight ? `${displayWeight(b.harvest_weight)} ${getWeightUnit()}` : "")
+    ? (b.harvest_weight ? weightLabel(b.harvest_weight) : "")
     : b.status === "Deceased"
     ? `${fmtDate(b.death_date)}`
     : "";
@@ -7304,8 +7334,7 @@ function birdCardHtml(b) {
       ${(b.breed || b.type) ? `<div class="flock-card-breed">${esc(b.breed || b.type)}</div>` : ""}
       <div class="flock-card-sub">${age}${b.gender ? ` · ${b.gender === "Hen" ? "♀" : "♂"} ${b.gender}` : ""}${statusDetail ? " · " + statusDetail : ""}</div>
       ${b.status === "Active" && b.target_harvest_date ? `<div class="flock-card-sub">target ${fmtDate(b.target_harvest_date)}</div>` : ""}
-      ${b.location ? `<span class="stamp tone-slate" style="margin-top:2px">📍 ${esc(b.location)}</span>` : ""}
-      ${showRate ? `<span class="stamp tone-slate" style="margin-top:4px">${displayWeight(weight)} ${getWeightUnit()} @ ${fmtMoney(displayPricePerLb(pricePerLb))}/${getWeightUnit()}</span>` : ""}
+      ${showRate ? `<span class="stamp tone-slate flock-card-weight" style="margin-top:4px">${weightLabel(weight)} @ ${fmtMoney(displayPricePerLb(pricePerLb))}/${getWeightUnit()}</span>` : ""}
       ${meatValue > 0 ? `<span class="stamp stamp-lg tone-gold" style="margin-top:4px">${fmtMoney(meatValue)}</span>` : ""}
     </div>
   </div>`;
@@ -7332,8 +7361,6 @@ function groupCardHtml(batchName, filteredBirds, totalCount) {
   // 8 at 5.6 lb tells you something a bare total can't, since totals scale
   // with however many birds happened to be processed).
   const avgWeight = processedCount > 0 ? totalWeight / processedCount : 0;
-  const locations = new Set(filteredBirds.map(b => b.location || null));
-  const sharedLocation = locations.size === 1 ? [...locations][0] : null;
   // The group card's own look mirrors whatever styling the birds inside it
   // actually share -- if they were all colored via "Apply to whole batch,"
   // the collapsed card matches; if they're mixed (or never styled), it just
@@ -7361,9 +7388,8 @@ function groupCardHtml(batchName, filteredBirds, totalCount) {
       ${nameHtml}
       <div class="flock-card-sub">${s.statusSummary}${totalCount && totalCount !== filteredBirds.length ? ` · ${totalCount} in batch` : ""}</div>
       ${hasActive && s.target_harvest_date ? `<div style="margin-top:2px">${harvestCountdownHtml(s.target_harvest_date)}</div>` : ""}
-      ${sharedLocation ? `<span class="stamp tone-slate" style="margin-top:2px">📍 ${esc(sharedLocation)}</span>` : ""}
       ${processedCount > 0 ? `
-        <span class="stamp tone-slate" style="align-self:flex-start;margin-top:4px">${displayWeight(avgWeight)} ${getWeightUnit()} avg · ${displayWeight(totalWeight)} ${getWeightUnit()} total</span>
+        <span class="stamp tone-slate flock-card-weight" style="align-self:flex-start;margin-top:4px">${weightLabel(avgWeight)} avg · ${displayWeight(totalWeight)} ${getWeightUnit()} total</span>
         <span class="stamp tone-rust" style="align-self:flex-start;margin-top:4px">${processedCount} Processed</span>
         ${totalValue > 0 ? `<span class="stamp stamp-lg tone-gold" style="align-self:flex-start;margin-top:4px">${fmtMoney(totalValue)}</span>` : ""}
       ` : ""}
@@ -7372,8 +7398,9 @@ function groupCardHtml(batchName, filteredBirds, totalCount) {
 }
 
 const FLOCK_SORT_OPTIONS = [
+  { value: "newest", label: "Newest first" },
   { value: "name", label: "Name" },
-  { value: "age", label: "Age" },
+  { value: "age", label: "Oldest first" },
   { value: "target", label: "Target harvest" },
 ];
 
@@ -7428,9 +7455,17 @@ function renderFlockBirds() {
     const items = [];
     ungrouped.forEach(b => items.push({ isMeat: isMeat(b), rep: b, html: birdCardHtml(b) }));
     Object.keys(groups).forEach(name => {
-      const birds = groups[name];
-      const rep = { ...summarizeGroup(birds), name };
-      items.push({ isMeat: isMeat(birds[0]), rep, html: groupCardHtml(name, birds, totalByBatch[name]) });
+      // `groups[name]` is status-filtered (e.g. Active-only by default) --
+      // right for deciding whether this batch shows up at all (a batch with
+      // zero birds matching the filter has no entry here and correctly drops
+      // out of view). But the card's own numbers -- status breakdown, average
+      // and total dressed weight, value -- need the batch's FULL history: a
+      // batch with 8 active and 12 already-processed birds should still show
+      // "51 lb total" while you're looking at the active flock, not silently
+      // read zero because those 12 got filtered out upstream.
+      const fullBatchBirds = STATE.birds.filter(b => b.batch_name === name);
+      const rep = { ...summarizeGroup(fullBatchBirds), name };
+      items.push({ isMeat: isMeat(fullBatchBirds[0]), rep, html: groupCardHtml(name, fullBatchBirds, totalByBatch[name]) });
     });
     items.sort((a, b) => flockSortComparator(flockSort)(a.rep, b.rep));
     const layerItems = items.filter(it => !it.isMeat);
@@ -7482,6 +7517,18 @@ function renderFlockBirds() {
 
     ${bodyHtml}
     <div id="birdFormHost"></div>
+    ${selectionState.birds.mode ? `
+    <div class="floating-selection-spacer"></div>
+    <div class="floating-selection-bar">
+      <div class="floating-selection-inner">
+        <span>${selectedBirdIds.size > 0 ? `<strong style="color:var(--text)">${selectedBirdIds.size}</strong> selected` : "Tap birds to select"}</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${selectedBirdIds.size > 0 ? `<button class="btn ghost small" id="floatingBulkEdit">Bulk edit</button><button class="btn btn-close small" id="floatingBulkDelete">Delete</button>` : ""}
+          <button class="btn btn-close small" id="floatingCancelSelect">✕ Cancel</button>
+        </div>
+      </div>
+    </div>
+    ` : ""}
   `;
 
   document.getElementById("flockViewGrid").addEventListener("click", () => { setFlockView("grid"); renderFlockBirds(); });
@@ -7519,15 +7566,31 @@ function renderFlockBirds() {
   if (clearSelBtn) clearSelBtn.addEventListener("click", () => { selectedBirdIds.clear(); renderFlockBirds(); });
   const bulkEditBtn = document.getElementById("bulkEditBtn");
   if (bulkEditBtn) bulkEditBtn.addEventListener("click", () => showBulkEditForm());
-  const bulkDeleteBtn = document.getElementById("bulkDeleteBtn");
-  if (bulkDeleteBtn) bulkDeleteBtn.addEventListener("click", async () => {
+  const runBulkDeleteBirds = async () => {
     const count = selectedBirdIds.size;
     if (!(await showConfirmDialog(`Delete ${count} selected bird${count !== 1 ? "s" : ""}? This can't be undone.`))) return;
     await localBulkDeleteBirds([...selectedBirdIds], currentCoopId);
     showToast(`${count} bird${count !== 1 ? "s" : ""} deleted`, "delete");
     selectedBirdIds.clear();
     refreshAndRender();
+  };
+  const bulkDeleteBtn = document.getElementById("bulkDeleteBtn");
+  if (bulkDeleteBtn) bulkDeleteBtn.addEventListener("click", runBulkDeleteBirds);
+
+  // Floating mobile bar: mirrors the toggle/bulk-edit/bulk-delete buttons
+  // above so selection can be exited (or acted on) without scrolling back to
+  // the top of a long flock list -- the actual friction being fixed here.
+  const floatingCancel = document.getElementById("floatingCancelSelect");
+  if (floatingCancel) floatingCancel.addEventListener("click", () => {
+    selectionState.birds.mode = false;
+    selectedBirdIds.clear();
+    renderFlockBirds();
   });
+  const floatingBulkEdit = document.getElementById("floatingBulkEdit");
+  if (floatingBulkEdit) floatingBulkEdit.addEventListener("click", () => showBulkEditForm());
+  const floatingBulkDelete = document.getElementById("floatingBulkDelete");
+  if (floatingBulkDelete) floatingBulkDelete.addEventListener("click", runBulkDeleteBirds);
+
   if (currentOpenBatchName) showBatchPanel(currentOpenBatchName);
 }
 
@@ -7567,7 +7630,7 @@ function showBatchPanel(batchName) {
     <div class="form-block">
       <div class="form-head"><span>${esc(batchName)} -- ${birds.length} birds</span><button class="icon-btn icon-btn-close" id="closeBatchPanel">✕</button></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
-        <div class="dim" style="font-size:12px">${esc(s.statusSummary)}${s.breed ? ` · ${esc(s.breed)}` : ""}${s.avgWeight > 0 ? ` · ${displayWeight(s.avgWeight)} ${getWeightUnit()} avg dressed` : ""}${s.processedCount > 0 && s.totalValue > 0 ? ` · ${fmtMoney(s.totalValue)} value` : ""}</div>
+        <div class="dim" style="font-size:12px">${esc(s.statusSummary)}${s.breed ? ` · ${esc(s.breed)}` : ""}${s.avgWeight > 0 ? ` · ${weightLabel(s.avgWeight)} avg dressed` : ""}${s.processedCount > 0 && s.totalValue > 0 ? ` · ${fmtMoney(s.totalValue)} value` : ""}</div>
         <button class="btn ghost small" id="openBatchEdit" style="margin-left:auto">✎ Edit group</button>
       </div>
 
@@ -7822,8 +7885,8 @@ function showBulkEditForm() {
       <label class="field"><span>Acquired date</span><input type="date" id="be_acquired"></label>
       <label class="field"><span>Target harvest date</span><input type="date" id="be_target"></label>
     </div>
-    <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="be_set_batch" style="width:auto"><span>Set batch (leave name blank to remove from any batch)</span></label>
-    <label class="field" style="margin-top:6px"><span>Batch name</span><input id="be_batch" placeholder="e.g. Spring Cornish Cross"></label>
+    <label class="field"><span>Batch name</span><input id="be_batch" placeholder="(no change) e.g. Spring Cornish Cross"></label>
+    <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="be_remove_batch" style="width:auto"><span>Remove from batch (clears it, ignoring anything typed above)</span></label>
     <div class="dim" style="font-size:11px;margin:12px 0 4px">If setting Status to Processed, these fill in the harvest record:</div>
     <div class="grid-form">
       <label class="field"><span>Harvest date</span><input type="date" id="be_harvest_date"></label>
@@ -7854,7 +7917,7 @@ function showBulkEditForm() {
     const hatchDate = document.getElementById("be_hatch").value;
     const acquiredDate = document.getElementById("be_acquired").value;
     const batch = document.getElementById("be_batch").value;
-    const setBatch = document.getElementById("be_set_batch").checked;
+    const removeBatch = document.getElementById("be_remove_batch").checked;
     const target = document.getElementById("be_target").value;
     const harvestDate = document.getElementById("be_harvest_date").value;
     // null means the field(s) were left blank -- "no change" here, unlike the
@@ -7872,7 +7935,13 @@ function showBulkEditForm() {
     if (location) updates.location = location;
     if (hatchDate) updates.hatch_date = hatchDate;
     if (acquiredDate) updates.acquired_date = acquiredDate;
-    if (setBatch) updates.batch_name = batch.trim() || null;
+    // Typing a name is unambiguous, so it applies on its own -- same as every
+    // other field in this form. The checkbox is only needed for the one
+    // genuinely ambiguous case: an empty field could mean "didn't touch this"
+    // or "take them out of their batch," so removal needs an explicit signal.
+    const batchTrimmed = batch.trim();
+    if (batchTrimmed) updates.batch_name = batchTrimmed;
+    else if (removeBatch) updates.batch_name = null;
     if (target) updates.target_harvest_date = target;
     // Layers don't have a harvest date -- clear it out unless this same
     // bulk edit is also explicitly setting a new one.

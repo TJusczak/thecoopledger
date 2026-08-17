@@ -548,12 +548,13 @@ tr:hover td { background: var(--surface-raised); }
   align-items: flex-start; text-align: left; padding: 8px 12px;
   flex-direction: column; justify-content: center; gap: 2px; min-width: 0;
 }
-/* The location and price-per-lb stamps are grid-card detail -- in a list row
-   they'd each claim a line and blow the row height up. Name, breed, and the
-   summary line carry the identity; the money still shows, since that's the
-   one number worth scanning a processed flock for. */
-.flock-grid.view-list .flock-card-info .stamp.tone-slate { display: none; }
+/* The location stamp is grid-card detail -- in a list row it'd claim its own
+   line and blow the row height up. Name, breed, and the summary line carry
+   the identity. The weight/price stamp is excepted: it's the one number
+   worth scanning a processed flock for, so it stays visible in both views. */
+.flock-grid.view-list .flock-card-info .stamp.tone-slate:not(.flock-card-weight) { display: none; }
 .flock-grid.view-list .flock-card-info .stamp.tone-gold { margin-top: 2px !important; }
+.flock-grid.view-list .flock-card-info .stamp.flock-card-weight { margin-top: 2px !important; }
 .flock-grid.view-list .flock-card-name {
   font-size: 14px;
   /* Flex items default to min-width:auto, so a long nowrap name refuses to
@@ -1046,3 +1047,29 @@ tr:hover td { background: var(--surface-raised); }
 .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); font-size: 13px; }
 .switch-row:last-child { border-bottom: none; }
 .switch-row input[type="checkbox"] { flex: 0 0 auto; width: 18px; height: 18px; accent-color: var(--sage); cursor: pointer; }
+
+/* Floating selection bar: while bulk-selecting birds, "cancel" and the bulk
+   actions stay reachable without scrolling back to the top toolbar -- the
+   same fixed-bottom convention used for the settings sub-nav, clearing the
+   app's bottom nav bar. Desktop already has the top toolbar in view at all
+   times, so this only kicks in where scrolling is the actual problem. */
+.floating-selection-bar { display: none; }
+.floating-selection-spacer { display: none; }
+@media (max-width: 700px) {
+  .floating-selection-spacer { display: block; height: calc(60px + 76px + env(safe-area-inset-bottom)); }
+  .floating-selection-bar {
+    display: block;
+    position: fixed;
+    left: 0; right: 0;
+    bottom: calc(76px + env(safe-area-inset-bottom));
+    z-index: 48;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 10px 14px;
+  }
+  .floating-selection-inner {
+    max-width: 1180px; margin: 0 auto;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+    font-size: 13px;
+  }
+}
