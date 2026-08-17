@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-207";
+const APP_VERSION = "2026.07.13-208";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -7246,8 +7246,10 @@ function summarizeGroup(birds) {
   const processed = birds.filter(b => b.status === "Processed");
   const totalWeight = processed.reduce((s, b) => s + (Number(b.harvest_weight) || 0), 0);
   const totalValue = processed.reduce((s, b) => s + (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || 0), 0);
+  const weighedCount = processed.filter(b => Number(b.harvest_weight) > 0).length;
+  const avgWeight = weighedCount > 0 ? totalWeight / weighedCount : 0;
   const first = birds[0];
-  return { count: birds.length, statusSummary, totalWeight, totalValue, processedCount: processed.length, breed: first.breed, type: first.type, hatch_date: first.hatch_date, acquired_date: first.acquired_date, target_harvest_date: first.target_harvest_date };
+  return { count: birds.length, statusSummary, totalWeight, totalValue, avgWeight, processedCount: processed.length, breed: first.breed, type: first.type, hatch_date: first.hatch_date, acquired_date: first.acquired_date, target_harvest_date: first.target_harvest_date };
 }
 
 function statusTone(status) {
@@ -7325,6 +7327,11 @@ function groupCardHtml(batchName, filteredBirds, totalCount) {
   const totalWeight = processed.reduce((sum, b) => sum + (Number(b.harvest_weight) || 0), 0);
   const totalValue = processed.reduce((sum, b) => sum + (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || 0), 0);
   const avgPricePerLb = totalWeight > 0 ? totalValue / totalWeight : 0;
+  // Average dressed weight per bird -- what actually lets one batch be
+  // compared against another (a batch of 20 at 4.2 lb average vs. a batch of
+  // 8 at 5.6 lb tells you something a bare total can't, since totals scale
+  // with however many birds happened to be processed).
+  const avgWeight = processedCount > 0 ? totalWeight / processedCount : 0;
   const locations = new Set(filteredBirds.map(b => b.location || null));
   const sharedLocation = locations.size === 1 ? [...locations][0] : null;
   // The group card's own look mirrors whatever styling the birds inside it
@@ -7356,7 +7363,7 @@ function groupCardHtml(batchName, filteredBirds, totalCount) {
       ${hasActive && s.target_harvest_date ? `<div style="margin-top:2px">${harvestCountdownHtml(s.target_harvest_date)}</div>` : ""}
       ${sharedLocation ? `<span class="stamp tone-slate" style="margin-top:2px">📍 ${esc(sharedLocation)}</span>` : ""}
       ${processedCount > 0 ? `
-        <span class="stamp tone-slate" style="align-self:flex-start;margin-top:4px">${displayWeight(totalWeight)} ${getWeightUnit()} @ ${fmtMoney(displayPricePerLb(avgPricePerLb))}/${getWeightUnit()}</span>
+        <span class="stamp tone-slate" style="align-self:flex-start;margin-top:4px">${displayWeight(avgWeight)} ${getWeightUnit()} avg · ${displayWeight(totalWeight)} ${getWeightUnit()} total</span>
         <span class="stamp tone-rust" style="align-self:flex-start;margin-top:4px">${processedCount} Processed</span>
         ${totalValue > 0 ? `<span class="stamp stamp-lg tone-gold" style="align-self:flex-start;margin-top:4px">${fmtMoney(totalValue)}</span>` : ""}
       ` : ""}
@@ -7560,7 +7567,7 @@ function showBatchPanel(batchName) {
     <div class="form-block">
       <div class="form-head"><span>${esc(batchName)} -- ${birds.length} birds</span><button class="icon-btn icon-btn-close" id="closeBatchPanel">✕</button></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
-        <div class="dim" style="font-size:12px">${esc(s.statusSummary)}${s.breed ? ` · ${esc(s.breed)}` : ""}${s.processedCount > 0 && s.totalValue > 0 ? ` · ${fmtMoney(s.totalValue)} value` : ""}</div>
+        <div class="dim" style="font-size:12px">${esc(s.statusSummary)}${s.breed ? ` · ${esc(s.breed)}` : ""}${s.avgWeight > 0 ? ` · ${displayWeight(s.avgWeight)} ${getWeightUnit()} avg dressed` : ""}${s.processedCount > 0 && s.totalValue > 0 ? ` · ${fmtMoney(s.totalValue)} value` : ""}</div>
         <button class="btn ghost small" id="openBatchEdit" style="margin-left:auto">✎ Edit group</button>
       </div>
 
