@@ -339,6 +339,7 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 }
 .stamp.tone-rust { border-color: var(--rust); color: var(--rust); }
 .stamp.tone-gold { border-color: var(--gold); color: var(--gold); }
+.stamp.tone-sage { border-color: var(--sage); color: var(--sage); }
 .stamp.tone-slate { border-color: var(--slate); color: var(--slate); }
 .stamp.tone-danger { border-color: var(--danger); color: var(--danger); }
 .stamp-lg { font-size: 14px; padding: 3px 10px; border-width: 2px; }

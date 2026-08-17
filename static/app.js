@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-210";
+const APP_VERSION = "2026.07.13-211";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -3805,6 +3805,20 @@ function meatProcessedValue(count, weight, value) {
   if (weight > 0) return `${displayWeight(weight)} ${getWeightUnit()} · ${fmtMoney(value)}`;
   return `${count} bird${count !== 1 ? "s" : ""}`;
 }
+/** Sub-line for a meat-processed stat card: bird count plus per-bird
+ * averages, rather than the total value again -- the headline value from
+ * meatProcessedValue() above already IS the total, so restating it (or, in
+ * the common case of nothing sold yet, restating the exact same number) just
+ * duplicated it. Averages are the one thing the headline doesn't say. */
+function meatProcessedSub(count, weight, value) {
+  if (count === 0) return "";
+  const avgWeight = weight > 0 ? weight / count : 0;
+  const avgValue = value > 0 ? value / count : 0;
+  const bits = [`${count} bird${count !== 1 ? "s" : ""}`];
+  if (avgWeight > 0) bits.push(`${weightLabel(avgWeight)} avg`);
+  if (avgValue > 0) bits.push(`${fmtMoney(avgValue)}/bird`);
+  return bits.join(" · ");
+}
 
 /** Months elapsed since the coop's first recorded activity, at least 1.
  * Used for all-time "per month" averages -- dividing a lifetime total by the
@@ -3851,7 +3865,7 @@ function renderAllTimeStatsSection() {
       <div class="stat"><div class="stat-label">Total birds added, all time</div><div class="stat-value">${totalBirdsAdded}</div><div class="stat-sub">${s.layers + s.meatActive} currently active</div>${statSpark(ty.newBirds)}</div>
       <div class="stat tone-slate"><div class="stat-label">Losses, all time</div><div class="stat-value">${s.lossesAll}</div><div class="stat-sub">${s.lossesThisYear} this year</div>${statSpark(ty.losses)}</div>
       <div class="stat tone-gold"><div class="stat-label">Eggs collected, all time</div><div class="stat-value">${s.totalEggs}</div><div class="stat-sub">${(s.totalEggs / 12).toFixed(1)} dozen · ${valueBreakdownHtml(s.eggIncomeAll, s.eggActualIncomeAll)}</div>${statSpark(ty.eggs)}</div>
-      <div class="stat tone-sage"><div class="stat-label">Meat processed, all time</div><div class="stat-value">${meatProcessedValue(s.processed, s.totalWeight, s.meatTotalValueAll)}</div><div class="stat-sub">${s.processed > 0 ? `${s.processed} bird${s.processed !== 1 ? "s" : ""} · ${valueBreakdownHtml(s.meatIncomeAll, s.meatActualIncomeAll)}` : ""}</div>${statSpark(ty.meatLb)}</div>
+      <div class="stat tone-sage"><div class="stat-label">Meat processed, all time</div><div class="stat-value">${meatProcessedValue(s.processed, s.totalWeight, s.meatTotalValueAll)}</div><div class="stat-sub">${meatProcessedSub(s.processed, s.totalWeight, s.meatTotalValueAll)}</div>${statSpark(ty.meatLb)}</div>
       <div class="stat tone-slate"><div class="stat-label">Spent, all time</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${fmtMoney(s.totalExpenses / monthsSinceCoopStart())}/month average</div>${statSpark(ty.spent)}</div>
       <div class="stat tone-gold"><div class="stat-label">Value produced, all time</div><div class="stat-value">${fmtMoney(s.incomeAll)}</div><div class="stat-sub">eggs + meat + other income</div>${statSpark(ty.value)}</div>
       <div class="stat ${s.netAll >= 0 ? "tone-sage" : ""}" style="${s.netAll < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net savings, all time</div><div class="stat-value">${fmtMoney(s.netAll)}</div><div class="stat-sub">value − spend</div>${statSpark(ty.net)}</div>
@@ -5589,7 +5603,7 @@ function renderYearReviewSection() {
 
     <div class="grid-stats-2" style="margin-bottom:16px">
       <div class="stat tone-gold"><div class="stat-label">Eggs collected</div><div class="stat-value">${s.eggCount}</div><div class="stat-sub">${(s.eggCount / 12).toFixed(1)} dozen · ${valueBreakdownHtml(s.eggValue, s.eggActualIncome)}</div>${statSpark(tm.eggs)}${yoy(s.eggCount, sp && sp.eggCount)}</div>
-      <div class="stat tone-sage"><div class="stat-label">Meat processed</div><div class="stat-value">${meatProcessedValue(s.processedCount, s.processedWeight, s.meatTotalValue)}</div><div class="stat-sub">${s.processedCount > 0 ? `${s.processedCount} bird${s.processedCount !== 1 ? "s" : ""} · ${valueBreakdownHtml(s.meatValue, s.meatActualIncome)}` : ""}</div>${statSpark(tm.meatLb)}${yoy(s.processedWeight, sp && sp.processedWeight)}</div>
+      <div class="stat tone-sage"><div class="stat-label">Meat processed</div><div class="stat-value">${meatProcessedValue(s.processedCount, s.processedWeight, s.meatTotalValue)}</div><div class="stat-sub">${meatProcessedSub(s.processedCount, s.processedWeight, s.meatTotalValue)}</div>${statSpark(tm.meatLb)}${yoy(s.processedWeight, sp && sp.processedWeight)}</div>
       <div class="stat" style="${s.lossesInYear ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Losses</div><div class="stat-value">${s.lossesInYear}</div><div class="stat-sub">${s.newBirds} new bird${s.newBirds !== 1 ? "s" : ""} added</div>${statSpark(tm.losses)}${yoy(s.lossesInYear, sp && sp.lossesInYear, false)}</div>
       <div class="stat tone-slate"><div class="stat-label">Total spent</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${Object.keys(s.categoryBreakdown).length} categories</div>${statSpark(tm.spent)}${yoy(s.totalExpenses, sp && sp.totalExpenses, false)}</div>
       <div class="stat tone-gold"><div class="stat-label">Value produced</div><div class="stat-value">${fmtMoney(s.income)}</div><div class="stat-sub">eggs + meat</div>${statSpark(tm.value)}${yoy(s.income, sp && sp.income)}</div>
@@ -7335,7 +7349,7 @@ function birdCardHtml(b) {
       <div class="flock-card-sub">${age}${b.gender ? ` · ${b.gender === "Hen" ? "♀" : "♂"} ${b.gender}` : ""}${statusDetail ? " · " + statusDetail : ""}</div>
       ${b.status === "Active" && b.target_harvest_date ? `<div class="flock-card-sub">target ${fmtDate(b.target_harvest_date)}</div>` : ""}
       ${showRate ? `<span class="stamp tone-slate flock-card-weight" style="margin-top:4px">${weightLabel(weight)} @ ${fmtMoney(displayPricePerLb(pricePerLb))}/${getWeightUnit()}</span>` : ""}
-      ${meatValue > 0 ? `<span class="stamp stamp-lg tone-gold" style="margin-top:4px">${fmtMoney(meatValue)}</span>` : ""}
+      ${meatValue > 0 ? `<span class="stamp stamp-lg tone-sage" style="margin-top:4px">${fmtMoney(meatValue)}</span>` : ""}
     </div>
   </div>`;
 }
@@ -7391,7 +7405,7 @@ function groupCardHtml(batchName, filteredBirds, totalCount) {
       ${processedCount > 0 ? `
         <span class="stamp tone-slate flock-card-weight" style="align-self:flex-start;margin-top:4px">${weightLabel(avgWeight)} avg · ${displayWeight(totalWeight)} ${getWeightUnit()} total</span>
         <span class="stamp tone-rust" style="align-self:flex-start;margin-top:4px">${processedCount} Processed</span>
-        ${totalValue > 0 ? `<span class="stamp stamp-lg tone-gold" style="align-self:flex-start;margin-top:4px">${fmtMoney(totalValue)}</span>` : ""}
+        ${totalValue > 0 ? `<span class="stamp stamp-lg tone-sage" style="align-self:flex-start;margin-top:4px">${fmtMoney(totalValue)}</span>` : ""}
       ` : ""}
     </div>
   </div>`;
@@ -7446,9 +7460,9 @@ function renderFlockBirds() {
 
   let bodyHtml;
   if (filtered.length === 0) {
-    bodyHtml = `<div class="card"><div class="empty">${STATE.birds.length === 0 ? "No birds yet — add your first one." : "No birds match these filters."}</div></div>`;
+    bodyHtml = `<div class="card"><div class="empty">${STATE.birds.length === 0 ? "No birds yet — add your first one." : "No birds match these filters."}</div></div><div id="birdFormHost"></div>`;
   } else if (forcesFlatView) {
-    bodyHtml = `<div class="${flockGridClass()}">${filtered.map(b => birdCardHtml(b)).join("")}</div>`;
+    bodyHtml = `<div class="${flockGridClass()}">${filtered.map(b => birdCardHtml(b)).join("")}</div><div id="birdFormHost"></div>`;
   } else {
     const { ungrouped, groups } = groupBirds(filtered);
     const isMeat = (b) => b.type === "Meat";
@@ -7470,9 +7484,26 @@ function renderFlockBirds() {
     items.sort((a, b) => flockSortComparator(flockSort)(a.rep, b.rep));
     const layerItems = items.filter(it => !it.isMeat);
     const meatItems = items.filter(it => it.isMeat);
+    // The open batch's panel mounts as a full-width row directly under its
+    // own card -- grid-column:1/-1 breaks the mount point out of the grid's
+    // columns so it spans the row and pushes whatever comes after it down a
+    // row, rather than opening in one shared spot at the very bottom of the
+    // whole list, disconnected from the card that was actually tapped.
+    let batchSlotPlaced = false;
+    const withBatchSlot = (list) => list.map(it => {
+      if (!batchSlotPlaced && currentOpenBatchName && it.rep && it.rep.name === currentOpenBatchName) {
+        batchSlotPlaced = true;
+        return it.html + `<div id="birdFormHost" style="grid-column:1/-1"></div>`;
+      }
+      return it.html;
+    }).join("");
     bodyHtml = ""
-      + (layerItems.length ? `<div class="flock-section-header">${BIRD_TYPE_ICONS.layer.emoji} Layers</div><div class="${flockGridClass()}">${layerItems.map(it => it.html).join("")}</div>` : "")
-      + (meatItems.length ? `<div class="flock-section-header">${BIRD_TYPE_ICONS.meat.emoji} Meat birds</div><div class="${flockGridClass()}">${meatItems.map(it => it.html).join("")}</div>` : "");
+      + (layerItems.length ? `<div class="flock-section-header">${BIRD_TYPE_ICONS.layer.emoji} Layers</div><div class="${flockGridClass()}">${withBatchSlot(layerItems)}</div>` : "")
+      + (meatItems.length ? `<div class="flock-section-header">${BIRD_TYPE_ICONS.meat.emoji} Meat birds</div><div class="${flockGridClass()}">${withBatchSlot(meatItems)}</div>` : "");
+    // No batch open, or the open one isn't among the currently filtered
+    // items (e.g. filters changed out from under it) -- same fallback spot
+    // as before, so showBatchPanel always has somewhere to mount.
+    if (!batchSlotPlaced) bodyHtml += `<div id="birdFormHost"></div>`;
   }
 
   el.innerHTML = `
@@ -7516,7 +7547,6 @@ function renderFlockBirds() {
     ` : ""}
 
     ${bodyHtml}
-    <div id="birdFormHost"></div>
     ${selectionState.birds.mode ? `
     <div class="floating-selection-spacer"></div>
     <div class="floating-selection-bar">
@@ -7657,7 +7687,15 @@ function showBatchPanel(batchName) {
   document.getElementById("selectAllInBatch").addEventListener("click", () => {
     if (allSelected) batchIds.forEach(id => selectedBirdIds.delete(id));
     else batchIds.forEach(id => selectedBirdIds.add(id));
-    showBatchPanel(batchName);
+    // A selection changed inside the batch panel, so the OUTER page needs to
+    // redraw too -- that's where the floating selection bar lives. Calling
+    // renderFlockBirds (rather than just showBatchPanel again) does both: it
+    // rebuilds the page wrapper, and re-invokes showBatchPanel for us at its
+    // own tail since currentOpenBatchName is still set. Previously this only
+    // refreshed the panel's own content, so the floating bar wouldn't appear
+    // (or its "N selected" count wouldn't update) until something else
+    // triggered a full page render, like closing the panel.
+    renderFlockBirds();
   });
   const batchBulkEditBtn = document.getElementById("batchBulkEditBtn");
   if (batchBulkEditBtn) batchBulkEditBtn.addEventListener("click", () => showBulkEditForm());
@@ -7672,7 +7710,7 @@ function showBatchPanel(batchName) {
   });
   host.querySelectorAll(".bird-check").forEach(cb => cb.addEventListener("change", (e) => {
     if (e.target.checked) selectedBirdIds.add(cb.dataset.id); else selectedBirdIds.delete(cb.dataset.id);
-    showBatchPanel(batchName);
+    renderFlockBirds(); // same reasoning as selectAllInBatch above
   }));
   wireCardSelection(
     host.querySelectorAll("[data-edit]"),
@@ -7680,7 +7718,9 @@ function showBatchPanel(batchName) {
     "birds",
     () => birds.map(b => b.id),
     (id) => showBirdForm(STATE.birds.find(x => x.id === id)),
-    () => showBatchPanel(batchName)
+    renderFlockBirds // long-pressing a card inside an open batch panel now
+    // correctly shows the floating selection bar right away, instead of only
+    // after the panel is closed.
   );
   host.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async (e) => {
     e.stopPropagation();
