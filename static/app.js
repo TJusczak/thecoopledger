@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-205";
+const APP_VERSION = "2026.07.13-207";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -452,7 +452,12 @@ function ageFromDate(dateStr) {
   const days = Math.floor((new Date() - new Date(dateStr + "T00:00:00")) / 86400000);
   if (days < 0) return "Not hatched yet";
   if (days < 14) return `${days} day${days !== 1 ? "s" : ""} old`;
-  if (days < 56) { const w = Math.floor(days / 7); return `${w} week${w !== 1 ? "s" : ""} old`; }
+  // Weeks through ~4 months (140 days = 20 weeks): meat birds especially are
+  // conventionally tracked by week during this stretch (a "1 month old" bird
+  // reading as barely 4 weeks was misleading when it was really 7), and it
+  // reads naturally for young layers too. Months take over once weekly
+  // tracking stops being the useful granularity.
+  if (days < 140) { const w = Math.floor(days / 7); return `${w} week${w !== 1 ? "s" : ""} old`; }
   if (days < 730) { const mo = Math.floor(days / 30.44); return `${mo} month${mo !== 1 ? "s" : ""} old`; }
   const y = (days / 365.25).toFixed(1);
   return `${y} year${y !== "1.0" ? "s" : ""} old`;
@@ -468,7 +473,12 @@ function ageAtDate(hatchDateStr, atDateStr) {
   const days = Math.floor((new Date(atDateStr + "T00:00:00") - new Date(hatchDateStr + "T00:00:00")) / 86400000);
   if (days < 0) return null;
   if (days < 14) return `${days} day${days !== 1 ? "s" : ""} old`;
-  if (days < 56) { const w = Math.floor(days / 7); return `${w} week${w !== 1 ? "s" : ""} old`; }
+  // Weeks through ~4 months (140 days = 20 weeks): meat birds especially are
+  // conventionally tracked by week during this stretch (a "1 month old" bird
+  // reading as barely 4 weeks was misleading when it was really 7), and it
+  // reads naturally for young layers too. Months take over once weekly
+  // tracking stops being the useful granularity.
+  if (days < 140) { const w = Math.floor(days / 7); return `${w} week${w !== 1 ? "s" : ""} old`; }
   if (days < 730) { const mo = Math.floor(days / 30.44); return `${mo} month${mo !== 1 ? "s" : ""} old`; }
   const y = (days / 365.25).toFixed(1);
   return `${y} year${y !== "1.0" ? "s" : ""} old`;
@@ -5889,6 +5899,75 @@ function parseWeightInput(displayValue) {
   if (isNaN(n)) return null;
   return getWeightUnit() === "kg" ? n / LB_TO_KG : n;
 }
+/** Splits a lb-stored weight into whole pounds + ounces, the way a kitchen
+ * scale actually reads out (5 lb 15 oz), rather than the decimal pounds
+ * (5.9375) a scale never shows. Only meaningful when displaying in lb --
+ * metric scales read decimal kg or grams, not a kg+g split, so callers only
+ * use this when getWeightUnit() === "lb". Returns nulls for empty input. */
+function lbToLbOz(lbValue) {
+  if (lbValue == null || lbValue === "") return { lb: null, oz: null };
+  const n = Number(lbValue);
+  if (isNaN(n) || n < 0) return { lb: null, oz: null };
+  const wholeLb = Math.floor(n);
+  // Round ounces rather than floor, so 5.9999 lb doesn't display as "5 lb 15
+  // oz" and silently drop a sliver of weight -- round-half-up to 16 carries
+  // into the next pound cleanly (e.g. 5.99999 -> 6 lb 0 oz).
+  let oz = Math.round((n - wholeLb) * 16);
+  let lb = wholeLb;
+  if (oz === 16) { oz = 0; lb += 1; }
+  return { lb, oz };
+}
+/** The inverse of lbToLbOz: whole pounds + ounces typed by the user, back to
+ * the decimal-lb value the app stores everywhere. Either field can be blank
+ * (treated as 0) so entering just "5 lb" or just "15 oz" both work. Returns
+ * null if both are blank, same empty-input contract as parseWeightInput. */
+function lbOzToLb(lbPart, ozPart) {
+  const lb = lbPart === "" || lbPart == null ? 0 : Number(lbPart);
+  const oz = ozPart === "" || ozPart == null ? 0 : Number(ozPart);
+  if ((lbPart === "" || lbPart == null) && (ozPart === "" || ozPart == null)) return null;
+  if (isNaN(lb) || isNaN(oz)) return null;
+  return lb + oz / 16;
+}
+/** Renders a weight entry field: lb+oz side by side when the coop's weight
+ * unit is lb (matching how a kitchen/postal scale reads out -- "5 lb 15 oz",
+ * never "5.9375 lb"), or a single decimal field for kg, since metric scales
+ * read decimal kg/g rather than a kg+g split. `idBase` is used as the prefix
+ * for the field's input id(s); `existingLbValue` is the stored canonical lb
+ * value (or null/empty for a new record). */
+function weightEntryFieldHtml(idBase, existingLbValue, label) {
+  if (getWeightUnit() !== "lb") {
+    return `<label class="field"><span>${esc(label)} (${getWeightUnit()})</span><input type="number" step="0.1" id="${idBase}" value="${displayWeight(existingLbValue)}"></label>`;
+  }
+  const split = lbToLbOz(existingLbValue);
+  return `<label class="field"><span>${esc(label)} (lb, oz)</span>
+    <div style="display:flex;gap:6px;align-items:center">
+      <input type="number" step="1" min="0" id="${idBase}_lb" value="${split.lb ?? ""}" placeholder="lb" style="width:0;flex:1">
+      <span class="dim" style="font-size:12px">lb</span>
+      <input type="number" step="1" min="0" max="15" id="${idBase}_oz" value="${split.oz ?? ""}" placeholder="oz" style="width:0;flex:1">
+      <span class="dim" style="font-size:12px">oz</span>
+    </div>
+  </label>`;
+}
+/** Reads a field rendered by weightEntryFieldHtml back into a canonical lb
+ * value -- the counterpart to that function, so the two never drift apart on
+ * which unit mode is active. */
+function readWeightEntryField(idBase) {
+  if (getWeightUnit() !== "lb") {
+    const el = document.getElementById(idBase);
+    return el ? parseWeightInput(el.value) : null;
+  }
+  const lbEl = document.getElementById(`${idBase}_lb`);
+  const ozEl = document.getElementById(`${idBase}_oz`);
+  if (!lbEl && !ozEl) return null;
+  return lbOzToLb(lbEl ? lbEl.value : "", ozEl ? ozEl.value : "");
+}
+/** True if a weightEntryFieldHtml field is actually in the DOM, in whichever
+ * shape the current unit mode rendered it -- lets a save handler tell "field
+ * wasn't shown at all" (leave the stored value alone) apart from "field was
+ * shown but left blank" (readWeightEntryField already returns null for that). */
+function weightFieldPresent(idBase) {
+  return !!(document.getElementById(idBase) || document.getElementById(`${idBase}_lb`) || document.getElementById(`${idBase}_oz`));
+}
 /** Converts a stored $/lb rate to the user's preferred unit's equivalent
  * rate for display -- the INVERSE of the weight conversion, since a rate
  * scales the opposite way from a plain quantity. $5/lb is about $11.02/kg
@@ -7741,7 +7820,7 @@ function showBulkEditForm() {
     <div class="dim" style="font-size:11px;margin:12px 0 4px">If setting Status to Processed, these fill in the harvest record:</div>
     <div class="grid-form">
       <label class="field"><span>Harvest date</span><input type="date" id="be_harvest_date"></label>
-      <label class="field"><span>Harvest weight (${getWeightUnit()}, each)</span><input type="number" step="0.01" id="be_harvest_weight" placeholder="(no change)"></label>
+      ${weightEntryFieldHtml("be_harvest_weight", null, "Harvest weight (each)")}
       <label class="field"><span>Store-equivalent value per ${getWeightUnit()} ($)</span><input type="number" step="0.01" id="be_price" placeholder="(no change)"></label>
     </div>
     <div class="dim" style="font-size:11px;margin:12px 0 4px">If setting Status to Deceased, these fill in the loss record:</div>
@@ -7771,7 +7850,9 @@ function showBulkEditForm() {
     const setBatch = document.getElementById("be_set_batch").checked;
     const target = document.getElementById("be_target").value;
     const harvestDate = document.getElementById("be_harvest_date").value;
-    const harvestWeight = document.getElementById("be_harvest_weight").value;
+    // null means the field(s) were left blank -- "no change" here, unlike the
+    // single-bird form where blank commonly means an explicit weight of 0.
+    const harvestWeight = readWeightEntryField("be_harvest_weight");
     const price = document.getElementById("be_price").value;
     const deathDate = document.getElementById("be_death_date").value;
     const deathCause = document.getElementById("be_death_cause").value;
@@ -7790,7 +7871,7 @@ function showBulkEditForm() {
     // bulk edit is also explicitly setting a new one.
     if (type === "Layer" && !target) updates.target_harvest_date = null;
     if (harvestDate) updates.harvest_date = harvestDate;
-    if (harvestWeight) updates.harvest_weight = parseWeightInput(harvestWeight);
+    if (harvestWeight) updates.harvest_weight = harvestWeight;
     if (price) updates.price_per_lb = parsePricePerLbInput(price);
     if (deathDate) updates.death_date = deathDate;
     if (deathCause) updates.death_cause = deathCause;
@@ -8251,7 +8332,7 @@ function showBirdForm(bird) {
       acquired_date: val("f_acquired") ?? formState.acquired_date,
       target_harvest_date: val("f_target") ?? formState.target_harvest_date,
       harvest_date: val("f_hdate") ?? formState.harvest_date,
-      harvest_weight: val("f_weight") != null ? parseWeightInput(val("f_weight")) : formState.harvest_weight,
+      harvest_weight: weightFieldPresent("f_weight") ? readWeightEntryField("f_weight") : formState.harvest_weight,
       price_per_lb: val("f_price") != null ? parsePricePerLbInput(val("f_price")) : formState.price_per_lb,
       death_date: val("f_death_date") ?? formState.death_date,
       death_cause: val("f_death_cause") ?? formState.death_cause,
@@ -8337,7 +8418,7 @@ function showBirdForm(bird) {
         <label class="field"><span>Status</span><select id="f_status">${BIRD_STATUSES.map(s => `<option ${f.status === s ? "selected" : ""}>${s}</option>`).join("")}</select></label>
         <label class="field"><span>Batch</span><input id="f_batch" value="${esc(f.batch_name || "")}" placeholder="(not in a batch)"></label>
         ${showProcessed ? `<label class="field"><span>Value per ${getWeightUnit()}</span><input type="number" step="0.01" id="f_price" value="${displayPricePerLb(f.price_per_lb)}" placeholder="e.g. 5.00"></label>` : ""}
-        ${showProcessed ? `<label class="field"><span>Dressed Weight (${getWeightUnit()})</span><input type="number" step="0.1" id="f_weight" value="${displayWeight(f.harvest_weight)}"></label>` : ""}
+        ${showProcessed ? weightEntryFieldHtml("f_weight", f.harvest_weight, "Dressed Weight") : ""}
       </div>
 
       <div class="grid-form" style="margin-top:10px">
@@ -9157,6 +9238,20 @@ function displayQty(qty, unit) {
   if (qty == null || qty === "") return "";
   return isWeightUnit(unit) ? displayWeight(qty) : String(+Number(qty).toFixed(2));
 }
+/** Quantity label for an expense card: "100 lb" normally, or "50 lb x 2" when
+ * the expense covers several identical items (e.g. two feed bags bought in
+ * one entry). itemCount is purely a display breakdown of the same total --
+ * every calculation elsewhere already uses the stored total and is unaffected
+ * either way. Division happens on the DISPLAY value (post kg/lb conversion),
+ * not the raw stored one, so the per-item figure is never a raw/converted mix. */
+function quantityWithCountLabel(qty, unit, itemCount) {
+  const totalLabel = `${displayQty(qty, unit)} ${unitLabel(unit)}`;
+  if (!itemCount || itemCount <= 1) return totalLabel;
+  const totalDisplay = isWeightUnit(unit) ? Number(displayWeight(qty)) : Number(qty);
+  if (!(totalDisplay > 0)) return totalLabel;
+  const perItem = +(totalDisplay / itemCount).toFixed(2);
+  return `${perItem} ${unitLabel(unit)} × ${itemCount} (${totalLabel} total)`;
+}
 /** A quantity the user typed converted back to storage units (lb for weights). */
 function parseQtyInput(val, unit) {
   if (val === "" || val == null) return null;
@@ -9375,7 +9470,7 @@ function renderExpenses() {
               <span class="expense-cat-name">${esc(x.category)}</span>
               ${!isIncome && x.for_type && x.for_type !== "All Birds" ? audienceTile(x.for_type) : ""}
             </div>
-            <div class="list-card-desc dim">${fmtDate(x.date)}${x.quantity ? ` · ${displayQty(x.quantity, x.unit)} ${esc(unitLabel(x.unit))}` : ""}${x.description ? " · " + esc(x.description) : ""}</div>
+            <div class="list-card-desc dim">${fmtDate(x.date)}${x.quantity ? ` · ${quantityWithCountLabel(x.quantity, x.unit, x.item_count)}` : ""}${x.description ? " · " + esc(x.description) : ""}</div>
             ${isIncome && QUANTITY_RELEVANT_INCOME.has(x.category) ? (() => { const rate = saleRateLabel(x.amount, x.quantity, x.category); return rate ? `<div class="list-card-desc dim">${rate}</div>` : ""; })() : ""}
           </div>
           <div class="list-card-side list-card-side-amount">
@@ -9580,7 +9675,10 @@ function wireExpenseFormModal(editing) {
     const washoutUnitPrice = (expenseFormEntryType === "income" && (category === "Egg Sale" || category === "Meat Sale"))
       ? computeWashoutSnapshotPrice(category, date)
       : null;
-    const payload = { coop_id: currentCoopId, date, category, for_type: forTypeEl ? forTypeEl.value : null, description, amount: Number(amount), quantity: totalQty, unit, entry_type: expenseFormEntryType, washout_unit_price: washoutUnitPrice };
+    // item_count is kept alongside the total quantity purely for display (so
+    // a finance card can show "50 lb x 2" instead of a flattened "100 lb"); it
+    // is never used in any calculation, which all correctly use the total.
+    const payload = { coop_id: currentCoopId, date, category, for_type: forTypeEl ? forTypeEl.value : null, description, amount: Number(amount), quantity: totalQty, unit, entry_type: expenseFormEntryType, washout_unit_price: washoutUnitPrice, item_count: count > 1 ? count : null };
     if (editing) {
       await localExpenseUpdate(editing.id, payload);
       showToast(expenseFormEntryType === "income" ? "Income updated" : "Expense updated", "update");
