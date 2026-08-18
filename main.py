@@ -58,7 +58,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.13-205"
+SERVER_VERSION = "2026.07.13-213"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
@@ -156,7 +156,7 @@ SCHEMA = {
     },
     "expenses": {
         "coop_id": "TEXT", "date": "TEXT", "category": "TEXT", "description": "TEXT", "amount": "REAL", "for_type": "TEXT",
-        "quantity": "REAL", "unit": "TEXT", "entry_type": "TEXT", "washout_unit_price": "REAL",
+        "quantity": "REAL", "unit": "TEXT", "entry_type": "TEXT", "washout_unit_price": "REAL", "item_count": "INTEGER",
     },
     "bedding": {
         "coop_id": "TEXT", "date": "TEXT", "area": "TEXT", "material": "TEXT", "entry_type": "TEXT", "notes": "TEXT",
