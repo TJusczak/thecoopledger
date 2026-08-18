@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-213";
+const APP_VERSION = "2026.07.13-214";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -3823,7 +3823,7 @@ function meatProcessedSub(count, weight, value) {
   if (count === 0) return "";
   const avgWeight = weight > 0 ? weight / count : 0;
   const avgValue = value > 0 ? value / count : 0;
-  const bits = [`${count} bird${count !== 1 ? "s" : ""}`];
+  const bits = [`${count} bird${count !== 1 ? "s" : ""} processed`];
   if (avgWeight > 0) bits.push(`${weightLabel(avgWeight)} avg`);
   if (avgValue > 0) bits.push(`${fmtMoney(avgValue)}/bird`);
   return bits.join(" · ");
@@ -6239,7 +6239,7 @@ function renderCoopOverview() {
           spark: sparklineSvg(tr.eggsW),
           chip: deltaChipHtml(tr.cur.eggs, tr.prev.eggs) })}
         ${statCard({ tone: "sage", goto: "flock", label: "Meat processed this month", value: meatProcessedValue(s.processedThisMonth, s.weightThisMonth, s.meatTotalValueMonth),
-          sub: `${s.processedThisMonth > 0 && s.meatTotalValueMonth > 0 ? `${fmtMoney(s.meatTotalValueMonth / s.processedThisMonth)}/bird · ` : ""}${displayWeight(ys.processedWeight)} ${getWeightUnit()} this year`,
+          sub: `${(() => { const s1 = meatProcessedSub(s.processedThisMonth, s.weightThisMonth, s.meatTotalValueMonth); return s1 ? s1 + " · " : ""; })()}${displayWeight(ys.processedWeight)} ${getWeightUnit()} this year`,
           spark: sparklineSvg(tr.meatLbW),
           chip: deltaChipHtml(tr.cur.meatLb, tr.prev.meatLb) })}
         ${statCard({ tone: "slate", goto: "expenses", label: "Spent this month", value: fmtMoney(s.thisMonth),
@@ -9366,7 +9366,7 @@ function openEggModal(editing) {
       "Delete this egg log entry? This can't be undone.",
       () => localEggDelete(editing.id, currentCoopId),
       "Egg log deleted",
-      async () => { STATE.eggs = await localGetAll("eggs", currentCoopId); renderEggsMain(); }
+      refreshAndRender
     ) : null
   );
   document.getElementById("saveEgg").addEventListener("click", async () => {
@@ -9378,8 +9378,12 @@ function openEggModal(editing) {
     else await localEggCreate(payload);
     showToast(editing ? "Egg log updated" : "Egg log added", editing ? "update" : "create");
     closeModal();
-    STATE.eggs = await localGetAll("eggs", currentCoopId);
-    renderEggsMain();
+    // refreshAndRender (not a hardcoded renderEggsMain) so this redraws
+    // whichever tab is actually on screen -- eggs can now be opened from the
+    // Eggs tab itself or from a "value produced" reference row on the
+    // Finances tab, and hardcoding one target left the other stale until the
+    // next navigation or reload. Same pattern showBirdForm already uses.
+    refreshAndRender();
   });
 }
 
