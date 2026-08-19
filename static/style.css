@@ -840,7 +840,6 @@ tr:hover td { background: var(--surface-raised); }
   border: 1px solid var(--slate); color: var(--slate);
   font-size: 10px; align-self: center; margin-right: -4px;
 }
-.value-ref-amount { color: var(--text-dim) !important; }
 @media (max-width: 400px) {
   .money-figure .money-dollars { font-size: 19px; }
   .money-figure .money-cents { font-size: 12px; }

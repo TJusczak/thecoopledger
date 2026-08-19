@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-218";
+const APP_VERSION = "2026.07.13-219";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -3904,7 +3904,7 @@ function renderAllTimeStatsSection() {
         + statPanelHeroPair(
           statPanelHero("Spent", fmtMoney(s.totalExpenses)),
           statPanelHero("Net", fmtMoney(s.netAll), { valueTone: s.netAll >= 0 ? "sage" : "rust" })
-        ), "eggs"
+        ), "expenses"
       )}
       ${STATE.hatches.length > 0 ? statPanel("gold", "🐣", "Hatching",
         statPanelRows(
@@ -3932,6 +3932,7 @@ function renderAllTimeStatsSection() {
       ${valueSourceBarsHtml(valueBreakdownIn(() => true), { title: "Value by source, all time", totalLabel: "Total value, all time" })}
     </div>` : ""}
   `;
+  wireStatPanelGoto(el);
 }
 
 function renderProductsSection() {
@@ -5681,7 +5682,7 @@ function renderYearReviewSection() {
         + statPanelHeroPair(
           statPanelHero("Spent", fmtMoney(s.totalExpenses), { chip: yoy(s.totalExpenses, sp && sp.totalExpenses, false) }),
           statPanelHero(`Net for ${selectedYear}`, fmtMoney(s.net), { chip: yoy(s.net, sp && sp.net), valueTone: s.net >= 0 ? "sage" : "rust" })
-        ), "eggs"
+        ), "expenses"
       )}
       ${(s.chicksHatched + s.hatchLoss) > 0 ? statPanel("gold", "🐣", "Hatching",
         statPanelRows(
@@ -5777,6 +5778,7 @@ function renderYearReviewSection() {
     reviewFeedType = btn.dataset.feedType;
     renderYearReviewSection();
   });
+  wireStatPanelGoto(el);
   drawYearReviewCharts(selectedYear);
 }
 
@@ -6354,7 +6356,7 @@ function renderCoopOverview() {
             statPanelHero("Net", fmtMoney(s.netMonth), { chip: deltaChipHtml(tr.cur.net, tr.prev.net), valueTone: s.netMonth >= 0 ? "sage" : "rust" })
           );
           return statPanel("sage", "🪶", "Flock", flockBody, "flock")
-            + statPanel("gold", "💲", "Value", valueBody, "eggs");
+            + statPanel("gold", "💲", "Value", valueBody, "expenses");
         })()}
       </div>
 
@@ -6568,15 +6570,21 @@ function renderCoopOverview() {
     eggsSubTab = "hatching";
     renderEggsHub();
   }));
-  // Stat card tap-through: each card opens the tab its number lives on
-  // (switchTab lands on that tab's first sub-tab and renders it). Enter/
-  // Space too, since the cards carry role="button".
+  wireStatPanelGoto(el);
+  drawDashboardCharts();
+}
+/** Stat card/panel tap-through: each tappable card or panel header opens the
+ * tab its numbers live on (switchTab lands on that tab's first sub-tab and
+ * renders it). Enter/Space too, since they carry role="button". Shared by
+ * the Dashboard, Year Review, and All-Time -- each renders its own set of
+ * [data-goto-tab] elements via statCard()/statPanel(), but the actual click
+ * wiring only needs to happen once per render, from whichever page called it. */
+function wireStatPanelGoto(el) {
   el.querySelectorAll("[data-goto-tab]").forEach(card => {
     const go = () => switchTab(card.dataset.gotoTab);
     card.addEventListener("click", go);
     card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
   });
-  drawDashboardCharts();
 }
 
 /** Every distinct bucket (day/week/month, matching pickBucketMode) between the
@@ -7499,6 +7507,14 @@ function birdCardHtml(b) {
  * the one you have open right now" -- distinct from any color customization
  * the group might also have. */
 let currentOpenBatchName = null;
+/** Whether the currently open batch panel shows every bird in the batch
+ * regardless of the outer flock filters (e.g. Status: Active), rather than
+ * just the ones matching them. Off by default -- a batch respects the same
+ * filter as the rest of the flock grid, same as opening any other view
+ * while filtered, with this as the one-tap escape hatch for "no, show me
+ * everyone in this batch." Resets whenever a different batch is opened, so
+ * it never silently carries over to a batch you didn't toggle it for. */
+let batchPanelIgnoreFilters = false;
 
 function groupCardHtml(batchName, filteredBirds, totalCount) {
   const s = summarizeGroup(filteredBirds);
@@ -7783,6 +7799,7 @@ function wireFlockCardHandlers(el) {
     // looks like. (Previously it re-opened the same panel, and the only way
     // to close was the ✕ inside it.)
     const name = card.dataset.openBatch;
+    if (currentOpenBatchName !== name) batchPanelIgnoreFilters = false;
     currentOpenBatchName = (currentOpenBatchName === name) ? null : name;
     renderFlockBirds();
   }));
@@ -7790,23 +7807,43 @@ function wireFlockCardHandlers(el) {
 
 function showBatchPanel(batchName) {
   const host = document.getElementById("birdFormHost");
-  const birds = STATE.birds.filter(b => b.batch_name === batchName);
-  const batchIds = birds.map(b => b.id);
+  // Stats (status breakdown, avg/total weight, value) always reflect the
+  // FULL batch regardless of filtering -- a batch with 8 active and 12
+  // already-processed birds should still show its true totals while you're
+  // looking at the active flock, not read zero because the processed ones
+  // got filtered out. Which birds actually LIST as cards below, though,
+  // follows the same filter as the rest of the flock grid by default (status,
+  // type, location, date) -- opening a batch while filtered to Active
+  // shouldn't suddenly show every status again, which was the inconsistency
+  // this was built to fix. batchPanelIgnoreFilters is the one-tap escape
+  // hatch for when you specifically want to see everyone in the batch.
+  const fullBatchBirds = STATE.birds.filter(b => b.batch_name === batchName);
+  const visibleBirds = batchPanelIgnoreFilters ? fullBatchBirds : applyFlockFilters(fullBatchBirds);
+  const hiddenCount = fullBatchBirds.length - visibleBirds.length;
+  const batchIds = visibleBirds.map(b => b.id);
   const selectedInBatch = batchIds.filter(id => selectedBirdIds.has(id));
-  const allSelected = selectedInBatch.length === batchIds.length;
-  const s = summarizeGroup(birds);
+  const allSelected = selectedInBatch.length === batchIds.length && batchIds.length > 0;
+  const s = summarizeGroup(fullBatchBirds);
 
   host.innerHTML = `
     <div class="form-block">
-      <div class="form-head"><span>${esc(batchName)} -- ${birds.length} birds</span><button class="icon-btn icon-btn-close" id="closeBatchPanel">✕</button></div>
+      <div class="form-head"><span>${esc(batchName)} -- ${fullBatchBirds.length} birds</span><button class="icon-btn icon-btn-close" id="closeBatchPanel">✕</button></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
         <div class="dim" style="font-size:12px">${esc(s.statusSummary)}${s.breed ? ` · ${esc(s.breed)}` : ""}${s.avgWeight > 0 ? ` · ${weightLabel(s.avgWeight)} avg dressed` : ""}${s.processedCount > 0 && s.totalValue > 0 ? ` · ${fmtMoney(s.totalValue)} value` : ""}</div>
         <button class="btn ghost small" id="openBatchEdit" style="margin-left:auto">✎ Edit group</button>
       </div>
+      ${hiddenCount > 0 || batchPanelIgnoreFilters ? `
+      <div class="dim" style="font-size:12px;margin-bottom:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        ${batchPanelIgnoreFilters
+          ? `Showing all ${fullBatchBirds.length} birds in this batch, ignoring the flock filters.`
+          : `Showing ${visibleBirds.length} of ${fullBatchBirds.length} birds, matching the flock filters.`}
+        <button class="btn ghost small" id="toggleBatchFilters" style="padding:2px 8px">${batchPanelIgnoreFilters ? "Show filtered only" : `Show all ${fullBatchBirds.length}`}</button>
+      </div>
+      ` : ""}
 
       <div class="toolbar" style="margin-bottom:10px">
-        <button class="btn ghost small" id="selectAllInBatch">${allSelected ? "☑" : "☐"} Select all in batch</button>
-        ${selectedInBatch.length > 0 ? `<div class="dim">${selectedInBatch.length} of ${birds.length} selected</div>` : ""}
+        <button class="btn ghost small" id="selectAllInBatch" ${batchIds.length === 0 ? "disabled" : ""}>${allSelected ? "☑" : "☐"} Select all ${batchPanelIgnoreFilters || hiddenCount === 0 ? "in batch" : "shown"}</button>
+        ${selectedInBatch.length > 0 ? `<div class="dim">${selectedInBatch.length} of ${batchIds.length} selected</div>` : ""}
       </div>
       ${selectedInBatch.length > 0 ? `
       <div class="form-block" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;border-color:var(--rust)">
@@ -7818,12 +7855,17 @@ function showBatchPanel(batchName) {
       </div>
       ` : ""}
 
-      <div class="${flockGridClass()}">${birds.map(b => birdCardHtml(b)).join("")}</div>
+      ${visibleBirds.length === 0 ? `<div class="empty">No birds in this batch match the current flock filters.</div>` : `<div class="${flockGridClass()}">${visibleBirds.map(b => birdCardHtml(b)).join("")}</div>`}
     </div>
   `;
   const close = () => { currentOpenBatchName = null; renderFlockBirds(); };
   document.getElementById("closeBatchPanel").addEventListener("click", close);
   document.getElementById("openBatchEdit").addEventListener("click", () => openBatchEditModal(batchName));
+  const toggleFiltersBtn = document.getElementById("toggleBatchFilters");
+  if (toggleFiltersBtn) toggleFiltersBtn.addEventListener("click", () => {
+    batchPanelIgnoreFilters = !batchPanelIgnoreFilters;
+    renderFlockBirds(); // same reasoning as selectAllInBatch below -- keeps the outer page (floating bar, etc.) in sync too
+  });
   document.getElementById("selectAllInBatch").addEventListener("click", () => {
     if (allSelected) batchIds.forEach(id => selectedBirdIds.delete(id));
     else batchIds.forEach(id => selectedBirdIds.add(id));
@@ -7856,7 +7898,7 @@ function showBatchPanel(batchName) {
     host.querySelectorAll("[data-edit]"),
     selectedBirdIds,
     "birds",
-    () => birds.map(b => b.id),
+    () => visibleBirds.map(b => b.id),
     (id) => showBirdForm(STATE.birds.find(x => x.id === id)),
     renderFlockBirds // long-pressing a card inside an open batch panel now
     // correctly shows the floating selection bar right away, instead of only
@@ -9812,7 +9854,7 @@ function renderExpenses() {
             <div class="list-card-desc dim">${fmtDate(r.date)} · not logged here -- tap to open</div>
           </div>
           <div class="list-card-side list-card-side-amount">
-            <div class="money-figure value-ref-amount"><span class="money-dollars">${fmtMoney(r.amount)}</span></div>
+            ${moneyFigureHtml(r.amount, "income")}
           </div>
         </div>`;
         }
