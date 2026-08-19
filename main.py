@@ -58,7 +58,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.13-214"
+SERVER_VERSION = "2026.07.13-215"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
@@ -1017,28 +1017,133 @@ def export_coop_zip(coop_id: str):
 
 @app.get("/api/coops/{coop_id}/export.csv")
 def export_coop_csv(coop_id: str):
+    """Standardized spreadsheet export: a handful of clean, human-readable
+    files rather than a raw dump of every internal table.
+
+    This intentionally differs from the SCOPED/SCHEMA-driven dump the sync API
+    uses: those are the database's own shape (13 tables, raw ids, cosmetic
+    columns like card_color, internal join keys like product_id), built for
+    the app to read back, not for a person to read in a spreadsheet.
+
+    Design choices, so a future change to this stays consistent:
+      - Column headers are plain English, one clear concept per column.
+      - Foreign keys are RESOLVED, not exported raw -- a health log shows the
+        bird's name, not its id, because a bare id is meaningless once pasted
+        into a spreadsheet outside the app.
+      - Weight is always in lb, labeled as such in the header. The kg/lb
+        toggle is a client-side display preference with no server record of
+        which one was active, and a "standardized" export needs one fixed,
+        predictable unit rather than one that silently depends on whatever
+        the toggle happened to be set to at export time.
+      - Money is a bare decimal (no "$"), so SUM() and friends work directly
+        on the column without stripping a currency symbol first.
+      - Purely cosmetic/internal tables (bird_photos, supply_products,
+        activity_log) are left out -- they're not something a person analyzes
+        in a spreadsheet, just app-internal bookkeeping.
+    """
     with get_db() as conn:
         coop = conn.execute("SELECT * FROM coops WHERE id = ?", (coop_id,)).fetchone()
         if not coop:
             raise HTTPException(404, "Coop not found")
 
+        def rows_of(table):
+            return [dict(r) for r in conn.execute(
+                f"SELECT * FROM {table} WHERE coop_id = ? AND deleted_at IS NULL", (coop_id,),
+            ).fetchall()]
+
+        def write_csv(zf, filename, header, records):
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(header)
+            for rec in records:
+                writer.writerow(rec)
+            zf.writestr(filename, buf.getvalue())
+
+        def num(v, digits=2):
+            if v is None or v == "":
+                return ""
+            try:
+                return round(float(v), digits)
+            except (TypeError, ValueError):
+                return v
+
         zip_buf = io.BytesIO()
         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for table in SCOPED:
-                fieldnames = ["id"] + [c for c in SCHEMA[table] if c != "coop_id"]
-                if table in ("birds", "supply_products", "bird_photos"):
-                    fieldnames = [f for f in fieldnames if f != "photo"]  # base64 blobs don't belong in a spreadsheet
-                rows = [dict(r) for r in conn.execute(f"SELECT * FROM {table} WHERE coop_id = ? AND deleted_at IS NULL", (coop_id,)).fetchall()]
-                csv_buf = io.StringIO()
-                writer = csv.DictWriter(csv_buf, fieldnames=fieldnames, extrasaction="ignore")
-                writer.writeheader()
-                for r in rows:
-                    writer.writerow({k: r.get(k, "") for k in fieldnames})
-                zf.writestr(f"{table}.csv", csv_buf.getvalue())
+            bird_name_by_id = {}
+
+            # --- Flock.csv ---
+            birds = rows_of("birds")
+            for b in birds:
+                bird_name_by_id[b["id"]] = b.get("name") or "(unnamed)"
+            write_csv(zf, "Flock.csv",
+                ["Name", "Type", "Breed", "Gender", "Status", "Batch", "Location",
+                 "Hatch Date", "Acquired Date", "Target Harvest Date",
+                 "Harvest Date", "Dressed Weight (lb)", "Price per lb", "Harvest Value",
+                 "Death Date", "Death Cause", "Notes"],
+                [[
+                    b.get("name") or "(unnamed)", b.get("type") or "", b.get("breed") or "", b.get("gender") or "",
+                    b.get("status") or "", b.get("batch_name") or "", b.get("location") or "",
+                    b.get("hatch_date") or "", b.get("acquired_date") or "", b.get("target_harvest_date") or "",
+                    b.get("harvest_date") or "", num(b.get("harvest_weight")), num(b.get("price_per_lb")),
+                    num((float(b["harvest_weight"]) * float(b["price_per_lb"])) if b.get("harvest_weight") and b.get("price_per_lb") else None),
+                    b.get("death_date") or "", b.get("death_cause") or "", b.get("notes") or "",
+                ] for b in birds])
+
+            # --- Eggs.csv ---
+            eggs = rows_of("eggs")
+            write_csv(zf, "Eggs.csv",
+                ["Date", "Count", "Price per Egg", "Value", "Notes"],
+                [[e.get("date") or "", num(e.get("count"), 0), num(e.get("price_per_egg"), 4),
+                  num((float(e["count"]) * float(e["price_per_egg"])) if e.get("count") and e.get("price_per_egg") else None),
+                  e.get("notes") or ""] for e in eggs])
+
+            # --- Finances.csv (expenses + income, one readable ledger) ---
+            expenses = rows_of("expenses")
+            write_csv(zf, "Finances.csv",
+                ["Date", "Type", "Category", "Description", "Amount", "Quantity", "Unit", "Applies To", "Notes"],
+                [[x.get("date") or "", "Income" if x.get("entry_type") == "income" else "Expense",
+                  x.get("category") or "", x.get("description") or "", num(x.get("amount")),
+                  num(x.get("quantity")), x.get("unit") or "", x.get("for_type") or "", ""] for x in expenses])
+
+            # --- Inventory.csv (feed, bedding, and other tracked supplies) ---
+            supplies = rows_of("supplies")
+            write_csv(zf, "Inventory.csv",
+                ["Category", "Description", "Brand", "Quantity", "Unit", "Cost", "Status", "Date Added", "Opened", "Emptied"],
+                [[s.get("category") or "", s.get("description") or "", s.get("brand") or "",
+                  num(s.get("quantity")), s.get("unit") or "", num(s.get("cost")), s.get("status") or "",
+                  s.get("date_added") or "", s.get("opened_at") or "", s.get("date_emptied") or ""] for s in supplies])
+
+            # --- Bedding.csv ---
+            bedding = rows_of("bedding")
+            write_csv(zf, "Bedding.csv",
+                ["Date", "Area", "Material", "Type", "Notes"],
+                [[bd.get("date") or "", bd.get("area") or "", bd.get("material") or "",
+                  bd.get("entry_type") or "", bd.get("notes") or ""] for bd in bedding])
+
+            # --- Health Log.csv (bird_id resolved to the bird's name) ---
+            bird_logs = rows_of("bird_logs")
+            write_csv(zf, "Health Log.csv",
+                ["Date", "Bird", "Note"],
+                [[log.get("date") or "", bird_name_by_id.get(log.get("bird_id"), "(deleted bird)"), log.get("note") or ""] for log in bird_logs])
+
+            # --- Hatches.csv (already one row per clutch with summary counts) ---
+            hatches = rows_of("hatches")
+            write_csv(zf, "Hatches.csv",
+                ["Breed", "Date Started", "Status", "Eggs Set", "Hatched", "Named", "Clear", "Quit", "Failed to Hatch", "Notes"],
+                [[h.get("breed") or "", h.get("date_started") or "", h.get("status") or "",
+                  num(h.get("egg_count"), 0), num(h.get("hatched_count"), 0), num(h.get("named_count"), 0),
+                  num(h.get("clear_count"), 0), num(h.get("quit_count"), 0), num(h.get("failed_count"), 0),
+                  h.get("notes") or ""] for h in hatches])
+
+            # --- Notes.csv ---
+            notes = rows_of("notes")
+            write_csv(zf, "Notes.csv",
+                ["Date", "Category", "Title", "Note"],
+                [[n.get("created_date") or "", n.get("category") or "", n.get("title") or "", n.get("body") or ""] for n in notes])
 
         zip_buf.seek(0)
         safe_name = "".join(c if c.isalnum() else "-" for c in coop["name"]).strip("-").lower() or "coop"
-        filename = f"{safe_name}-csv-{date.today().isoformat()}.zip"
+        filename = f"{safe_name}-spreadsheet-{date.today().isoformat()}.zip"
         return StreamingResponse(
             zip_buf,
             media_type="application/zip",

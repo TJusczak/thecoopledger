@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-214";
+const APP_VERSION = "2026.07.13-215";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -3871,18 +3871,23 @@ function renderAllTimeStatsSection() {
     <div class="card-title" style="margin-bottom:12px">All-time totals — ${esc(coop ? coop.name : "")}</div>
     <div class="dim" style="font-size:12px;margin-bottom:14px">Everything this coop has ever logged, no date range -- things that only ever add up, not things like Active Birds that go up and down day to day (that lives on the Coop tab). For a specific year's breakdown (by category, by clean-out area, etc.), use Year Review instead.</div>
     <div class="grid-stats-2">
+      <div class="flock-section-header">🐔 Flock</div>
       <div class="stat tone-sage"><div class="stat-label">Total birds added, all time</div><div class="stat-value">${totalBirdsAdded}</div><div class="stat-sub">${s.layers + s.meatActive} currently active</div>${statSpark(ty.newBirds)}</div>
       <div class="stat tone-rust"><div class="stat-label">Losses, all time</div><div class="stat-value">${s.lossesAll}</div><div class="stat-sub">${s.lossesThisYear} this year</div>${statSpark(ty.losses)}</div>
+      <div class="flock-section-header">🥚 Value</div>
       <div class="stat tone-gold"><div class="stat-label">Value produced, all time</div><div class="stat-value">${fmtMoney(s.incomeAll)}</div><div class="stat-sub">eggs + meat + other income</div>${statSpark(ty.value)}</div>
       <div class="stat tone-gold"><div class="stat-label">Eggs collected, all time</div><div class="stat-value">${s.totalEggs}</div><div class="stat-sub">${(s.totalEggs / 12).toFixed(1)} dozen · ${valueBreakdownHtml(s.eggIncomeAll, s.eggActualIncomeAll)}</div>${statSpark(ty.eggs)}</div>
-      <div class="stat tone-sage"><div class="stat-label">Meat processed, all time</div><div class="stat-value">${meatProcessedValue(s.processed, s.totalWeight, s.meatTotalValueAll)}</div><div class="stat-sub">${meatProcessedSub(s.processed, s.totalWeight, s.meatTotalValueAll)}</div>${statSpark(ty.meatLb)}</div>
+      <div style="grid-column:1/-1" class="stat tone-sage"><div class="stat-label">Meat processed, all time</div><div class="stat-value">${meatProcessedValue(s.processed, s.totalWeight, s.meatTotalValueAll)}</div><div class="stat-sub">${meatProcessedSub(s.processed, s.totalWeight, s.meatTotalValueAll)}</div>${statSpark(ty.meatLb)}</div>
+      <div class="flock-section-header">💵 Finances</div>
       <div class="stat tone-slate"><div class="stat-label">Spent, all time</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${fmtMoney(s.totalExpenses / monthsSinceCoopStart())}/month average</div>${statSpark(ty.spent)}</div>
       <div class="stat ${s.netAll >= 0 ? "tone-sage" : "tone-rust"}" style="${s.netAll < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net savings, all time</div><div class="stat-value">${fmtMoney(s.netAll)}</div><div class="stat-sub">value − spend</div>${statSpark(ty.net)}</div>
-      <div class="stat tone-gold"><div class="stat-label">Full clean-outs, all time</div><div class="stat-value">${totalCleanouts}</div><div class="stat-sub">across ${getBeddingAreas().length} tracked area${getBeddingAreas().length !== 1 ? "s" : ""}</div>${statSpark(ty.cleanouts)}</div>
+      <div class="flock-section-header">🌾 Feed & Bedding</div>
       <div class="stat tone-gold"><div class="stat-label">Layer feed used, all time</div><div class="stat-value">${displayWeight(usage.layerFeedLbs)} ${getWeightUnit()}</div><div class="stat-sub">${costPerLbLayerFeed !== null ? `${fmtMoney(layerConsumed.cost)} at ${fmtMoney(displayPricePerLb(costPerLbLayerFeed))}/${getWeightUnit()}` : "no cost data yet"}</div>${statSpark(ty.layerFeed)}</div>
       <div class="stat tone-rust"><div class="stat-label">Meat feed used, all time</div><div class="stat-value">${displayWeight(usage.meatFeedLbs)} ${getWeightUnit()}</div><div class="stat-sub">${costPerLbMeatFeed !== null ? `${fmtMoney(meatConsumed.cost)} at ${fmtMoney(displayPricePerLb(costPerLbMeatFeed))}/${getWeightUnit()}` : "no cost data yet"}</div>${statSpark(ty.meatFeed)}</div>
       <div class="stat tone-slate"><div class="stat-label">Bedding used, all time</div><div class="stat-value">${usage.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">${costPerCuFtBedding !== null ? fmtMoney(costPerCuFtBedding) + "/cu ft" : "no cost data yet"}</div>${statSpark(ty.bedding)}</div>
+      <div class="stat tone-gold"><div class="stat-label">Full clean-outs, all time</div><div class="stat-value">${totalCleanouts}</div><div class="stat-sub">across ${getBeddingAreas().length} tracked area${getBeddingAreas().length !== 1 ? "s" : ""}</div>${statSpark(ty.cleanouts)}</div>
       ${STATE.hatches.length > 0 ? `
+      <div class="flock-section-header">🐣 Hatching</div>
       <div class="stat tone-gold"><div class="stat-label">Chicks hatched, all time</div><div class="stat-value">${s.chicksHatchedAll}</div><div class="stat-sub">across ${STATE.hatches.length} clutch${STATE.hatches.length !== 1 ? "es" : ""}</div>${statSpark(ty.chicks)}</div>
       <div class="stat tone-rust"><div class="stat-label">Lost from hatching, all time</div><div class="stat-value">${s.hatchLossAll}</div><div class="stat-sub">${s.hatchClearAll} clear · ${s.hatchQuitAll} quit · ${s.hatchFailedAll} failed to hatch</div></div>
       ` : ""}
@@ -4621,7 +4626,7 @@ function renderCoopsSection() {
     </div>
     </div>
 
-    <div class="note-box" style="margin-bottom:12px"><strong style="color:var(--text)">Export (.zip)</strong> is the backup to use -- everything, with real photo files in a photos/ folder, and it works the same whether you're online or offline. <strong style="color:var(--text)">Spreadsheet (.csv)</strong> is not a backup -- it's just for viewing or analyzing the data in a spreadsheet program, can't be re-imported, and doesn't include photos.</div>
+    <div class="note-box" style="margin-bottom:12px"><strong style="color:var(--text)">Export (.zip)</strong> is the backup to use -- everything, with real photo files in a photos/ folder, and it works the same whether you're online or offline. <strong style="color:var(--text)">Spreadsheet (.csv)</strong> is not a backup -- it's a handful of clean, readable files (Flock, Eggs, Finances, Inventory, Bedding, Health Log, Hatches, Notes) for viewing or analyzing in a spreadsheet program. Weights are always in lb regardless of your display setting. It can't be re-imported and doesn't include photos.</div>
 
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">
       ${STATE.coops.length === 0 ? `<div class="empty">No coops yet — create one above to get started.</div>` : STATE.coops.map(c => `
@@ -4642,7 +4647,7 @@ function renderCoopsSection() {
             <button class="btn ghost small" data-rename="${c.id}" data-name="${esc(c.name)}">Rename</button>
             <button class="btn ghost small" data-edit-date="${c.id}" data-current-date="${esc(c.created_date || "")}">Edit date</button>
             <button class="btn ghost small" data-export-offline-zip="${c.id}">📦 Export (.zip)</button>
-            <button class="btn ghost small" data-export-csv="${c.id}" title="Not a backup -- plain CSV for a spreadsheet, no photos, can't be re-imported">Spreadsheet (.csv)</button>
+            <button class="btn ghost small" data-export-csv="${c.id}" title="Not a backup -- clean, readable CSV files for a spreadsheet, no photos, can't be re-imported">Spreadsheet (.csv)</button>
             <button class="btn btn-close small" data-delete="${c.id}" data-name="${esc(c.name)}">Delete</button>
           </div>
         </div>`).join("")}
@@ -5612,17 +5617,22 @@ function renderYearReviewSection() {
     </div>
 
     <div class="grid-stats-2" style="margin-bottom:16px">
+      <div class="flock-section-header">🐔 Flock</div>
       <div class="stat tone-sage"><div class="stat-label">New birds this year</div><div class="stat-value">${s.newBirds}</div><div class="stat-sub">${s.lossesInYear} lost this year</div>${statSpark(tm.newBirds)}${yoy(s.newBirds, sp && sp.newBirds)}</div>
       <div class="stat tone-rust" style="${s.lossesInYear ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Losses</div><div class="stat-value">${s.lossesInYear}</div><div class="stat-sub"></div>${statSpark(tm.losses)}${yoy(s.lossesInYear, sp && sp.lossesInYear, false)}</div>
+      <div class="flock-section-header">🥚 Value</div>
       <div class="stat tone-gold"><div class="stat-label">Value produced</div><div class="stat-value">${fmtMoney(s.income)}</div><div class="stat-sub">eggs + meat</div>${statSpark(tm.value)}${yoy(s.income, sp && sp.income)}</div>
       <div class="stat tone-gold"><div class="stat-label">Eggs collected</div><div class="stat-value">${s.eggCount}</div><div class="stat-sub">${(s.eggCount / 12).toFixed(1)} dozen · ${valueBreakdownHtml(s.eggValue, s.eggActualIncome)}</div>${statSpark(tm.eggs)}${yoy(s.eggCount, sp && sp.eggCount)}</div>
-      <div class="stat tone-sage"><div class="stat-label">Meat processed</div><div class="stat-value">${meatProcessedValue(s.processedCount, s.processedWeight, s.meatTotalValue)}</div><div class="stat-sub">${meatProcessedSub(s.processedCount, s.processedWeight, s.meatTotalValue)}</div>${statSpark(tm.meatLb)}${yoy(s.processedWeight, sp && sp.processedWeight)}</div>
+      <div style="grid-column:1/-1" class="stat tone-sage"><div class="stat-label">Meat processed</div><div class="stat-value">${meatProcessedValue(s.processedCount, s.processedWeight, s.meatTotalValue)}</div><div class="stat-sub">${meatProcessedSub(s.processedCount, s.processedWeight, s.meatTotalValue)}</div>${statSpark(tm.meatLb)}${yoy(s.processedWeight, sp && sp.processedWeight)}</div>
+      <div class="flock-section-header">💵 Finances</div>
       <div class="stat tone-slate"><div class="stat-label">Total spent</div><div class="stat-value">${fmtMoney(s.totalExpenses)}</div><div class="stat-sub">${Object.keys(s.categoryBreakdown).length} categories</div>${statSpark(tm.spent)}${yoy(s.totalExpenses, sp && sp.totalExpenses, false)}</div>
       <div class="stat ${s.net >= 0 ? "tone-sage" : "tone-rust"}" style="${s.net < 0 ? "border-left-color:var(--danger)" : ""}"><div class="stat-label">Net for ${selectedYear}</div><div class="stat-value">${fmtMoney(s.net)}</div><div class="stat-sub">value − spend</div>${statSpark(tm.net)}${sp && sp.net > 0 && s.net > 0 ? yoy(s.net, sp.net) : ""}</div>
+      <div class="flock-section-header">🌾 Feed & Bedding</div>
       <div class="stat tone-gold"><div class="stat-label">Layer feed used</div><div class="stat-value">${displayWeight(s.layerFeedLbs)} ${getWeightUnit()}</div><div class="stat-sub">${s.costPerLbLayerFeed !== null ? `${fmtMoney(s.layerFeedCost)} at ${fmtMoney(displayPricePerLb(s.costPerLbLayerFeed))}/${getWeightUnit()}` : "no cost data yet"}</div>${statSpark(tm.layerFeed)}${yoy(s.layerFeedLbs, sp && sp.layerFeedLbs, false)}</div>
       <div class="stat tone-rust"><div class="stat-label">Meat feed used</div><div class="stat-value">${displayWeight(s.meatFeedLbs)} ${getWeightUnit()}</div><div class="stat-sub">${s.costPerLbMeatFeed !== null ? `${fmtMoney(s.meatFeedCost)} at ${fmtMoney(displayPricePerLb(s.costPerLbMeatFeed))}/${getWeightUnit()}` : "no cost data yet"}</div>${statSpark(tm.meatFeed)}${yoy(s.meatFeedLbs, sp && sp.meatFeedLbs, false)}</div>
-      <div class="stat tone-slate"><div class="stat-label">Bedding used</div><div class="stat-value">${s.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">bags emptied this year</div>${statSpark(tm.bedding)}${yoy(s.beddingCuFt, sp && sp.beddingCuFt, false)}</div>
+      <div style="grid-column:1/-1" class="stat tone-slate"><div class="stat-label">Bedding used</div><div class="stat-value">${s.beddingCuFt.toFixed(1)} cu ft</div><div class="stat-sub">bags emptied this year</div>${statSpark(tm.bedding)}${yoy(s.beddingCuFt, sp && sp.beddingCuFt, false)}</div>
       ${(s.chicksHatched + s.hatchLoss) > 0 ? `
+      <div class="flock-section-header">🐣 Hatching</div>
       <div class="stat tone-gold"><div class="stat-label">Chicks hatched</div><div class="stat-value">${s.chicksHatched}</div><div class="stat-sub">from clutches started this year</div>${statSpark(tm.chicks)}${yoy(s.chicksHatched, sp && sp.chicksHatched)}</div>
       <div class="stat tone-rust"><div class="stat-label">Lost from hatching</div><div class="stat-value">${s.hatchLoss}</div><div class="stat-sub">${s.hatchClear} clear · ${s.hatchQuit} quit · ${s.hatchFailed} failed to hatch</div></div>
       ` : ""}
@@ -6222,6 +6232,7 @@ function renderCoopOverview() {
       <div class="dash-top">
       <div class="dash-top-main">
       <div class="grid-stats-2">
+        <div class="flock-section-header">🐔 Flock</div>
         ${statCard({ tone: "sage", goto: "flock", label: "Active Birds", value: s.active,
           sub: `${BIRD_TYPE_ICONS.layer.emoji} ${s.layers} layer · ${BIRD_TYPE_ICONS.meat.emoji} ${s.meatActive} meat`,
           spark: sparklineSvg(tr.flockW),
@@ -6230,6 +6241,7 @@ function renderCoopOverview() {
           sub: `${s.lossesThisYear} this year`,
           spark: sparklineSvg(tr.lossesW),
           chip: deltaChipHtml(tr.cur.losses, tr.prev.losses, { goodUp: false }) })}
+        <div class="flock-section-header">🥚 Value</div>
         ${statCard({ tone: "gold", goto: "expenses", label: "Value produced this month", value: fmtMoney(s.incomeMonth),
           sub: `${fmtMoney(ys.income)} this year`,
           spark: sparklineSvg(tr.valueW),
@@ -6238,10 +6250,11 @@ function renderCoopOverview() {
           sub: `${valueBreakdownHtml(s.eggIncomeMonth, s.eggActualIncomeMonth)} · ${ys.eggCount} eggs this year`,
           spark: sparklineSvg(tr.eggsW),
           chip: deltaChipHtml(tr.cur.eggs, tr.prev.eggs) })}
-        ${statCard({ tone: "sage", goto: "flock", label: "Meat processed this month", value: meatProcessedValue(s.processedThisMonth, s.weightThisMonth, s.meatTotalValueMonth),
+        <div style="grid-column:1/-1">${statCard({ tone: "sage", goto: "flock", label: "Meat processed this month", value: meatProcessedValue(s.processedThisMonth, s.weightThisMonth, s.meatTotalValueMonth),
           sub: `${(() => { const s1 = meatProcessedSub(s.processedThisMonth, s.weightThisMonth, s.meatTotalValueMonth); return s1 ? s1 + " · " : ""; })()}${displayWeight(ys.processedWeight)} ${getWeightUnit()} this year`,
           spark: sparklineSvg(tr.meatLbW),
-          chip: deltaChipHtml(tr.cur.meatLb, tr.prev.meatLb) })}
+          chip: deltaChipHtml(tr.cur.meatLb, tr.prev.meatLb) })}</div>
+        <div class="flock-section-header">💵 Finances</div>
         ${statCard({ tone: "slate", goto: "expenses", label: "Spent this month", value: fmtMoney(s.thisMonth),
           sub: `${fmtMoney(ys.totalExpenses)} this year`,
           spark: sparklineSvg(tr.spentW),
