@@ -1089,3 +1089,66 @@ tr:hover td { background: var(--surface-raised); }
     font-size: 13px;
   }
 }
+
+/* Stat panels: a section (Flock, Value, Finances, etc.) as one bordered card
+   rather than a loose row of separate mini-cards. Three shapes share the same
+   header/row language:
+     - hero + rows: one spark-lined headline number, then related secondary
+       numbers as a clean divided list beneath (Flock, Value)
+     - rows only: no single natural headline, just an organized list
+       (Feed & Bedding)
+     - paired hero: two equally-primary numbers side by side, each with its
+       own small spark (Finances: Spent vs Net)
+   Only the ONE (or two) headline number(s) per panel carry a sparkline --
+   everything else is a plain label/value row, which is what keeps a panel
+   with five numbers in it still reading as organized rather than busy. */
+.stat-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; border-left: 4px solid var(--slate); position: relative; overflow: hidden; display: flex; flex-direction: column; }
+.stat-panel.tone-sage { border-left-color: var(--sage); }
+.stat-panel.tone-gold { border-left-color: var(--gold); }
+.stat-panel.tone-slate { border-left-color: var(--slate); }
+.stat-panel.tone-rust { border-left-color: var(--rust); }
+.stat-panel-header {
+  display: flex; align-items: center; gap: 7px; margin-bottom: 14px;
+  font-family: 'Roboto Slab', serif; font-weight: 700; font-size: 13px;
+  color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em;
+}
+.stat-panel-hero { position: relative; margin-bottom: 12px; padding-bottom: 14px; border-bottom: 1px dashed var(--border); min-height: 50px; }
+.stat-panel-hero:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
+.stat-panel-hero-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); margin-bottom: 2px; }
+.stat-panel-hero-value-row { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; padding-right: 90px; }
+.stat-panel-hero-value { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 27px; color: var(--text); line-height: 1.15; }
+.stat-panel-hero-spark-wrap { position: absolute; right: 0; top: 4px; width: 100px; height: 30px; opacity: 0.6; }
+.stat-panel-hero-spark-wrap svg { width: 100%; height: 100%; display: block; }
+/* Two equally-primary numbers side by side (e.g. Spent vs Net), each with its
+   own compact spark -- narrower value/spark than the single-hero layout since
+   they share the card's width. */
+.stat-panel-hero-pair { display: flex; gap: 18px; }
+.stat-panel-hero-pair > .stat-panel-hero { flex: 1; margin-bottom: 0; padding-bottom: 0; border-bottom: none; min-height: 44px; }
+.stat-panel-hero-pair > .stat-panel-hero:not(:first-child) { border-left: 1px dashed var(--border); padding-left: 18px; }
+.stat-panel-hero-pair .stat-panel-hero-value { font-size: 22px; }
+.stat-panel-hero-pair .stat-panel-hero-value-row { padding-right: 46px; }
+.stat-panel-hero-pair .stat-panel-hero-spark-wrap { width: 46px; }
+.stat-panel-rows { display: flex; flex-direction: column; }
+.stat-panel-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px solid color-mix(in srgb, var(--slate) 14%, transparent); font-size: 13px; }
+.stat-panel-row:last-child { border-bottom: none; }
+.stat-panel-row-label { color: var(--text-dim); display: flex; align-items: center; gap: 6px; min-width: 0; }
+.stat-panel-row-value { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: var(--text); font-size: 13px; white-space: nowrap; flex: 0 0 auto; }
+.stat-panel-row-value.tone-rust { color: var(--rust); }
+.stat-panel-row-value.tone-sage { color: var(--sage); }
+@media (max-width: 480px) {
+  .stat-panel-hero-value-row { padding-right: 0; }
+  .stat-panel-hero-spark-wrap { position: static; width: 100%; height: 26px; margin-top: 6px; opacity: 0.5; }
+  .stat-panel-hero-pair { flex-direction: column; gap: 14px; }
+  .stat-panel-hero-pair > .stat-panel-hero:not(:first-child) { border-left: none; padding-left: 0; border-top: 1px dashed var(--border); padding-top: 12px; }
+}
+
+/* Tappable panel header: only the header (not the whole panel, since a panel
+   bundles several metrics that don't all belong to one tab) jumps to the
+   related tab. A modest underline-on-hover rather than the whole-card lift
+   .stat-tappable uses, since it's a small text link, not a button-sized
+   target. */
+.stat-panel-header-tappable { cursor: pointer; -webkit-tap-highlight-color: transparent; width: fit-content; }
+@media (hover: hover) {
+  .stat-panel-header-tappable:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+}
+.stat-panel-header-tappable:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; border-radius: 3px; }
