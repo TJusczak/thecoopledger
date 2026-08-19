@@ -262,8 +262,12 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 .dash-top { display: grid; grid-template-columns: 1fr; gap: 16px; }
 @media (min-width: 900px) {
   .dash-top { grid-template-columns: minmax(0, 1fr) 300px; align-items: stretch; }
-  .dash-top-side { display: flex; }
-  .dash-top-side > .card { flex: 1; margin-bottom: 0; }
+  /* Stacked, not side by side -- this column can hold more than one card now
+     (Bedding freshness, then Alerts below it), so it needs a real column
+     direction rather than flex's row default, which only worked by accident
+     when there was ever just the one card in here. */
+  .dash-top-side { display: flex; flex-direction: column; gap: 16px; }
+  .dash-top-side > .card { flex: 0 0 auto; margin-bottom: 0; }
   /* In the narrow side column, put each area's detail on its own line under
      the name rather than squeezing both onto one row. */
   .dash-top-side .bedding-fresh-row { flex-wrap: wrap; }
@@ -1090,18 +1094,14 @@ tr:hover td { background: var(--surface-raised); }
   }
 }
 
-/* Stat panels: a section (Flock, Value, Finances, etc.) as one bordered card
-   rather than a loose row of separate mini-cards. Three shapes share the same
-   header/row language:
-     - hero + rows: one spark-lined headline number, then related secondary
-       numbers as a clean divided list beneath (Flock, Value)
-     - rows only: no single natural headline, just an organized list
-       (Feed & Bedding)
-     - paired hero: two equally-primary numbers side by side, each with its
-       own small spark (Finances: Spent vs Net)
-   Only the ONE (or two) headline number(s) per panel carry a sparkline --
-   everything else is a plain label/value row, which is what keeps a panel
-   with five numbers in it still reading as organized rather than busy. */
+/* Stat panels: a whole topic (Flock, Value & Finances) as one bordered card,
+   rather than a loose row of separate mini-cards. A panel can combine a
+   primary sub-topic (bird counts, or value produced) with a secondary one
+   underneath a small divider label (Feed & Bedding under Flock; Spending
+   under Value) -- one card per page column instead of several small ones.
+   No sparklines: a panel can carry five or six numbers, and a line chart on
+   every one of them added clutter without adding information the number
+   itself didn't already say. */
 .stat-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; border-left: 4px solid var(--slate); position: relative; overflow: hidden; display: flex; flex-direction: column; }
 .stat-panel.tone-sage { border-left-color: var(--sage); }
 .stat-panel.tone-gold { border-left-color: var(--gold); }
@@ -1112,22 +1112,25 @@ tr:hover td { background: var(--surface-raised); }
   font-family: 'Roboto Slab', serif; font-weight: 700; font-size: 13px;
   color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em;
 }
-.stat-panel-hero { position: relative; margin-bottom: 12px; padding-bottom: 14px; border-bottom: 1px dashed var(--border); min-height: 50px; }
+/* A secondary topic within the same card (e.g. "Feed & Bedding" under the
+   Flock numbers) -- smaller and dimmer than the card's own header, with a
+   rule above it so it reads as "a new section starts here", not another
+   headline competing with the card's main one. */
+.stat-panel-subhead {
+  font-family: 'Roboto Slab', serif; font-weight: 700; font-size: 11px;
+  color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em;
+  margin: 14px 0 8px; padding-top: 12px; border-top: 1px dashed var(--border);
+}
+.stat-panel-hero { position: relative; margin-bottom: 12px; padding-bottom: 14px; border-bottom: 1px dashed var(--border); }
 .stat-panel-hero:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
 .stat-panel-hero-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); margin-bottom: 2px; }
-.stat-panel-hero-value-row { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; padding-right: 90px; }
+.stat-panel-hero-value-row { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
 .stat-panel-hero-value { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 27px; color: var(--text); line-height: 1.15; }
-.stat-panel-hero-spark-wrap { position: absolute; right: 0; top: 4px; width: 100px; height: 30px; opacity: 0.6; }
-.stat-panel-hero-spark-wrap svg { width: 100%; height: 100%; display: block; }
-/* Two equally-primary numbers side by side (e.g. Spent vs Net), each with its
-   own compact spark -- narrower value/spark than the single-hero layout since
-   they share the card's width. */
+/* Two numbers side by side (e.g. Spent vs Net) -- both equally primary. */
 .stat-panel-hero-pair { display: flex; gap: 18px; }
-.stat-panel-hero-pair > .stat-panel-hero { flex: 1; margin-bottom: 0; padding-bottom: 0; border-bottom: none; min-height: 44px; }
+.stat-panel-hero-pair > .stat-panel-hero { flex: 1; margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
 .stat-panel-hero-pair > .stat-panel-hero:not(:first-child) { border-left: 1px dashed var(--border); padding-left: 18px; }
 .stat-panel-hero-pair .stat-panel-hero-value { font-size: 22px; }
-.stat-panel-hero-pair .stat-panel-hero-value-row { padding-right: 46px; }
-.stat-panel-hero-pair .stat-panel-hero-spark-wrap { width: 46px; }
 .stat-panel-rows { display: flex; flex-direction: column; }
 .stat-panel-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px solid color-mix(in srgb, var(--slate) 14%, transparent); font-size: 13px; }
 .stat-panel-row:last-child { border-bottom: none; }
@@ -1136,8 +1139,6 @@ tr:hover td { background: var(--surface-raised); }
 .stat-panel-row-value.tone-rust { color: var(--rust); }
 .stat-panel-row-value.tone-sage { color: var(--sage); }
 @media (max-width: 480px) {
-  .stat-panel-hero-value-row { padding-right: 0; }
-  .stat-panel-hero-spark-wrap { position: static; width: 100%; height: 26px; margin-top: 6px; opacity: 0.5; }
   .stat-panel-hero-pair { flex-direction: column; gap: 14px; }
   .stat-panel-hero-pair > .stat-panel-hero:not(:first-child) { border-left: none; padding-left: 0; border-top: 1px dashed var(--border); padding-top: 12px; }
 }

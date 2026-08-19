@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-216";
+const APP_VERSION = "2026.07.13-217";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -3872,39 +3872,43 @@ function renderAllTimeStatsSection() {
     <div class="dim" style="font-size:12px;margin-bottom:14px">Everything this coop has ever logged, no date range -- things that only ever add up, not things like Active Birds that go up and down day to day (that lives on the Coop tab). For a specific year's breakdown (by category, by clean-out area, etc.), use Year Review instead.</div>
     <div class="grid-stats-2">
       ${statPanel("sage", "🐔", "Flock",
-        statPanelHero("Total Birds Added, All Time", totalBirdsAdded, { spark: statSparkRaw(ty.newBirds) }),
-        statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layers, currently active`, s.layers)
-        + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat birds, currently active`, s.meatActive)
-        + statPanelRow("Losses, all time", s.lossesAll, s.lossesAll > 0 ? "rust" : ""),
-        "flock"
+        statPanelHero("Total Birds Added, All Time", totalBirdsAdded)
+        + statPanelRows(
+          statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layers, currently active`, s.layers)
+          + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat birds, currently active`, s.meatActive)
+          + statPanelRow("Processed, all time", s.processed)
+          + statPanelRow("Losses, all time", s.lossesAll, s.lossesAll > 0 ? "rust" : "")
+        )
+        + statPanelSubhead("🌾 Feed & Bedding")
+        + statPanelRows(
+          statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layer feed used`, `${displayWeight(usage.layerFeedLbs)} ${getWeightUnit()}`)
+          + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat feed used`, `${displayWeight(usage.meatFeedLbs)} ${getWeightUnit()}`)
+          + statPanelRow("Bedding used", `${usage.beddingCuFt.toFixed(1)} cu ft`)
+          + statPanelRow("Full clean-outs", totalCleanouts)
+        ), "flock"
       )}
-      ${statPanel("gold", "🥚", "Value",
-        statPanelHero("Value Produced, All Time", fmtMoney(s.incomeAll), { spark: statSparkRaw(ty.value) }),
-        statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Eggs collected`, s.totalEggs)
-        + statPanelRow("Income from eggs", fmtMoney(s.eggTotalValueAll))
-        + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat processed`, s.totalWeight > 0 ? `${displayWeight(s.totalWeight)} ${getWeightUnit()}` : "—")
-        + statPanelRow("Income from meat", fmtMoney(s.meatTotalValueAll))
-        + statPanelRow("Avg weight / bird", s.processed > 0 ? weightLabel(s.totalWeight / s.processed) : "—"),
-        "eggs"
-      )}
-      ${statPanel(s.netAll >= 0 ? "sage" : "rust", "💵", "Finances",
-        statPanelHeroPair(
-          statPanelHero("Spent", fmtMoney(s.totalExpenses), { spark: statSparkRaw(ty.spent) }),
-          statPanelHero("Net", fmtMoney(s.netAll), { spark: statSparkRaw(ty.net) })
-        ), statPanelRow("Average per month", fmtMoney(s.totalExpenses / monthsSinceCoopStart())), "expenses"
-      )}
-      ${statPanel("slate", "🌾", "Feed & Bedding",
-        "",
-        statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layer feed used`, `${displayWeight(usage.layerFeedLbs)} ${getWeightUnit()}`)
-        + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat feed used`, `${displayWeight(usage.meatFeedLbs)} ${getWeightUnit()}`)
-        + statPanelRow("Bedding used", `${usage.beddingCuFt.toFixed(1)} cu ft`)
-        + statPanelRow("Full clean-outs", totalCleanouts)
+      ${statPanel("gold", "🥚", "Value & Finances",
+        statPanelHero("Value Produced, All Time", fmtMoney(s.incomeAll))
+        + statPanelRows(
+          statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Eggs collected`, s.totalEggs)
+          + statPanelRow("Income from eggs", fmtMoney(s.eggTotalValueAll))
+          + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat processed`, s.totalWeight > 0 ? `${displayWeight(s.totalWeight)} ${getWeightUnit()}` : "—")
+          + statPanelRow("Income from meat", fmtMoney(s.meatTotalValueAll))
+          + statPanelRow("Avg weight / bird", s.processed > 0 ? weightLabel(s.totalWeight / s.processed) : "—")
+        )
+        + statPanelSubhead("💵 Spending")
+        + statPanelHeroPair(
+          statPanelHero("Spent", fmtMoney(s.totalExpenses)),
+          statPanelHero("Net", fmtMoney(s.netAll))
+        )
+        + statPanelRows(statPanelRow("Average per month", fmtMoney(s.totalExpenses / monthsSinceCoopStart()))), "eggs"
       )}
       ${STATE.hatches.length > 0 ? statPanel("gold", "🐣", "Hatching",
-        "",
-        statPanelRow("Chicks hatched", s.chicksHatchedAll)
-        + statPanelRow("Lost from hatching", s.hatchLossAll, s.hatchLossAll > 0 ? "rust" : "")
-        + statPanelRow("Clear · Quit · Failed", `${s.hatchClearAll} · ${s.hatchQuitAll} · ${s.hatchFailedAll}`)
+        statPanelRows(
+          statPanelRow("Chicks hatched", s.chicksHatchedAll)
+          + statPanelRow("Lost from hatching", s.hatchLossAll, s.hatchLossAll > 0 ? "rust" : "")
+          + statPanelRow("Clear · Quit · Failed", `${s.hatchClearAll} · ${s.hatchQuitAll} · ${s.hatchFailedAll}`)
+        )
       ) : ""}
     </div>
     ${(() => {
@@ -5558,7 +5562,13 @@ function computeYearStats(year) {
 
   const lossesInYear = STATE.birds.filter(b => b.status === "Deceased" && inYear(b.death_date)).length;
   const newBirdIds = new Set();
-  STATE.birds.forEach(b => { if (inYear(b.acquired_date) || (inYear(b.hatch_date) && !b.acquired_date)) newBirdIds.add(b.id); });
+  const newLayerBirds = new Set(), newMeatBirds = new Set();
+  STATE.birds.forEach(b => {
+    if (inYear(b.acquired_date) || (inYear(b.hatch_date) && !b.acquired_date)) {
+      newBirdIds.add(b.id);
+      (b.type === "Meat" ? newMeatBirds : newLayerBirds).add(b.id);
+    }
+  });
 
   // Scoped by when each clutch started (individual outcomes don't carry
   // their own date, only the clutch does) -- a clutch spanning New Year's
@@ -5611,7 +5621,7 @@ function computeYearStats(year) {
   const costPerLbMeatFeed = meatConsumedYr.lbs > 0 ? meatConsumedYr.cost / meatConsumedYr.lbs : null;
   const layerFeedCost = layerConsumedYr.cost, meatFeedCost = meatConsumedYr.cost;
 
-  return { eggCount, eggValue, totalExpenses, categoryBreakdown, processedCount: processedInYear.length, processedWeight, meatValue, lossesInYear, newBirds: newBirdIds.size, cleanoutsByArea, income, net, actualIncome, eggActualIncome, meatActualIncome, eggTotalValue, meatTotalValue, costPerDozenLayers, costPerLbMeat, layerFeedLbs, meatFeedLbs, beddingCuFt, costPerLbLayerFeed, costPerLbMeatFeed, layerFeedCost, meatFeedCost, chicksHatched, hatchClear, hatchQuit, hatchFailed, hatchLoss };
+  return { eggCount, eggValue, totalExpenses, categoryBreakdown, processedCount: processedInYear.length, processedWeight, meatValue, lossesInYear, newBirds: newBirdIds.size, newLayerBirds: newLayerBirds.size, newMeatBirds: newMeatBirds.size, cleanoutsByArea, income, net, actualIncome, eggActualIncome, meatActualIncome, eggTotalValue, meatTotalValue, costPerDozenLayers, costPerLbMeat, layerFeedLbs, meatFeedLbs, beddingCuFt, costPerLbLayerFeed, costPerLbMeatFeed, layerFeedCost, meatFeedCost, chicksHatched, hatchClear, hatchQuit, hatchFailed, hatchLoss };
 }
 
 function renderYearReviewSection() {
@@ -5641,36 +5651,41 @@ function renderYearReviewSection() {
 
     <div class="grid-stats-2" style="margin-bottom:16px">
       ${statPanel("sage", "🐔", "Flock",
-        statPanelHero("New Birds This Year", s.newBirds, { chip: yoy(s.newBirds, sp && sp.newBirds), spark: statSparkRaw(tm.newBirds) }),
-        statPanelRow("Losses this year", s.lossesInYear, s.lossesInYear > 0 ? "rust" : ""),
-        "flock"
+        statPanelHero("New Birds This Year", s.newBirds, { chip: yoy(s.newBirds, sp && sp.newBirds) })
+        + statPanelRows(
+          statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} New layers`, s.newLayerBirds)
+          + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} New meat birds`, s.newMeatBirds)
+          + statPanelRow("Processed this year", s.processedCount)
+          + statPanelRow("Losses this year", s.lossesInYear, s.lossesInYear > 0 ? "rust" : "")
+        )
+        + statPanelSubhead("🌾 Feed & Bedding")
+        + statPanelRows(
+          statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layer feed used`, `${displayWeight(s.layerFeedLbs)} ${getWeightUnit()}`)
+          + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat feed used`, `${displayWeight(s.meatFeedLbs)} ${getWeightUnit()}`)
+          + statPanelRow("Bedding used", `${s.beddingCuFt.toFixed(1)} cu ft`)
+        ), "flock"
       )}
-      ${statPanel("gold", "🥚", "Value",
-        statPanelHero("Value Produced", fmtMoney(s.income), { chip: yoy(s.income, sp && sp.income), spark: statSparkRaw(tm.value) }),
-        statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Eggs collected`, s.eggCount)
-        + statPanelRow("Income from eggs", fmtMoney(s.eggTotalValue))
-        + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat processed`, s.processedWeight > 0 ? `${displayWeight(s.processedWeight)} ${getWeightUnit()}` : "—")
-        + statPanelRow("Income from meat", fmtMoney(s.meatTotalValue))
-        + statPanelRow("Avg weight / bird", s.processedCount > 0 ? weightLabel(s.processedWeight / s.processedCount) : "—"),
-        "eggs"
-      )}
-      ${statPanel(s.net >= 0 ? "sage" : "rust", "💵", "Finances",
-        statPanelHeroPair(
-          statPanelHero("Spent", fmtMoney(s.totalExpenses), { spark: statSparkRaw(tm.spent) }),
-          statPanelHero(`Net for ${selectedYear}`, fmtMoney(s.net), { spark: statSparkRaw(tm.net) })
-        ), "", "expenses"
-      )}
-      ${statPanel("slate", "🌾", "Feed & Bedding",
-        "",
-        statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layer feed used`, `${displayWeight(s.layerFeedLbs)} ${getWeightUnit()}`)
-        + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat feed used`, `${displayWeight(s.meatFeedLbs)} ${getWeightUnit()}`)
-        + statPanelRow("Bedding used", `${s.beddingCuFt.toFixed(1)} cu ft`)
+      ${statPanel("gold", "🥚", "Value & Finances",
+        statPanelHero("Value Produced", fmtMoney(s.income), { chip: yoy(s.income, sp && sp.income) })
+        + statPanelRows(
+          statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Eggs collected`, s.eggCount)
+          + statPanelRow("Income from eggs", fmtMoney(s.eggTotalValue))
+          + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat processed`, s.processedWeight > 0 ? `${displayWeight(s.processedWeight)} ${getWeightUnit()}` : "—")
+          + statPanelRow("Income from meat", fmtMoney(s.meatTotalValue))
+          + statPanelRow("Avg weight / bird", s.processedCount > 0 ? weightLabel(s.processedWeight / s.processedCount) : "—")
+        )
+        + statPanelSubhead("💵 Spending")
+        + statPanelHeroPair(
+          statPanelHero("Spent", fmtMoney(s.totalExpenses)),
+          statPanelHero(`Net for ${selectedYear}`, fmtMoney(s.net))
+        ), "eggs"
       )}
       ${(s.chicksHatched + s.hatchLoss) > 0 ? statPanel("gold", "🐣", "Hatching",
-        "",
-        statPanelRow("Chicks hatched", s.chicksHatched)
-        + statPanelRow("Lost from hatching", s.hatchLoss, s.hatchLoss > 0 ? "rust" : "")
-        + statPanelRow("Clear · Quit · Failed", `${s.hatchClear} · ${s.hatchQuit} · ${s.hatchFailed}`)
+        statPanelRows(
+          statPanelRow("Chicks hatched", s.chicksHatched)
+          + statPanelRow("Lost from hatching", s.hatchLoss, s.hatchLoss > 0 ? "rust" : "")
+          + statPanelRow("Clear · Quit · Failed", `${s.hatchClear} · ${s.hatchQuit} · ${s.hatchFailed}`)
+        )
       ) : ""}
     </div>
 
@@ -6105,15 +6120,12 @@ function cleanoutTone(days, area) {
 function statPanelHero(label, value, opts) {
   opts = opts || {};
   const chip = opts.chip || "";
-  const spark = opts.spark || null;
   return `<div class="stat-panel-hero">
     <div class="stat-panel-hero-label">${esc(label)}</div>
     <div class="stat-panel-hero-value-row"><div class="stat-panel-hero-value">${value}</div>${chip}</div>
-    ${spark ? `<div class="stat-panel-hero-spark-wrap">${spark}</div>` : ""}
   </div>`;
 }
-/** Two heroes side by side (e.g. Spent vs Net) -- both equally primary, so
- * both get their own small spark, neither is demoted to a plain row. */
+/** Two heroes side by side (e.g. Spent vs Net) -- both equally primary. */
 function statPanelHeroPair(heroAHtml, heroBHtml) {
   return `<div class="stat-panel-hero-pair">${heroAHtml}${heroBHtml}</div>`;
 }
@@ -6126,18 +6138,29 @@ function statPanelRow(label, value, tone) {
   tone = tone || "";
   return `<div class="stat-panel-row"><span class="stat-panel-row-label">${label}</span><span class="stat-panel-row-value${tone ? " tone-" + tone : ""}">${value}</span></div>`;
 }
-/** A full panel: header + zero or more heroes + zero or more secondary rows.
- * `heroesHtml` is usually one statPanelHero() call, or a statPanelHeroPair()
- * for the two-equal-numbers shape; `rowsHtml` is zero or more statPanelRow()
- * calls joined together (or "" for a hero-only panel like Finances). `goto`
- * makes the header tappable, jumping to the tab this panel's numbers live in
- * -- restores the old individual stat cards' tap-through in the one place a
- * panel bundling several metrics still has an unambiguous single home tab. */
-function statPanel(tone, icon, title, heroesHtml, rowsHtml, goto) {
+/** Wraps a run of statPanelRow() calls in the shared rows container. Call
+ * once per contiguous group of rows -- a panel with a subhead partway down
+ * needs two separate row groups, not one. */
+function statPanelRows(rowsHtml) {
+  return rowsHtml ? `<div class="stat-panel-rows">${rowsHtml}</div>` : "";
+}
+/** A small divider label for a secondary topic living in the same card as a
+ * primary one -- e.g. "Feed & Bedding" beneath a card whose main hero is
+ * Active Birds. Reads as "a new section starts here" without competing with
+ * the card's own header for attention. */
+function statPanelSubhead(label) {
+  return `<div class="stat-panel-subhead">${esc(label)}</div>`;
+}
+/** A full panel: header + a pre-assembled body (any mix of statPanelHero,
+ * statPanelHeroPair, statPanelRows, and statPanelSubhead calls, concatenated
+ * by the caller in the order they should appear). `goto` makes the header
+ * tappable, jumping to the tab this panel's numbers live in -- restores the
+ * old individual stat cards' tap-through in the one place a panel bundling
+ * several metrics still has an unambiguous single home tab. */
+function statPanel(tone, icon, title, bodyHtml, goto) {
   return `<div class="stat-panel tone-${tone}">
     <div class="stat-panel-header${goto ? " stat-panel-header-tappable" : ""}" ${goto ? `data-goto-tab="${goto}" role="button" tabindex="0" title="Open ${goto}"` : ""}>${icon} ${esc(title)}</div>
-    ${heroesHtml || ""}
-    ${rowsHtml ? `<div class="stat-panel-rows">${rowsHtml}</div>` : ""}
+    ${bodyHtml}
   </div>`;
 }
 
@@ -6310,33 +6333,77 @@ function renderCoopOverview() {
       <div class="dash-top">
       <div class="dash-top-main">
       <div class="grid-stats-2">
-        ${statPanel("sage", "🐔", "Flock",
-          statPanelHero("Active Birds", s.active, {
+        ${(() => {
+          // Feed & Bedding "this month" uses the real current calendar month,
+          // independent of the month-comparison picker further down the page
+          // -- matching how every other top-of-page number here is always
+          // "this month," not whatever month someone has the picker set to.
+          const thisMonthKey = monthKeyOf(todayStr());
+          const flockBody = statPanelHero("Active Birds", s.active, {
             chip: deltaChipHtml(tr.flockW[tr.flockW.length - 1], tr.flockW[tr.flockW.length - 5]),
-            spark: sparklineSvg(tr.flockW),
-          }),
-          statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layers`, s.layers)
-          + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat birds`, s.meatActive)
-          + statPanelRow("Losses this month", s.lossesThisMonth, s.lossesThisMonth > 0 ? "rust" : "")
-          + statPanelRow("Processed this month", s.processedThisMonth), "flock"
-        )}
-        ${statPanel("gold", "🥚", "Value",
-          statPanelHero("Value Produced This Month", fmtMoney(s.incomeMonth), {
+          }) + statPanelRows(
+            statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layers`, s.layers)
+            + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat birds`, s.meatActive)
+            + statPanelRow("Losses this month", s.lossesThisMonth, s.lossesThisMonth > 0 ? "rust" : "")
+            + statPanelRow("Processed this month", s.processedThisMonth)
+          ) + statPanelSubhead("🌾 Feed & Bedding") + statPanelRows(
+            statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layer feed used`, `${displayWeight(feedTotalForMonth(thisMonthKey, "layer"))} ${getWeightUnit()}`)
+            + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat feed used`, `${displayWeight(feedTotalForMonth(thisMonthKey, "meat"))} ${getWeightUnit()}`)
+            + statPanelRow("Bedding used", `${beddingTotalForMonth(thisMonthKey).toFixed(1)} cu ft`)
+          );
+          const valueBody = statPanelHero("Value Produced This Month", fmtMoney(s.incomeMonth), {
             chip: deltaChipHtml(tr.cur.value, tr.prev.value),
-            spark: sparklineSvg(tr.valueW),
-          }),
-          statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Eggs collected`, s.eggsThisMonth)
-          + statPanelRow("Income from eggs", fmtMoney(s.eggTotalValueMonth))
-          + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat processed`, s.weightThisMonth > 0 ? `${displayWeight(s.weightThisMonth)} ${getWeightUnit()}` : "—")
-          + statPanelRow("Income from meat", fmtMoney(s.meatTotalValueMonth))
-          + statPanelRow("Avg weight / bird", s.processedThisMonth > 0 ? weightLabel(s.weightThisMonth / s.processedThisMonth) : "—"), "eggs"
-        )}
-        ${statPanel(s.netMonth >= 0 ? "sage" : "rust", "💵", "Finances",
-          statPanelHeroPair(
-            statPanelHero("Spent", fmtMoney(s.thisMonth), { spark: sparklineSvg(tr.spentW) }),
-            statPanelHero("Net", fmtMoney(s.netMonth), { spark: sparklineSvg(tr.netW) })
-          ), "", "expenses"
-        )}
+          }) + statPanelRows(
+            statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Eggs collected`, s.eggsThisMonth)
+            + statPanelRow("Income from eggs", fmtMoney(s.eggTotalValueMonth))
+            + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat processed`, s.weightThisMonth > 0 ? `${displayWeight(s.weightThisMonth)} ${getWeightUnit()}` : "—")
+            + statPanelRow("Income from meat", fmtMoney(s.meatTotalValueMonth))
+            + statPanelRow("Avg weight / bird", s.processedThisMonth > 0 ? weightLabel(s.weightThisMonth / s.processedThisMonth) : "—")
+          ) + statPanelSubhead("💵 Spending") + statPanelHeroPair(
+            statPanelHero("Spent", fmtMoney(s.thisMonth)),
+            statPanelHero("Net", fmtMoney(s.netMonth))
+          );
+          return statPanel("sage", "🐔", "Flock", flockBody, "flock")
+            + statPanel("gold", "🥚", "Value & Finances", valueBody, "eggs");
+        })()}
+      </div>
+
+      </div>
+      <div class="dash-top-side">
+      <div class="card">
+        <div class="card-title">Bedding freshness</div>
+        <div class="bedding-fresh-list">
+          ${getBeddingAreas().map(area => {
+            const bs = beddingStatsFor(area);
+            const t = getBeddingThresholds(area);
+            const daysSinceCleanout = bs.lastCleanout ? daysSince(bs.lastCleanout.date) : null;
+            const daysSinceChurn = bs.lastChurn ? daysSince(bs.lastChurn.date) : null;
+            const cleanoutToneInfo = cleanoutTone(daysSinceCleanout, area);
+            const daysUntilCleanout = daysSinceCleanout !== null ? t.danger - daysSinceCleanout : null;
+            const daysUntilChurn = daysSinceChurn !== null ? t.churn - daysSinceChurn : null;
+            // Worst of the two schedules drives the row's status dot, so a
+            // glance down the list shows what needs attention.
+            const cleanoutState = daysUntilCleanout === null ? 0 : daysUntilCleanout < 0 ? 2 : daysUntilCleanout === 0 ? 1 : (cleanoutToneInfo.tone === "gold" ? 1 : 0);
+            const churnState = daysUntilChurn === null ? 0 : daysUntilChurn < 0 ? 2 : daysUntilChurn === 0 ? 1 : 0;
+            const worst = Math.max(cleanoutState, churnState);
+            const dotTone = worst === 2 ? "danger" : worst === 1 ? "gold" : "sage";
+            // Compact captions: clean-out is the headline, churn a secondary note.
+            const cleanoutTxt = daysUntilCleanout === null ? "no clean-out logged"
+              : daysUntilCleanout < 0 ? `clean-out overdue ${-daysUntilCleanout}d`
+              : daysUntilCleanout === 0 ? "clean-out due today"
+              : `clean-out in ${daysUntilCleanout}d`;
+            const churnTxt = daysUntilChurn === null ? "" 
+              : daysUntilChurn < 0 ? ` · churn overdue ${-daysUntilChurn}d`
+              : daysUntilChurn === 0 ? " · churn due today"
+              : ` · churn in ${daysUntilChurn}d`;
+            return `<div class="bedding-fresh-row">
+              <span class="status-dot tone-${dotTone}" title="${dotTone === "danger" ? "Overdue" : dotTone === "gold" ? "Due soon" : "OK"}"></span>
+              <span class="bedding-fresh-area">${esc(area)}</span>
+              <span class="bedding-fresh-info dim">${cleanoutTxt}${churnTxt}</span>
+            </div>`;
+          }).join("")}
+        </div>
+        <div class="dim" style="font-size:11px;margin-top:10px">Thresholds are per-area and adjustable in the <strong style="color:var(--text)">Settings</strong> tab.</div>
       </div>
 
       ${(() => {
@@ -6382,43 +6449,6 @@ function renderCoopOverview() {
         </div>`;
       })()}
 
-      </div>
-      <div class="dash-top-side">
-      <div class="card">
-        <div class="card-title">Bedding freshness</div>
-        <div class="bedding-fresh-list">
-          ${getBeddingAreas().map(area => {
-            const bs = beddingStatsFor(area);
-            const t = getBeddingThresholds(area);
-            const daysSinceCleanout = bs.lastCleanout ? daysSince(bs.lastCleanout.date) : null;
-            const daysSinceChurn = bs.lastChurn ? daysSince(bs.lastChurn.date) : null;
-            const cleanoutToneInfo = cleanoutTone(daysSinceCleanout, area);
-            const daysUntilCleanout = daysSinceCleanout !== null ? t.danger - daysSinceCleanout : null;
-            const daysUntilChurn = daysSinceChurn !== null ? t.churn - daysSinceChurn : null;
-            // Worst of the two schedules drives the row's status dot, so a
-            // glance down the list shows what needs attention.
-            const cleanoutState = daysUntilCleanout === null ? 0 : daysUntilCleanout < 0 ? 2 : daysUntilCleanout === 0 ? 1 : (cleanoutToneInfo.tone === "gold" ? 1 : 0);
-            const churnState = daysUntilChurn === null ? 0 : daysUntilChurn < 0 ? 2 : daysUntilChurn === 0 ? 1 : 0;
-            const worst = Math.max(cleanoutState, churnState);
-            const dotTone = worst === 2 ? "danger" : worst === 1 ? "gold" : "sage";
-            // Compact captions: clean-out is the headline, churn a secondary note.
-            const cleanoutTxt = daysUntilCleanout === null ? "no clean-out logged"
-              : daysUntilCleanout < 0 ? `clean-out overdue ${-daysUntilCleanout}d`
-              : daysUntilCleanout === 0 ? "clean-out due today"
-              : `clean-out in ${daysUntilCleanout}d`;
-            const churnTxt = daysUntilChurn === null ? "" 
-              : daysUntilChurn < 0 ? ` · churn overdue ${-daysUntilChurn}d`
-              : daysUntilChurn === 0 ? " · churn due today"
-              : ` · churn in ${daysUntilChurn}d`;
-            return `<div class="bedding-fresh-row">
-              <span class="status-dot tone-${dotTone}" title="${dotTone === "danger" ? "Overdue" : dotTone === "gold" ? "Due soon" : "OK"}"></span>
-              <span class="bedding-fresh-area">${esc(area)}</span>
-              <span class="bedding-fresh-info dim">${cleanoutTxt}${churnTxt}</span>
-            </div>`;
-          }).join("")}
-        </div>
-        <div class="dim" style="font-size:11px;margin-top:10px">Thresholds are per-area and adjustable in the <strong style="color:var(--text)">Settings</strong> tab.</div>
-      </div>
       </div>
       </div>
 
@@ -6600,6 +6630,23 @@ const sum = (arr) => arr.reduce((a, b) => a + (Number(b) || 0), 0);
 function feedTotalForMonth(key, feedType = "both") {
   const series = feedCumulativeForMonth(key, feedType);
   return series.length ? series[series.length - 1] : 0;
+}
+/** Bedding used (cu ft), month-to-date -- same bag-ramp accuracy as feed
+ * (a bag's usage spread across the days it was actually open, an open bag's
+ * used-so-far portion counted as of today), just for the Bedding category. */
+function beddingTotalForMonth(key) {
+  const n = daysInMonthKey(key);
+  const perDay = Array(n).fill(0);
+  const today = todayStr();
+  STATE.supplies.filter(s => s.category === "Bedding").forEach(s => {
+    const ramp = bagRamp(s, today);
+    if (!ramp) return;
+    for (let i = 0; i < ramp.spanDays; i++) {
+      const d = dayInMonth(addDays(ramp.start, i), key);
+      if (d > 0) perDay[d - 1] += ramp.perDay;
+    }
+  });
+  return perDay.reduce((a, b) => a + b, 0);
 }
 
 /** A clean "this month vs comparison" total for a dashboard card header.
