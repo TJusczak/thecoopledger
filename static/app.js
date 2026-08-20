@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-228";
+const APP_VERSION = "2026.07.13-230";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -415,6 +415,11 @@ function applyFeedUnitLock(categorySelId, unitSelId, lockMap = UNIT_LOCKS) {
 }
 let beddingVisibleCount = PAGE_SIZE;
 let reviewYear = null;
+/** The month the Overview's Flock/Value panels show -- null means "today's
+ * month." Mirrors reviewYear's pattern: validated against the real list of
+ * months with data each render, so a stale selection (e.g. the last coop
+ * had that month, this one doesn't) can't point at nothing. */
+let dashSelectedMonth = null;
 const DEFAULT_BEDDING_THRESHOLDS = {
   "Coop Floor": { warn: 120, danger: 180, churn: 7 },
   "Nesting Boxes": { warn: 60, danger: 90, churn: 7 },
@@ -3908,8 +3913,9 @@ function renderAllTimeStatsSection() {
   const costPerCuFtBedding = usage.beddingCuFt > 0 ? beddingSpendAll / usage.beddingCuFt : null;
   const ty = yearlyTrends(); // one bucket per calendar year with data
   el.innerHTML = `
-    <div class="card-title" style="margin-bottom:12px">All-time totals — ${esc(coop ? coop.name : "")}</div>
-    <div class="dim" style="font-size:12px;margin-bottom:14px">Everything this coop has ever logged, no date range -- things that only ever add up, not things like Active Birds that go up and down day to day (that lives on the Coop tab). For a specific year's breakdown (by category, by clean-out area, etc.), use Year Review instead.</div>
+    <div class="toolbar">
+      <div class="card-title" style="margin:0">All-time totals — ${esc(coop ? coop.name : "")}</div>
+    </div>
     <div class="grid-stats-2">
       ${statPanel("sage", "🪶", "Flock",
         statPanelHero("Total Birds Added, All Time", totalBirdsAdded)
@@ -5575,7 +5581,8 @@ function weightedAvgMeatPrice(birdEntries, fallback) {
   return totalValue / totalWeight;
 }
 
-function computeStats() {
+function computeStats(monthKey) {
+  monthKey = monthKey || monthKeyOf(todayStr());
   const active = STATE.birds.filter(b => b.status === "Active");
   const layers = active.filter(b => b.type === "Layer" || b.type === "Dual Purpose").length;
   const meatActive = active.filter(b => b.type === "Meat").length;
@@ -5586,7 +5593,11 @@ function computeStats() {
   const last30 = STATE.eggs.filter(e => withinRange(e.date, 30)).reduce((s, e) => s + (Number(e.count) || 0), 0);
   const totalExpenses = STATE.expenses.filter(x => x.entry_type !== "income").reduce((s, x) => s + (Number(x.amount) || 0), 0);
   const now = new Date();
-  const isThisMonth = (d) => { const dt = new Date(d + "T00:00:00"); return dt.getMonth() === now.getMonth() && dt.getFullYear() === now.getFullYear(); };
+  // "This month" now means the SELECTED month (today's, unless the caller
+  // passed a different one for historical look-back) -- everything below
+  // gated on isThisMonth shifts with it. isThisYear stays tied to the real
+  // current year regardless; nothing here generalizes that cross-reference.
+  const isThisMonth = (d) => d && monthKeyOf(d) === monthKey;
   const isThisYear = (d) => { const dt = new Date(d + "T00:00:00"); return dt.getFullYear() === now.getFullYear(); };
   const thisMonth = STATE.expenses.filter(x => x.entry_type !== "income" && isThisMonth(x.date)).reduce((s, x) => s + (Number(x.amount) || 0), 0);
   // Now that Feed is split into Layer Feed / Meat Feed categories, the category
@@ -5681,6 +5692,59 @@ function allCoopYears() {
   STATE.bedding.forEach(b => { if (b.date) years.add(b.date.slice(0, 4)); });
   return [...years].sort().reverse();
 }
+/** Every month with at least one dated entry, newest first -- the same
+ * "only what actually has data" principle allCoopYears uses, at month
+ * grain instead of year. Always includes the current month even with
+ * nothing logged yet, so the picker is never empty for a brand-new coop. */
+function allCoopMonths() {
+  const months = new Set();
+  STATE.birds.forEach(b => { ["hatch_date", "acquired_date", "harvest_date", "death_date", "sold_date", "retired_date"].forEach(f => { if (b[f]) months.add(monthKeyOf(b[f])); }); });
+  STATE.eggs.forEach(e => { if (e.date) months.add(monthKeyOf(e.date)); });
+  STATE.expenses.forEach(x => { if (x.date) months.add(monthKeyOf(x.date)); });
+  STATE.bedding.forEach(b => { if (b.date) months.add(monthKeyOf(b.date)); });
+  months.add(monthKeyOf(todayStr()));
+  return [...months].sort().reverse();
+}
+/** Delta-chip comparison for the (possibly historical) selected month: sums
+ * the month through a cutoff day, against the SAME cutoff day in the month
+ * before it -- apples to apples either way. For the current, still-in-
+ * progress month, the cutoff is today's day-of-month, so a half-finished
+ * month never gets compared to a completed one. For any past, already-
+ * complete month, the cutoff is that month's own last day -- the whole
+ * month, since there's nothing "in progress" to worry about. sumFn gets an
+ * inclusive [from, to] date-string range and returns whatever total the
+ * caller is comparing. */
+function monthOverMonthCompare(monthKey, sumFn) {
+  const isCurrentMonth = monthKey === monthKeyOf(todayStr());
+  const cutoffDay = isCurrentMonth ? Number(todayStr().slice(8, 10)) : daysInMonthKey(monthKey);
+  const prevKey = shiftMonthKey(monthKey, -1);
+  const prevCutoffDay = Math.min(cutoffDay, daysInMonthKey(prevKey));
+  const curFrom = `${monthKey}-01`, curTo = addDays(curFrom, cutoffDay - 1);
+  const prevFrom = `${prevKey}-01`, prevTo = addDays(prevFrom, prevCutoffDay - 1);
+  return { cur: sumFn(curFrom, curTo), prev: sumFn(prevFrom, prevTo) };
+}
+/** Raw (non-washout-adjusted) value/spend/net over an arbitrary date range,
+ * for the dashboard's month-over-month delta chips specifically -- these
+ * need an arbitrary partial-month range (e.g. Aug 1-20), not a whole
+ * calendar month, which the exact sale-washout logic in computeStats isn't
+ * built for. Matches the same precedent computeCardTrends already
+ * established for the sparkline/trend data: a plain count x price estimate
+ * keeps a trend honest without needing the exact figure, which stays in the
+ * headline number (computeStats) where precision actually matters. */
+function rawValueBetween(fromDate, toDate) {
+  const d = getCoopDefaults();
+  const eggFallback = Number(d.eggPrice) || 0, meatFallback = Number(d.pricePerLb) || 0;
+  const inRange = (dt) => dt && dt >= fromDate && dt <= toDate;
+  const eggVal = STATE.eggs.filter(e => inRange(e.date)).reduce((s, e) => s + (Number(e.count) || 0) * (Number(e.price_per_egg) || eggFallback), 0);
+  const meatVal = STATE.birds.filter(b => b.status === "Processed" && inRange(b.harvest_date)).reduce((s, b) => s + (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || meatFallback), 0);
+  const otherInc = STATE.expenses.filter(x => x.entry_type === "income" && x.category !== "Egg Sale" && x.category !== "Meat Sale" && inRange(x.date)).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  return eggVal + meatVal + otherInc;
+}
+function spendBetween(fromDate, toDate) {
+  const inRange = (dt) => dt && dt >= fromDate && dt <= toDate;
+  return STATE.expenses.filter(x => x.entry_type !== "income" && inRange(x.date)).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+}
+function netBetween(fromDate, toDate) { return rawValueBetween(fromDate, toDate) - spendBetween(fromDate, toDate); }
 
 /** Per-bucket trend series for the stat cards on Year Review and All-Time.
  * Year Review -> 12 monthly buckets for the selected year; All-Time ->
@@ -6676,20 +6740,23 @@ function renderCoopHub() {
 function renderCoopOverview() {
   const el = document.getElementById("coopSubContent");
   if (!currentCoopId) { el.innerHTML = noCoopMessage(); return; }
-  const s = computeStats();
+  const months = allCoopMonths();
+  const thisMonthKey = monthKeyOf(todayStr());
+  const selectedMonthKey = months.includes(dashSelectedMonth) ? dashSelectedMonth : thisMonthKey;
+  dashSelectedMonth = selectedMonthKey;
+  const isCurrentMonth = selectedMonthKey === thisMonthKey;
+  const s = computeStats(selectedMonthKey);
   const currentYear = String(new Date().getFullYear());
   const ys = computeYearStats(currentYear);
   const tr = computeCardTrends();
   el.innerHTML = `
-    <div class="card-title" style="margin-bottom:12px">Overview — ${esc(monthLabelOf(monthKeyOf(todayStr())))}</div>
+    <div class="toolbar">
+      <div class="card-title" style="margin:0">Overview — ${esc(monthLabelOf(selectedMonthKey))}</div>
+      <select id="dashMonthSelect" style="max-width:170px">${months.map(m => `<option value="${m}" ${m === selectedMonthKey ? "selected" : ""}>${esc(monthLabelOf(m))}</option>`).join("")}</select>
+    </div>
     <div class="section-gap">
       <div class="grid-stats-2">
         ${(() => {
-          // Feed & Bedding "this month" uses the real current calendar month,
-          // independent of the month-comparison picker further down the page
-          // -- matching how every other top-of-page number here is always
-          // "this month," not whatever month someone has the picker set to.
-          const thisMonthKey = monthKeyOf(todayStr());
           const flockBody = statPanelHero("Active Birds", s.active, {
             chip: deltaChipHtml(tr.flockW[tr.flockW.length - 1], tr.flockW[tr.flockW.length - 5]),
           }) + statPanelRows(
@@ -6697,13 +6764,17 @@ function renderCoopOverview() {
             + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat birds`, s.meatActive)
             + statPanelRow("Losses", s.lossesThisMonth, s.lossesThisMonth > 0 ? "rust" : "")
             + statPanelRow("Processed", s.processedThisMonth)
-          ) + statPanelSubhead("🌾 Feed & Bedding") + statPanelRows(
-            statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layer feed used`, `${displayWeight(feedTotalForMonth(thisMonthKey, "layer"))} ${getWeightUnit()}`)
-            + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat feed used`, `${displayWeight(feedTotalForMonth(thisMonthKey, "meat"))} ${getWeightUnit()}`)
-            + statPanelRow("Bedding used", `${beddingTotalForMonth(thisMonthKey).toFixed(1)} cu ft`)
+          ) + (isCurrentMonth ? "" : `<div class="dim" style="font-size:11px;margin:6px 0 -2px">Active Birds, Layers, and Meat birds always show today's actual flock, not ${esc(monthLabelOf(selectedMonthKey))} -- there's no month to look back to for a count that only ever reflects right now.</div>`)
+          + statPanelSubhead("🌾 Feed & Bedding") + statPanelRows(
+            statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layer feed used`, `${displayWeight(feedTotalForMonth(selectedMonthKey, "layer"))} ${getWeightUnit()}`)
+            + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat feed used`, `${displayWeight(feedTotalForMonth(selectedMonthKey, "meat"))} ${getWeightUnit()}`)
+            + statPanelRow("Bedding used", `${beddingTotalForMonth(selectedMonthKey).toFixed(1)} cu ft`)
           );
+          const valueCompare = monthOverMonthCompare(selectedMonthKey, rawValueBetween);
+          const spendCompare = monthOverMonthCompare(selectedMonthKey, spendBetween);
+          const netCompare = monthOverMonthCompare(selectedMonthKey, netBetween);
           const valueBody = statPanelHero("Value Produced", fmtMoney(s.incomeMonth), {
-            chip: deltaChipHtml(tr.cur.value, tr.prev.value),
+            chip: deltaChipHtml(valueCompare.cur, valueCompare.prev),
           }) + statPanelRows(
             statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Eggs collected`, s.eggsThisMonth)
             + statPanelRow("Income from eggs", fmtMoney(s.eggTotalValueMonth))
@@ -6711,8 +6782,8 @@ function renderCoopOverview() {
             + statPanelRow("Income from meat", fmtMoney(s.meatTotalValueMonth))
             + statPanelRow("Avg weight / bird", s.processedThisMonth > 0 ? weightLabel(s.weightThisMonth / s.processedThisMonth) : "—")
           ) + statPanelSubhead("💵 Finances") + statPanelHeroPair(
-            statPanelHero("Spent", fmtMoney(s.thisMonth), { chip: deltaChipHtml(tr.cur.spent, tr.prev.spent, { goodUp: false }) }),
-            statPanelHero("Net", fmtMoney(s.netMonth), { chip: deltaChipHtml(tr.cur.net, tr.prev.net), valueTone: s.netMonth >= 0 ? "sage" : "rust" })
+            statPanelHero("Spent", fmtMoney(s.thisMonth), { chip: deltaChipHtml(spendCompare.cur, spendCompare.prev, { goodUp: false }) }),
+            statPanelHero("Net", fmtMoney(s.netMonth), { chip: deltaChipHtml(netCompare.cur, netCompare.prev), valueTone: s.netMonth >= 0 ? "sage" : "rust" })
           );
           return statPanel("sage", "🪶", "Flock", flockBody, "flock")
             + statPanel("gold", "💲", "Value", valueBody, "expenses");
@@ -6946,6 +7017,10 @@ function renderCoopOverview() {
     renderCoopOverview();
   }));
   wireStatPanelGoto(el);
+  document.getElementById("dashMonthSelect").addEventListener("change", (e) => {
+    dashSelectedMonth = e.target.value;
+    renderCoopOverview();
+  });
   drawDashboardCharts();
 }
 /** Stat card/panel tap-through: each tappable card or panel header opens the
@@ -9099,6 +9174,8 @@ function showBirdForm(bird) {
       acquisition_cost: val("f_acq_cost") != null ? (val("f_acq_cost") === "" ? null : Number(val("f_acq_cost"))) : formState.acquisition_cost,
       death_date: val("f_death_date") ?? formState.death_date,
       death_cause: val("f_death_cause") ?? formState.death_cause,
+      sold_date: val("f_sold_date") ?? formState.sold_date,
+      retired_date: val("f_retired_date") ?? formState.retired_date,
       card_color: val("f_color") ?? formState.card_color,
       border_style: val("f_border_style") ?? formState.border_style,
       card_pattern: val("f_pattern") ?? formState.card_pattern,
@@ -9125,6 +9202,8 @@ function showBirdForm(bird) {
     const showTarget = f.status === "Active" && (f.type === "Meat" || f.type === "Dual Purpose");
     const showProcessed = f.status === "Processed";
     const showLoss = f.status === "Deceased";
+    const showSold = f.status === "Sold";
+    const showRetired = f.status === "Retired";
     // Same gold-serif convention as the Settings page's section headers, just
     // tightened for a form this dense -- grouping fields into named sections
     // (Identity, Status & organization, Timeline, Processing, Loss) instead of
@@ -9217,6 +9296,20 @@ function showBirdForm(bird) {
       <div class="grid-form">
         <label class="field"><span>Date of loss</span><input type="date" id="f_death_date" value="${f.death_date || ""}"></label>
         <label class="field"><span>Cause of loss</span><input id="f_death_cause" value="${esc(f.death_cause)}" placeholder="e.g. predator, illness"></label>
+      </div>
+      ` : ""}
+
+      ${showSold ? `
+      <div style="${bfSectionHead}">Sold</div>
+      <div class="grid-form">
+        <label class="field"><span>Date sold</span><input type="date" id="f_sold_date" value="${f.sold_date || ""}"></label>
+      </div>
+      ` : ""}
+
+      ${showRetired ? `
+      <div style="${bfSectionHead}">Retired</div>
+      <div class="grid-form">
+        <label class="field"><span>Date retired</span><input type="date" id="f_retired_date" value="${f.retired_date || ""}"></label>
       </div>
       ` : ""}
 

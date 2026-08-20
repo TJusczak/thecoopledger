@@ -874,7 +874,7 @@ tr:hover td { background: var(--surface-raised); }
 .mono { font-family: 'JetBrains Mono', monospace; }
 .dim { color: var(--text-dim); }
 .section-gap { display: flex; flex-direction: column; gap: 22px; }
-.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px; }
+.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px; min-height: 42px; }
 
 #statusBannerSlot:not(:empty) {
   border-bottom: 1px solid var(--border);
