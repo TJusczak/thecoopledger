@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-221";
+const APP_VERSION = "2026.07.13-222";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5211,7 +5211,7 @@ function feedCostHeadlineHtml(cpDozen, cpLbMeat, scopeLabel) {
     </div>`;
   const cards = [];
   if (cpDozen != null) cards.push(card(BIRD_TYPE_ICONS.layer.emoji, BIRD_TYPE_ICONS.layer.from, BIRD_TYPE_ICONS.layer.to, `${fmtMoney(cpDozen)}<span class="cost-headline-unit">/dozen eggs</span>`, "Feed + supplement cost to produce eggs"));
-  if (cpLbMeat != null) cards.push(card(BIRD_TYPE_ICONS.meat.emoji, BIRD_TYPE_ICONS.meat.from, BIRD_TYPE_ICONS.meat.to, `${fmtMoney(displayPricePerLb(cpLbMeat))}<span class="cost-headline-unit">/${getWeightUnit()} meat</span>`, "Feed cost to produce meat"));
+  if (cpLbMeat != null) cards.push(card(BIRD_TYPE_ICONS.meat.emoji, BIRD_TYPE_ICONS.meat.from, BIRD_TYPE_ICONS.meat.to, `${fmtMoney(displayPricePerLb(cpLbMeat))}<span class="cost-headline-unit">/${getWeightUnit()} meat</span>`, "Feed + chick cost to produce meat"));
   return `<div class="cost-headline-grid">${cards.join("")}</div>`;
 }
 
@@ -5233,13 +5233,20 @@ function costPerDozenIn(eggCount, inWindow) {
   return (feedCost + supplementCost) / (eggCount / 12);
 }
 
-/** True meat-feed cost per lb of dressed weight in a window: cost of meat feed
- * eaten / lbs of meat produced. Null when there's no priced feed eaten or no
- * meat. Weight is in lb (the storage unit); callers convert for display. */
+/** True meat cost per lb of dressed weight in a window: cost of meat feed
+ * eaten, plus the acquisition cost of whichever birds were actually
+ * processed in the window, divided by lbs of meat produced. A bird still
+ * growing doesn't count its chick cost yet -- only once it's actually
+ * turned into meat does its share of what it cost to acquire join the feed
+ * it ate. Null when there's no priced feed eaten or no meat. Weight is in
+ * lb (the storage unit); callers convert for display. */
 function costPerLbMeatIn(meatWeightLb, inWindow) {
   if (!(meatWeightLb > 0)) return null;
-  const { cost, lbs } = pricedFeedConsumed("Meat Feed", inWindow);
-  return lbs > 0 ? cost / meatWeightLb : null;
+  const { cost: feedCost, lbs } = pricedFeedConsumed("Meat Feed", inWindow);
+  const chickCost = STATE.birds
+    .filter(b => b.status === "Processed" && b.harvest_date && inWindow(b.harvest_date))
+    .reduce((s, b) => s + (Number(b.acquisition_cost) || 0), 0);
+  return lbs > 0 ? (feedCost + chickCost) / meatWeightLb : null;
 }
 
 function feedBeddingCumulativeSeries(supplies, days, axisBuckets) {
@@ -8149,6 +8156,25 @@ function batchEditModalHtml(batchName) {
       <button class="btn ghost small" id="applyBatchLocation" style="margin-top:10px">Apply to whole batch</button>
     </div>
 
+    ${(() => {
+      // Backfill for a batch that predates this feature (or was created
+      // without a price): only offered while NONE of its birds have a cost
+      // on file yet, so this can't silently double up or clobber whatever's
+      // already there from the create-batch flow or an individual edit.
+      const alreadyCosted = birds.filter(b => b.acquisition_cost > 0);
+      if (alreadyCosted.length > 0) {
+        const total = alreadyCosted.reduce((s, b) => s + (Number(b.acquisition_cost) || 0), 0);
+        return `<div class="form-block" style="margin-bottom:14px">
+          <div class="dim" style="font-size:12px">Acquisition cost already recorded: ${fmtMoney(total)} total across ${alreadyCosted.length} of ${birds.length} bird${birds.length !== 1 ? "s" : ""}. Edit an individual bird to adjust its own share.</div>
+        </div>`;
+      }
+      return `<div class="form-block" style="margin-bottom:14px">
+        <div class="dim" style="font-size:12px;margin-bottom:8px">Acquisition cost -- not yet recorded for this batch. Splits evenly and logs a Birds/Chicks expense, same as entering it when the batch was created.</div>
+        <label class="field"><span>Total price for the batch</span><input type="number" step="0.01" min="0" id="batch_acq_price" placeholder="e.g. 75.00"></label>
+        <button class="btn ghost small" id="applyBatchCost" style="margin-top:10px">Apply to whole batch</button>
+      </div>`;
+    })()}
+
     <div class="form-block" style="margin-bottom:14px">
       <div class="dim" style="font-size:12px;margin-bottom:8px">Group card styling -- applies to every bird in this batch</div>
       <div class="grid-form">
@@ -8177,6 +8203,22 @@ function wireBatchEditModal(batchName) {
     const location = document.getElementById("batch_location").value;
     await localBulkUpdate("birds", birds.map(b => ({ id: b.id, fields: { location: location || null } })), currentCoopId);
     showToast("Batch location applied", "update");
+    await loadCoopData();
+    refresh();
+  });
+  const applyBatchCostBtn = document.getElementById("applyBatchCost");
+  if (applyBatchCostBtn) applyBatchCostBtn.addEventListener("click", async () => {
+    const total = Number(document.getElementById("batch_acq_price").value) || 0;
+    if (total <= 0) return;
+    // Same pattern as creating a batch with a price -- one linked expense,
+    // split evenly, each bird keeping its own share.
+    const expense = await localExpenseCreate({
+      coop_id: currentCoopId, date: todayStr(), category: "Birds/Chicks",
+      description: `${batchName} (${birds.length} birds, added after the fact)`, amount: total, entry_type: "expense",
+    });
+    const perBird = total / birds.length;
+    await localBulkUpdate("birds", birds.map(b => ({ id: b.id, fields: { acquisition_cost: perBird, source_expense_id: expense.id } })), currentCoopId);
+    showToast("Batch acquisition cost applied", "update");
     await loadCoopData();
     refresh();
   });
@@ -8831,6 +8873,7 @@ function showBirdForm(bird) {
       harvest_date: val("f_hdate") ?? formState.harvest_date,
       harvest_weight: weightFieldPresent("f_weight") ? readWeightEntryField("f_weight") : formState.harvest_weight,
       price_per_lb: val("f_price") != null ? parsePricePerLbInput(val("f_price")) : formState.price_per_lb,
+      acquisition_cost: val("f_acq_cost") != null ? (val("f_acq_cost") === "" ? null : Number(val("f_acq_cost"))) : formState.acquisition_cost,
       death_date: val("f_death_date") ?? formState.death_date,
       death_cause: val("f_death_cause") ?? formState.death_cause,
       card_color: val("f_color") ?? formState.card_color,
@@ -8931,7 +8974,11 @@ function showBirdForm(bird) {
         <label class="field"><span>Hatch date</span><input type="date" id="f_hatch" value="${f.hatch_date || ""}"></label>
         <label class="field"><span>Acquired date</span><input type="date" id="f_acquired" value="${f.acquired_date || ""}"></label>
         ${showTarget ? `<label class="field"><span>Target harvest date</span><input type="date" id="f_target" value="${f.target_harvest_date || ""}"></label>` : ""}
+        ${isEdit
+          ? `<label class="field"><span>Acquisition cost${f.source_expense_id ? " (from its expense)" : ""}</span><input type="number" step="0.01" min="0" id="f_acq_cost" value="${f.acquisition_cost != null ? f.acquisition_cost : ""}" placeholder="e.g. 3.00"></label>`
+          : `<label class="field"><span>Acquisition cost (optional)</span><input type="number" step="0.01" min="0" id="f_acq_cost" placeholder="e.g. 3.00"></label>`}
       </div>
+      ${!isEdit ? `<div class="dim" style="font-size:11px;margin:-8px 0 0">Logged as a Birds/Chicks expense automatically. For a group, use "Add a batch" instead so the cost splits across everyone.</div>` : ""}
 
       ${showProcessed ? `
       <div style="${bfSectionHead}">🍗 Processing</div>
@@ -9106,12 +9153,25 @@ function showBirdForm(bird) {
         location: current.location || null,
         batch_name: (current.batch_name || "").trim() || null,
         notes: current.notes,
+        acquisition_cost: current.acquisition_cost,
+        source_expense_id: isEdit ? bird.source_expense_id : null,
       };
       if (!payload.name) return;
       let birdId = isEdit ? bird.id : null;
       if (isEdit) {
         await localBirdUpdate(birdId, payload);
       } else {
+        // A price entered on a brand-new bird logs its own Birds/Chicks
+        // expense automatically -- same idea as the batch form, just for
+        // one bird. Editing an existing bird never does this (see above),
+        // so correcting a typo later can't spawn a duplicate expense.
+        if (payload.acquisition_cost > 0) {
+          const expense = await localExpenseCreate({
+            coop_id: currentCoopId, date: payload.acquired_date || todayStr(), category: "Birds/Chicks",
+            description: payload.name, amount: payload.acquisition_cost, entry_type: "expense",
+          }, { suppressUndo: true });
+          payload.source_expense_id = expense.id;
+        }
         const created = await localBirdCreate(payload);
         birdId = created.id;
       }
@@ -9158,8 +9218,9 @@ function showBulkForm() {
       <label class="field"><span>Hatch date</span><input type="date" id="k_hatch" value="${defaultHatch}"></label>
       <label class="field"><span>Acquired date</span><input type="date" id="k_acquired" value="${today}"></label>
       <label class="field"><span>Target harvest date</span><input type="date" id="k_target" value="${defaultTarget}"></label>
+      <label class="field"><span>Total price for the batch (optional)</span><input type="number" step="0.01" min="0" id="k_price" placeholder="e.g. 75.00"></label>
     </div>
-    <div class="note-box" style="margin-top:10px">Each bird gets its own record — named "Batch name #1", "#2", and so on — so you can still log an individual dressed weight for each one at processing time. This just saves you from typing the shared details over and over. Hatch date defaults to a week before pickup (typical for chick delivery) — adjust it if the hatchery told you the actual date. Target harvest defaults to 6 weeks from hatch (ignored for Layer, which has no harvest date) — adjust it if your breed runs longer.</div>
+    <div class="note-box" style="margin-top:10px">Each bird gets its own record — named "Batch name #1", "#2", and so on — so you can still log an individual dressed weight for each one at processing time. This just saves you from typing the shared details over and over. Hatch date defaults to a week before pickup (typical for chick delivery) — adjust it if the hatchery told you the actual date. Target harvest defaults to 6 weeks from hatch (ignored for Layer, which has no harvest date) — adjust it if your breed runs longer. A total price is split evenly across the batch and logged as one Birds/Chicks expense -- each bird then carries its own share, so meat birds' cost per lb includes what they cost to start, not just what they ate.</div>
     <div style="margin-top:12px"><label class="field"><span>Notes</span><textarea id="k_notes" placeholder="optional"></textarea></label></div>
     <div style="margin-top:12px"><label class="field"><span>Group photo (optional, applied to every bird in the batch)</span><input type="file" id="k_photo" accept="image/*"></label></div>
     <div class="modal-actions"><button class="btn btn-confirm" id="saveBulk">✓ Create batch</button></div>
@@ -9176,16 +9237,36 @@ function showBulkForm() {
     if (count > 200) { alert("That's a lot of birds for one batch — try 200 or fewer at a time"); return; }
     const batchName = document.getElementById("k_batch").value.trim() || `Batch ${todayStr()}`;
     const type = document.getElementById("k_type").value;
+    const acquiredDate = document.getElementById("k_acquired").value;
+    // A total price is split evenly across the batch and logged as one
+    // Birds/Chicks expense -- mirrors how buying a bag of feed auto-creates
+    // its own linked inventory item. Each bird keeps its own share
+    // (source_expense_id points back to it) so meat birds' cost per lb can
+    // include what they cost to start, not just what they ate, and so a
+    // partially-processed batch only counts the share of the birds actually
+    // turned into meat so far.
+    const totalPrice = Number(document.getElementById("k_price").value) || 0;
+    let sourceExpenseId = null, perBirdCost = null;
+    if (totalPrice > 0) {
+      const expense = await localExpenseCreate({
+        coop_id: currentCoopId, date: acquiredDate, category: "Birds/Chicks",
+        description: `${batchName} (${count} birds)`, amount: totalPrice, entry_type: "expense",
+      }, { suppressUndo: true });
+      sourceExpenseId = expense.id;
+      perBirdCost = totalPrice / count;
+    }
     const shared = {
       coop_id: currentCoopId,
       breed: document.getElementById("k_breed").value,
       type,
       status: "Active",
       hatch_date: document.getElementById("k_hatch").value,
-      acquired_date: document.getElementById("k_acquired").value,
+      acquired_date: acquiredDate,
       target_harvest_date: type === "Layer" ? null : document.getElementById("k_target").value,
       batch_name: batchName,
       notes: document.getElementById("k_notes").value,
+      acquisition_cost: perBirdCost,
+      source_expense_id: sourceExpenseId,
     };
     const created = await localBulkCreate("birds", Array.from({ length: count }, (_, i) => ({ ...shared, name: `${batchName} #${i + 1}` })));
     const photoFile = document.getElementById("k_photo").files[0];
