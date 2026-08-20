@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-223";
+const APP_VERSION = "2026.07.13-224";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -3934,9 +3934,9 @@ function renderAllTimeStatsSection() {
       // dozen eggs, meat feed eaten -> per lb of meat, each valued at what the
       // bags actually cost. A year or all-time is the honest window for these
       // (a single month misleads, especially for meat).
-      const cpDozen = costPerDozenIn(s.totalEggs, () => true);
-      const cpLbMeat = costPerLbMeatIn(s.totalWeight, () => true);
-      const cards = feedCostHeadlineHtml(cpDozen, cpLbMeat, "all time");
+      const dozenBreakdown = costPerDozenBreakdown(s.totalEggs, () => true);
+      const meatBreakdown = costPerLbMeatBreakdown(s.totalWeight, () => true);
+      const cards = feedCostHeadlineHtml(dozenBreakdown, meatBreakdown, "all time");
       if (!cards) return "";
       return `<div style="margin-top:16px">${cards}
         <div class="dim" style="font-size:11px;margin-top:8px">Based on feed actually consumed, valued at each bag's cost.</div>
@@ -3948,6 +3948,7 @@ function renderAllTimeStatsSection() {
     </div>` : ""}
   `;
   wireStatPanelGoto(el);
+  wireCostBreakdownCards(el);
 }
 
 function renderProductsSection() {
@@ -5198,51 +5199,64 @@ function pricedFeedConsumed(category, inWindow) {
  * birds eat for months then get harvested in one, so a monthly meat cost/lb
  * swings wildly). `scopeLabel` is appended to each caption (e.g. a year or
  * "all time"). Returns "" when neither figure has data. */
-function feedCostHeadlineHtml(cpDozen, cpLbMeat, scopeLabel) {
+// Stashed by the most recent feedCostHeadlineHtml() render, read by the
+// audit-modal click handler below. Only one of these cards is ever visible
+// at a time (Year Review and All-Time are different tabs), so "last
+// rendered" is all the state this needs -- no per-instance ids required.
+let lastCostBreakdowns = { dozen: null, meat: null, scopeLabel: "" };
+
+function feedCostHeadlineHtml(dozenBreakdown, meatBreakdown, scopeLabel) {
+  const cpDozen = dozenBreakdown ? dozenBreakdown.result : null;
+  const cpLbMeat = meatBreakdown ? meatBreakdown.result : null;
   if (cpDozen == null && cpLbMeat == null) return "";
+  lastCostBreakdowns = { dozen: dozenBreakdown, meat: meatBreakdown, scopeLabel };
   const scope = scopeLabel ? ` <span class="dim" style="font-weight:400">· ${esc(scopeLabel)}</span>` : "";
-  const card = (emoji, from, to, value, caption) => `
-    <div class="cost-headline">
+  const card = (kind, emoji, from, to, value, caption) => `
+    <div class="cost-headline cost-headline-tappable" data-cost-breakdown="${kind}" role="button" tabindex="0" title="See how this number was calculated">
       <div class="cost-headline-icon" style="background:linear-gradient(135deg, ${from}, ${to})">${emoji}</div>
       <div class="cost-headline-body">
         <div class="cost-headline-value">${value}</div>
         <div class="cost-headline-caption">${caption}${scope}</div>
       </div>
+      <div class="cost-headline-peek" title="Tap to see the numbers behind this">🔍</div>
     </div>`;
   const cards = [];
-  if (cpDozen != null) cards.push(card(BIRD_TYPE_ICONS.layer.emoji, BIRD_TYPE_ICONS.layer.from, BIRD_TYPE_ICONS.layer.to, `${fmtMoney(cpDozen)}<span class="cost-headline-unit">/dozen eggs</span>`, "Feed + supplement cost to produce eggs"));
-  if (cpLbMeat != null) cards.push(card(BIRD_TYPE_ICONS.meat.emoji, BIRD_TYPE_ICONS.meat.from, BIRD_TYPE_ICONS.meat.to, `${fmtMoney(displayPricePerLb(cpLbMeat))}<span class="cost-headline-unit">/${getWeightUnit()} meat</span>`, "Feed + chick cost to produce meat"));
+  if (cpDozen != null) cards.push(card("dozen", BIRD_TYPE_ICONS.layer.emoji, BIRD_TYPE_ICONS.layer.from, BIRD_TYPE_ICONS.layer.to, `${fmtMoney(cpDozen)}<span class="cost-headline-unit">/dozen eggs</span>`, "Feed + supplement cost to produce eggs"));
+  if (cpLbMeat != null) cards.push(card("meat", BIRD_TYPE_ICONS.meat.emoji, BIRD_TYPE_ICONS.meat.from, BIRD_TYPE_ICONS.meat.to, `${fmtMoney(displayPricePerLb(cpLbMeat))}<span class="cost-headline-unit">/${getWeightUnit()} meat</span>`, "Feed + chick cost to produce meat"));
   return `<div class="cost-headline-grid">${cards.join("")}</div>`;
 }
 
-function costPerDozenIn(eggCount, inWindow) {
-  if (!(eggCount > 0)) return null;
-  const { cost: feedCost, lbs } = pricedFeedConsumed("Layer Feed", inWindow);
+/** Full breakdown behind the cost-per-dozen figure -- every number that went
+ * into it, not just the result, for the "peek behind the curtain" audit
+ * modal. costPerDozenIn is a thin wrapper around this so the modal can never
+ * show different math than what actually produced the headline number. */
+function costPerDozenBreakdown(eggCount, inWindow) {
+  const { cost: feedCost, lbs: feedLbs } = pricedFeedConsumed("Layer Feed", inWindow);
   // Layer supplements (oyster shell, grit) are things ONLY layers ingest that
   // help produce eggs, so they belong in cost-per-egg. Unlike feed they're not
   // consumption-tracked (no bags/ramp) -- we just use the expenses in the
   // window, which the user opted into for simplicity. Bedding, treats, and
   // shelter costs are deliberately excluded: bedding/building are shelter, and
   // treats get shared with meat birds, so neither cleanly attributes to eggs.
-  const supplementCost = STATE.expenses
-    .filter(x => x.entry_type !== "income" && x.category === "Layer Supplements" && inWindow(x.date))
-    .reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  // Need at least priced feed consumed to anchor the figure; supplements add on
-  // top. (Supplements alone, with no feed cost data, would be an odd partial.)
-  if (!(lbs > 0)) return null;
-  return (feedCost + supplementCost) / (eggCount / 12);
+  const supplementExpenses = STATE.expenses.filter(x => x.entry_type !== "income" && x.category === "Layer Supplements" && inWindow(x.date));
+  const supplementCost = supplementExpenses.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const dozens = eggCount / 12;
+  // Need at least priced feed consumed to anchor the figure; supplements add
+  // on top. (Supplements alone, with no feed cost data, would be an odd
+  // partial.)
+  const result = (eggCount > 0 && feedLbs > 0) ? (feedCost + supplementCost) / dozens : null;
+  return { eggCount, dozens, feedLbs, feedCost, supplementCost, supplementExpenses, result };
+}
+function costPerDozenIn(eggCount, inWindow) {
+  return costPerDozenBreakdown(eggCount, inWindow).result;
 }
 
-/** True meat cost per lb of dressed weight in a window: cost of meat feed
- * eaten, plus the acquisition cost of whichever birds were actually
- * processed in the window, divided by lbs of meat produced. A bird still
- * growing doesn't count its chick cost yet -- only once it's actually
- * turned into meat does its share of what it cost to acquire join the feed
- * it ate. Null when there's no priced feed eaten or no meat. Weight is in
- * lb (the storage unit); callers convert for display. */
-function costPerLbMeatIn(meatWeightLb, inWindow) {
-  if (!(meatWeightLb > 0)) return null;
-  const { cost: feedCost, lbs } = pricedFeedConsumed("Meat Feed", inWindow);
+/** Full breakdown behind the cost-per-lb-meat figure -- every number that
+ * went into it (feed, and each contributing bird's own acquisition cost),
+ * for the audit modal. costPerLbMeatIn is a thin wrapper around this, same
+ * reasoning as costPerDozenIn above. */
+function costPerLbMeatBreakdown(meatWeightLb, inWindow) {
+  const { cost: feedCost, lbs: feedLbs } = pricedFeedConsumed("Meat Feed", inWindow);
   // A bird that died before reaching slaughter weight still cost what it
   // cost -- that money didn't come back. Leaving mortality out would
   // understate the true cost of the meat that DID make it: if 3 of 25 chicks
@@ -5254,13 +5268,67 @@ function costPerLbMeatIn(meatWeightLb, inWindow) {
   // the table, so its loss has nothing to do with the cost of meat. No
   // double-counting risk either way -- a bird is never both Processed and
   // Deceased at once.
-  const chickCost = STATE.birds
-    .filter(b => (
-      (b.status === "Processed" && b.harvest_date && inWindow(b.harvest_date)) ||
-      (b.status === "Deceased" && (b.type === "Meat" || b.type === "Dual Purpose") && b.death_date && inWindow(b.death_date))
-    ))
-    .reduce((s, b) => s + (Number(b.acquisition_cost) || 0), 0);
-  return lbs > 0 ? (feedCost + chickCost) / meatWeightLb : null;
+  const contributingBirds = STATE.birds.filter(b => (
+    (b.status === "Processed" && b.harvest_date && inWindow(b.harvest_date)) ||
+    (b.status === "Deceased" && (b.type === "Meat" || b.type === "Dual Purpose") && b.death_date && inWindow(b.death_date))
+  ));
+  const chickCost = contributingBirds.reduce((s, b) => s + (Number(b.acquisition_cost) || 0), 0);
+  const processedBirds = contributingBirds.filter(b => b.status === "Processed");
+  const deceasedBirds = contributingBirds.filter(b => b.status === "Deceased");
+  const result = (meatWeightLb > 0 && feedLbs > 0) ? (feedCost + chickCost) / meatWeightLb : null;
+  return { meatWeightLb, feedLbs, feedCost, chickCost, processedBirds, deceasedBirds, result };
+}
+function costPerLbMeatIn(meatWeightLb, inWindow) {
+  return costPerLbMeatBreakdown(meatWeightLb, inWindow).result;
+}
+
+/** "Peek behind the curtain" for a cost-headline card: every number that
+ * went into the figure, laid out as a plain worked calculation -- the exact
+ * same values costPerDozenBreakdown/costPerLbMeatBreakdown computed, so this
+ * can never show something that doesn't match the headline it explains. */
+function openCostBreakdownModal(kind) {
+  const { dozen, meat, scopeLabel } = lastCostBreakdowns;
+  const row = (label, value, tone) => `<div class="stat-panel-row"><span class="stat-panel-row-label">${label}</span><span class="stat-panel-row-value${tone ? " tone-" + tone : ""}">${value}</span></div>`;
+  const scope = scopeLabel ? ` — ${esc(String(scopeLabel))}` : "";
+  let title, rowsHtml, formulaHtml, listHtml = "";
+
+  if (kind === "dozen" && dozen) {
+    title = `🥚 Cost per dozen eggs${scope}`;
+    rowsHtml = row("Layer feed consumed", `${displayWeight(dozen.feedLbs)} ${getWeightUnit()}`)
+      + row("Layer feed cost", fmtMoney(dozen.feedCost))
+      + row("Layer Supplements expenses", fmtMoney(dozen.supplementCost))
+      + row("Eggs collected", dozen.eggCount)
+      + row("÷ Dozens", dozen.dozens.toFixed(2));
+    formulaHtml = `(${fmtMoney(dozen.feedCost)} feed + ${fmtMoney(dozen.supplementCost)} supplements) ÷ ${dozen.dozens.toFixed(2)} dozen = <strong style="color:var(--text)">${fmtMoney(dozen.result)}/dozen</strong>`;
+    if (dozen.supplementExpenses.length) {
+      listHtml = `<div class="stat-panel-subhead">Supplement expenses</div><div class="stat-panel-rows">${dozen.supplementExpenses.map(x => row(`${fmtDate(x.date)}${x.description ? " · " + esc(x.description) : ""}`, fmtMoney(x.amount))).join("")}</div>`;
+    }
+  } else if (kind === "meat" && meat) {
+    title = `🍗 Cost per ${getWeightUnit()} of meat${scope}`;
+    const chickCount = meat.processedBirds.length + meat.deceasedBirds.length;
+    rowsHtml = row("Meat feed consumed", `${displayWeight(meat.feedLbs)} ${getWeightUnit()}`)
+      + row("Meat feed cost", fmtMoney(meat.feedCost))
+      + row("Birds processed", meat.processedBirds.length)
+      + row("Birds lost before processing", meat.deceasedBirds.length, meat.deceasedBirds.length > 0 ? "rust" : "")
+      + row("Total acquisition cost", fmtMoney(meat.chickCost))
+      + row("÷ Dressed weight", `${displayWeight(meat.meatWeightLb)} ${getWeightUnit()}`);
+    formulaHtml = `(${fmtMoney(meat.feedCost)} feed + ${fmtMoney(meat.chickCost)} chick cost) ÷ ${displayWeight(meat.meatWeightLb)} ${getWeightUnit()} = <strong style="color:var(--text)">${fmtMoney(displayPricePerLb(meat.result))}/${getWeightUnit()}</strong>`;
+    if (chickCount > 0) {
+      const birdRow = (b) => row(`${esc(b.name || "(unnamed)")}${b.batch_name ? " · " + esc(b.batch_name) : ""}`, fmtMoney(b.acquisition_cost || 0), b.status === "Deceased" ? "rust" : "");
+      listHtml = `<div class="stat-panel-subhead">Birds counted (${chickCount})</div>
+        <div class="stat-panel-rows" style="max-height:260px;overflow-y:auto">${[...meat.processedBirds, ...meat.deceasedBirds].map(birdRow).join("")}</div>`;
+    }
+  } else {
+    return; // stale click after a re-render with nothing to show -- nothing to open
+  }
+
+  openModal(`
+    <div class="form-head">${title}</div>
+    <div class="dim" style="font-size:12px;margin-bottom:12px">Every number behind this figure, exactly as used -- editing any of the underlying eggs, birds, or expenses will change it.</div>
+    <div class="stat-panel-rows">${rowsHtml}</div>
+    <div class="note-box" style="margin-top:12px;font-family:'JetBrains Mono',monospace;font-size:12px">${formulaHtml}</div>
+    ${listHtml}
+  `);
 }
 
 function feedBeddingCumulativeSeries(supplies, days, axisBuckets) {
@@ -5739,9 +5807,9 @@ function renderYearReviewSection() {
 
     ${(() => {
       const yearTest = (d) => d && d.slice(0, 4) === selectedYear;
-      const cpDozen = costPerDozenIn(s.eggCount, yearTest);
-      const cpLbMeat = costPerLbMeatIn(s.processedWeight, yearTest);
-      const cards = feedCostHeadlineHtml(cpDozen, cpLbMeat, selectedYear);
+      const dozenBreakdown = costPerDozenBreakdown(s.eggCount, yearTest);
+      const meatBreakdown = costPerLbMeatBreakdown(s.processedWeight, yearTest);
+      const cards = feedCostHeadlineHtml(dozenBreakdown, meatBreakdown, selectedYear);
       if (!cards) return "";
       return `<div style="margin-bottom:16px">${cards}
         <div class="dim" style="font-size:11px;margin-top:8px">Based on feed actually consumed this year, valued at each bag's cost.</div>
@@ -5823,6 +5891,7 @@ function renderYearReviewSection() {
     renderYearReviewSection();
   });
   wireStatPanelGoto(el);
+  wireCostBreakdownCards(el);
   drawYearReviewCharts(selectedYear);
 }
 
@@ -6760,6 +6829,16 @@ function wireStatPanelGoto(el) {
     const go = () => switchTab(card.dataset.gotoTab);
     card.addEventListener("click", go);
     card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
+  });
+}
+/** Tap-through for the cost-per-dozen / cost-per-lb-meat headline cards --
+ * opens the "peek behind the curtain" breakdown modal for whichever one was
+ * tapped. Only present on Year Review and All-Time. */
+function wireCostBreakdownCards(el) {
+  el.querySelectorAll("[data-cost-breakdown]").forEach(card => {
+    const open = () => openCostBreakdownModal(card.dataset.costBreakdown);
+    card.addEventListener("click", open);
+    card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
   });
 }
 

@@ -252,6 +252,18 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
 .cost-headline-value { font-family: 'JetBrains Mono', monospace; font-size: 26px; font-weight: 700; color: var(--text); line-height: 1.1; }
 .cost-headline-unit { font-size: 13px; font-weight: 400; color: var(--text-dim); margin-left: 3px; }
 .cost-headline-caption { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
+/* Tappable variant: "peek behind the curtain" opens the calculation
+   breakdown. Same hover language as .stat-tappable elsewhere, plus a small
+   magnifying-glass hint so the card doesn't just look clickable by accident --
+   it visibly invites a closer look. */
+.cost-headline-tappable { position: relative; cursor: pointer; -webkit-tap-highlight-color: transparent; transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease; }
+@media (hover: hover) {
+  .cost-headline-tappable:hover { transform: translateY(-2px); border-color: var(--text-dim); box-shadow: 0 4px 12px rgba(0,0,0,0.18); }
+  .cost-headline-tappable:hover .cost-headline-peek { opacity: 1; }
+}
+.cost-headline-tappable:active { transform: scale(0.985); }
+.cost-headline-tappable:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.cost-headline-peek { position: absolute; top: 10px; right: 12px; font-size: 13px; opacity: 0.45; }
 /* Compact bedding freshness: one row per area, a status dot (worst of clean-
    out/churn) + area name + inline caption. Far denser than the old multi-line
    stamped blocks. */
