@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-219";
+const APP_VERSION = "2026.07.13-220";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5829,9 +5829,12 @@ function moneyMonthlyForYear(year, mode, pill) {
   const spend = (cat) => monthlyBuckets(STATE.expenses.filter(x => x.entry_type !== "income" && (!cat || x.category === cat)), year, x => Number(x.amount) || 0);
   const add = (...arrs) => arrs[0].map((_, i) => arrs.reduce((s, a) => s + a[i], 0));
 
-  // Cumulative across the year for every mode, matching the dashboard.
+  // Cumulative across the year for income and net, matching the dashboard --
+  // but NOT for spend: a running total answers "how much have I spent so
+  // far," while the point of a monthly spend chart is "did feed cost more in
+  // March than April," which only a per-month (non-cumulative) bar answers.
   const runningTotal = (arr) => { let r = 0; return arr.map(v => (r += v)); };
-  if (mode === "spend") return runningTotal(spend(pill));
+  if (mode === "spend") return spend(pill);
   if (mode === "income") {
     if (pill === "Egg value") return runningTotal(eggVal);
     if (pill === "Meat value") return runningTotal(meatVal);
@@ -5844,6 +5847,18 @@ function moneyMonthlyForYear(year, mode, pill) {
   const sp = spend(null);
   let run = 0;
   return income.map((v, i) => (run += v - sp[i]));
+}
+/** Per-month spend broken out by category, for the "All" stacked-bar view --
+ * one dataset per category actually spent in that year (categories with
+ * nothing spent are left out rather than cluttering the legend with empty
+ * ones), each colored to match its icon tile everywhere else in the app. */
+function spendCategoryMonthlyForYear(year) {
+  const cats = [...new Set(STATE.expenses.filter(x => x.entry_type !== "income" && x.date && x.date.slice(0, 4) === year).map(x => x.category))];
+  return cats.map(cat => ({
+    category: cat,
+    color: (CATEGORY_ICONS[cat] || CATEGORY_ICONS["Other"]).from,
+    data: monthlyBuckets(STATE.expenses.filter(x => x.entry_type !== "income" && x.category === cat), year, x => Number(x.amount) || 0),
+  })).filter(d => d.data.some(v => v > 0));
 }
 
 function drawYearReviewCharts(year) {
@@ -5895,23 +5910,52 @@ function drawYearReviewCharts(year) {
     });
   }
 
-  // Money mega chart: spend/income/net (reviewMoneyMode) with an optional pill
-  // (category for spend, source for income). Income uses the value model (egg
-  // value + meat value + other income, egg/meat sales washed out). Net colors
-  // per segment -- green above zero, red below.
-  const moneyData = moneyMonthlyForYear(year, reviewMoneyMode, reviewMoneyMode === "spend" ? reviewSpendPill : reviewMoneyMode === "income" ? reviewIncomePill : null);
-  const moneyPrev = hasPrev ? moneyMonthlyForYear(lastYear, reviewMoneyMode, reviewMoneyMode === "spend" ? reviewSpendPill : reviewMoneyMode === "income" ? reviewIncomePill : null) : null;
-  const isNet = reviewMoneyMode === "net";
-  const moneyColor = reviewMoneyMode === "income" ? "#8A9A5B" : reviewMoneyMode === "net" ? "#8A9A5B" : "#B84C3E";
-  const mainDs = { label: year, data: moneyData, borderColor: moneyColor, backgroundColor: moneyColor + "33", tension: 0.25, pointRadius: 2, fill: !isNet };
-  if (isNet) mainDs.segment = { borderColor: (ctx) => (ctx.p1.parsed.y != null && ctx.p1.parsed.y < 0 ? "#B84C3E" : "#8A9A5B") };
-  const moneyOpts = yearChartOpts(hasPrev, (v) => fmtMoney(v));
-  if (isNet) moneyOpts.scales.y.beginAtZero = false;
-  reviewCharts.expenses = new Chart(document.getElementById("reviewExpenseChart"), {
-    type: "line",
-    data: { labels: MONTH_LABELS, datasets: withPrev(mainDs, moneyPrev, "#C7B9A6") },
-    options: moneyOpts
-  });
+  // Money mega chart. Income and Net stay cumulative line charts, matching
+  // the dashboard's running-total convention. Spend is different on purpose:
+  // a bar chart, per month rather than running, and stacked by category when
+  // viewing "All" -- a running total only answers "how much so far," while a
+  // monthly bar answers "did feed cost more in March than April," which is
+  // the actual question a spend-over-the-year chart exists to answer.
+  if (reviewMoneyMode === "spend") {
+    const moneyOpts = yearChartOpts(hasPrev, (v) => fmtMoney(v));
+    moneyOpts.scales.x.stacked = true;
+    moneyOpts.scales.y.stacked = true;
+    let datasets;
+    if (reviewSpendPill) {
+      const data = moneyMonthlyForYear(year, "spend", reviewSpendPill);
+      datasets = [{ label: year, data, backgroundColor: "#B84C3E", borderRadius: 3 }];
+      if (hasPrev) datasets.push({ type: "line", label: lastYear, data: moneyMonthlyForYear(lastYear, "spend", reviewSpendPill), ...prevDash("#C7B9A6") });
+    } else {
+      const cats = spendCategoryMonthlyForYear(year);
+      datasets = cats.length
+        ? cats.map(c => ({ label: c.category, data: c.data, backgroundColor: c.color, borderRadius: 2 }))
+        : [{ label: year, data: Array(12).fill(0), backgroundColor: "#B84C3E", borderRadius: 3 }];
+      // The legend is how a stacked bar's colors get identified back to
+      // category names -- always shown here, unlike the single-line charts
+      // below where it's only worth the space when comparing two years.
+      moneyOpts.plugins.legend = { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } };
+      if (hasPrev) datasets.push({ type: "line", label: lastYear, data: moneyMonthlyForYear(lastYear, "spend", null), ...prevDash("#C7B9A6") });
+    }
+    reviewCharts.expenses = new Chart(document.getElementById("reviewExpenseChart"), {
+      type: "bar",
+      data: { labels: MONTH_LABELS, datasets },
+      options: moneyOpts
+    });
+  } else {
+    const moneyData = moneyMonthlyForYear(year, reviewMoneyMode, reviewMoneyMode === "income" ? reviewIncomePill : null);
+    const moneyPrev = hasPrev ? moneyMonthlyForYear(lastYear, reviewMoneyMode, reviewMoneyMode === "income" ? reviewIncomePill : null) : null;
+    const isNet = reviewMoneyMode === "net";
+    const moneyColor = "#8A9A5B"; // income and net are both sage; spend (the only rust one) is handled above
+    const mainDs = { label: year, data: moneyData, borderColor: moneyColor, backgroundColor: moneyColor + "33", tension: 0.25, pointRadius: 2, fill: !isNet };
+    if (isNet) mainDs.segment = { borderColor: (ctx) => (ctx.p1.parsed.y != null && ctx.p1.parsed.y < 0 ? "#B84C3E" : "#8A9A5B") };
+    const moneyOpts = yearChartOpts(hasPrev, (v) => fmtMoney(v));
+    if (isNet) moneyOpts.scales.y.beginAtZero = false;
+    reviewCharts.expenses = new Chart(document.getElementById("reviewExpenseChart"), {
+      type: "line",
+      data: { labels: MONTH_LABELS, datasets: withPrev(mainDs, moneyPrev, "#C7B9A6") },
+      options: moneyOpts
+    });
+  }
 
 }
 
@@ -7515,6 +7559,42 @@ let currentOpenBatchName = null;
  * everyone in this batch." Resets whenever a different batch is opened, so
  * it never silently carries over to a batch you didn't toggle it for. */
 let batchPanelIgnoreFilters = false;
+/** Sort for the bird cards listed inside an open batch panel -- separate
+ * from the main flock grid's flockSort, since "by status" or "by dressed
+ * weight" only make sense once you're looking at one batch's birds, not the
+ * mixed individuals-and-batch-summaries list the main grid sorts. Resets to
+ * the default whenever a different batch is opened, matching
+ * batchPanelIgnoreFilters, so a sort choice never silently carries over to a
+ * batch you didn't pick it for. */
+let batchPanelSort = "name"; // "name" | "status" | "processed" | "weight"
+const BATCH_SORT_OPTIONS = [
+  { value: "name", label: "Name" },
+  { value: "status", label: "Status" },
+  { value: "processed", label: "Processed date" },
+  { value: "weight", label: "Dressed weight" },
+];
+function batchSortSelectHtml(id) {
+  return `<select id="${id}">${BATCH_SORT_OPTIONS.map(o => `<option value="${o.value}" ${batchPanelSort === o.value ? "selected" : ""}>Sort: ${o.label}</option>`).join("")}</select>`;
+}
+function batchSortComparator(mode) {
+  if (mode === "status") {
+    // Workflow order (Active -> Processed -> ... -> Deceased/Retired), not
+    // alphabetical -- groups the birds you still need to act on together,
+    // which is the point when a batch is only partially processed.
+    return (a, b) => BIRD_STATUSES.indexOf(a.status) - BIRD_STATUSES.indexOf(b.status);
+  }
+  if (mode === "processed") {
+    // Most recently processed first; birds with no harvest date (not yet
+    // processed) sort last regardless of which side of the comparison
+    // they're on.
+    return (a, b) => (b.harvest_date || "0000-00-00").localeCompare(a.harvest_date || "0000-00-00");
+  }
+  if (mode === "weight") {
+    // Heaviest first; unweighed birds (0, null, or never set) sort last.
+    return (a, b) => (Number(b.harvest_weight) || -1) - (Number(a.harvest_weight) || -1);
+  }
+  return (a, b) => (a.name || "").toLowerCase().localeCompare((b.name || "").toLowerCase());
+}
 
 function groupCardHtml(batchName, filteredBirds, totalCount) {
   const s = summarizeGroup(filteredBirds);
@@ -7799,7 +7879,7 @@ function wireFlockCardHandlers(el) {
     // looks like. (Previously it re-opened the same panel, and the only way
     // to close was the ✕ inside it.)
     const name = card.dataset.openBatch;
-    if (currentOpenBatchName !== name) batchPanelIgnoreFilters = false;
+    if (currentOpenBatchName !== name) { batchPanelIgnoreFilters = false; batchPanelSort = "name"; }
     currentOpenBatchName = (currentOpenBatchName === name) ? null : name;
     renderFlockBirds();
   }));
@@ -7818,7 +7898,8 @@ function showBatchPanel(batchName) {
   // this was built to fix. batchPanelIgnoreFilters is the one-tap escape
   // hatch for when you specifically want to see everyone in the batch.
   const fullBatchBirds = STATE.birds.filter(b => b.batch_name === batchName);
-  const visibleBirds = batchPanelIgnoreFilters ? fullBatchBirds : applyFlockFilters(fullBatchBirds);
+  const visibleBirds = (batchPanelIgnoreFilters ? fullBatchBirds : applyFlockFilters(fullBatchBirds))
+    .slice().sort(batchSortComparator(batchPanelSort));
   const hiddenCount = fullBatchBirds.length - visibleBirds.length;
   const batchIds = visibleBirds.map(b => b.id);
   const selectedInBatch = batchIds.filter(id => selectedBirdIds.has(id));
@@ -7843,7 +7924,10 @@ function showBatchPanel(batchName) {
 
       <div class="toolbar" style="margin-bottom:10px">
         <button class="btn ghost small" id="selectAllInBatch" ${batchIds.length === 0 ? "disabled" : ""}>${allSelected ? "☑" : "☐"} Select all ${batchPanelIgnoreFilters || hiddenCount === 0 ? "in batch" : "shown"}</button>
-        ${selectedInBatch.length > 0 ? `<div class="dim">${selectedInBatch.length} of ${batchIds.length} selected</div>` : ""}
+        <div style="display:flex;align-items:center;gap:8px">
+          ${selectedInBatch.length > 0 ? `<div class="dim">${selectedInBatch.length} of ${batchIds.length} selected</div>` : ""}
+          ${batchSortSelectHtml("batchSortSelect")}
+        </div>
       </div>
       ${selectedInBatch.length > 0 ? `
       <div class="form-block" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;border-color:var(--rust)">
@@ -7865,6 +7949,10 @@ function showBatchPanel(batchName) {
   if (toggleFiltersBtn) toggleFiltersBtn.addEventListener("click", () => {
     batchPanelIgnoreFilters = !batchPanelIgnoreFilters;
     renderFlockBirds(); // same reasoning as selectAllInBatch below -- keeps the outer page (floating bar, etc.) in sync too
+  });
+  document.getElementById("batchSortSelect").addEventListener("change", (e) => {
+    batchPanelSort = e.target.value;
+    renderFlockBirds(); // same reasoning as the other in-panel controls -- keeps the outer page in sync too
   });
   document.getElementById("selectAllInBatch").addEventListener("click", () => {
     if (allSelected) batchIds.forEach(id => selectedBirdIds.delete(id));
