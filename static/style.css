@@ -1115,6 +1115,26 @@ tr:hover td { background: var(--surface-raised); }
   color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em;
   margin: 14px 0 8px; padding-top: 12px; border-top: 1px dashed var(--border);
 }
+/* One batch's worth of contributing birds in the cost-breakdown modal --
+   a native <details> disclosure so a long history (especially All-Time,
+   which can span years of batches) starts collapsed to one scannable line
+   per batch instead of a wall of individual bird rows. */
+.cost-breakdown-batch { border-bottom: 1px solid color-mix(in srgb, var(--slate) 14%, transparent); }
+.cost-breakdown-batch:last-child { border-bottom: none; }
+.cost-breakdown-batch summary {
+  display: flex; align-items: baseline; gap: 8px; padding: 7px 0;
+  cursor: pointer; list-style: none; -webkit-tap-highlight-color: transparent;
+}
+.cost-breakdown-batch summary::-webkit-details-marker { display: none; }
+.cost-breakdown-batch summary::before {
+  content: "▸"; color: var(--text-dim); font-size: 10px; flex: 0 0 auto;
+  transition: transform 0.12s ease;
+}
+.cost-breakdown-batch[open] summary::before { transform: rotate(90deg); }
+.cost-breakdown-batch-name { font-size: 13px; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cost-breakdown-batch-count { font-size: 11px; flex: 1; }
+.cost-breakdown-batch-total { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 13px; color: var(--text); flex: 0 0 auto; }
+.cost-breakdown-batch .stat-panel-rows { padding: 0 0 8px 18px; }
 .stat-panel-hero { position: relative; margin-bottom: 12px; padding-bottom: 14px; border-bottom: 1px dashed var(--border); }
 .stat-panel-hero:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
 .stat-panel-hero-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); margin-bottom: 2px; }

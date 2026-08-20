@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-224";
+const APP_VERSION = "2026.07.13-225";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5255,6 +5255,29 @@ function costPerDozenIn(eggCount, inWindow) {
  * went into it (feed, and each contributing bird's own acquisition cost),
  * for the audit modal. costPerLbMeatIn is a thin wrapper around this, same
  * reasoning as costPerDozenIn above. */
+/** Groups a flat list of birds by batch_name, for a scannable "N batches"
+ * summary instead of a flat wall of individual rows -- All-Time especially
+ * could have hundreds of contributing birds across years of batches, and a
+ * flat list that long isn't really auditable, just a long scroll. Birds with
+ * no batch (added individually) are bucketed together under one heading.
+ * Sorted biggest-cost-first, since that's the natural order for spot-
+ * checking a total: the largest contributors are the most worth verifying. */
+function groupBirdsByBatch(birds) {
+  const groups = new Map();
+  birds.forEach(b => {
+    const key = b.batch_name || "__none__";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(b);
+  });
+  return [...groups.entries()].map(([key, groupBirds]) => ({
+    batchName: key === "__none__" ? null : key,
+    birds: groupBirds,
+    processedCount: groupBirds.filter(b => b.status === "Processed").length,
+    deceasedCount: groupBirds.filter(b => b.status === "Deceased").length,
+    totalCost: groupBirds.reduce((s, b) => s + (Number(b.acquisition_cost) || 0), 0),
+  })).sort((a, b) => b.totalCost - a.totalCost);
+}
+
 function costPerLbMeatBreakdown(meatWeightLb, inWindow) {
   const { cost: feedCost, lbs: feedLbs } = pricedFeedConsumed("Meat Feed", inWindow);
   // A bird that died before reaching slaughter weight still cost what it
@@ -5314,9 +5337,22 @@ function openCostBreakdownModal(kind) {
       + row("÷ Dressed weight", `${displayWeight(meat.meatWeightLb)} ${getWeightUnit()}`);
     formulaHtml = `(${fmtMoney(meat.feedCost)} feed + ${fmtMoney(meat.chickCost)} chick cost) ÷ ${displayWeight(meat.meatWeightLb)} ${getWeightUnit()} = <strong style="color:var(--text)">${fmtMoney(displayPricePerLb(meat.result))}/${getWeightUnit()}</strong>`;
     if (chickCount > 0) {
-      const birdRow = (b) => row(`${esc(b.name || "(unnamed)")}${b.batch_name ? " · " + esc(b.batch_name) : ""}`, fmtMoney(b.acquisition_cost || 0), b.status === "Deceased" ? "rust" : "");
-      listHtml = `<div class="stat-panel-subhead">Birds counted (${chickCount})</div>
-        <div class="stat-panel-rows" style="max-height:260px;overflow-y:auto">${[...meat.processedBirds, ...meat.deceasedBirds].map(birdRow).join("")}</div>`;
+      const birdRow = (b) => row(esc(b.name || "(unnamed)"), fmtMoney(b.acquisition_cost || 0), b.status === "Deceased" ? "rust" : "");
+      const groups = groupBirdsByBatch([...meat.processedBirds, ...meat.deceasedBirds]);
+      const groupHtml = groups.map(g => {
+        const label = g.batchName ? esc(g.batchName) : "Individually added";
+        const countLabel = [g.processedCount ? `${g.processedCount} processed` : null, g.deceasedCount ? `${g.deceasedCount} lost` : null].filter(Boolean).join(" · ");
+        return `<details class="cost-breakdown-batch">
+          <summary>
+            <span class="cost-breakdown-batch-name">${label}</span>
+            <span class="cost-breakdown-batch-count dim">${countLabel}</span>
+            <span class="cost-breakdown-batch-total">${fmtMoney(g.totalCost)}</span>
+          </summary>
+          <div class="stat-panel-rows">${g.birds.map(birdRow).join("")}</div>
+        </details>`;
+      }).join("");
+      listHtml = `<div class="stat-panel-subhead">Birds counted (${chickCount}, ${groups.length} batch${groups.length !== 1 ? "es" : ""}) -- tap a batch to see its birds</div>
+        <div style="max-height:340px;overflow-y:auto">${groupHtml}</div>`;
     }
   } else {
     return; // stale click after a re-render with nothing to show -- nothing to open
