@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-227";
+const APP_VERSION = "2026.07.13-228";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -3652,6 +3652,7 @@ function renderAppSection() {
   const el = document.getElementById("settingsContent");
   const d = currentCoopId ? getCoopDefaults() : null;
   const weightUnit = currentCoopId ? getWeightUnit() : null;
+  const mutedCats = currentCoopId ? getMutedAlertCategories() : [];
   el.innerHTML = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
       <div class="dim" style="font-size:11px;font-family:'JetBrains Mono',monospace">App version: ${esc(APP_VERSION)}</div>
@@ -3731,6 +3732,16 @@ function renderAppSection() {
       </div>
       <div style="margin-top:14px"><button class="btn btn-confirm" id="saveDefaults">✓ Save defaults</button></div>
     </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">🔔 Supply alerts</div>
+      <div class="dim" style="font-size:12px;margin-bottom:14px">The "Running low" alert on the overview, per category. Turn one off if you don't want to be reminded right now -- e.g. Meat Feed while there's no active meat batch -- and turn it back on any time.</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${["Layer Feed", "Meat Feed", "Bedding"].map(cat => `
+        <label class="switch-row"><span>${cat}</span><input type="checkbox" class="alert-cat-toggle" data-cat="${esc(cat)}" ${mutedCats.includes(cat) ? "" : "checked"}></label>
+        `).join("")}
+      </div>
+    </div>
     ` : `<div class="card" style="margin-top:16px"><div class="dim" style="font-size:12px">Units and default values are per-coop -- pick or create a coop to set them.</div></div>`}
 
     <div class="card" style="margin-top:16px;border-color:rgba(184,76,62,0.4)">
@@ -3788,6 +3799,15 @@ function renderAppSection() {
     location.reload();
   });
   if (!currentCoopId) return; // the per-coop handlers below have nothing to attach to
+  el.querySelectorAll(".alert-cat-toggle").forEach(cb => cb.addEventListener("change", async () => {
+    const settings = getCoopSettings();
+    const muted = new Set(getMutedAlertCategories());
+    if (cb.checked) muted.delete(cb.dataset.cat); else muted.add(cb.dataset.cat);
+    settings.muted_alert_categories = [...muted];
+    await localCoopUpdate(currentCoopId, { settings: JSON.stringify(settings) });
+    await loadCoops();
+    showToast(`${cb.dataset.cat} alerts ${cb.checked ? "turned on" : "muted"}`, "update");
+  }));
   document.getElementById("unitLbBtn").addEventListener("click", async () => {
     const settings = getCoopSettings();
     settings.weight_unit = "lb";
@@ -5309,6 +5329,24 @@ function costPerLbMeatIn(meatWeightLb, inWindow) {
  * went into the figure, laid out as a plain worked calculation -- the exact
  * same values costPerDozenBreakdown/costPerLbMeatBreakdown computed, so this
  * can never show something that doesn't match the headline it explains. */
+/** Cost, weight, and value as three equally-weighted chips, not one primary
+ * number with the others as an afterthought -- used for both an individual
+ * bird's row and a batch's totals, so the two read the same way at a glance.
+ * weightText/valueText are pre-formatted ("—" for a bird that never got
+ * processed, since a literal $0.00 would misleadingly look like a real
+ * recorded zero rather than "this never happened"). compact shrinks the
+ * chips for the batch-summary use, which sits inside a <summary> alongside
+ * the batch name and needs to stay lower-profile than a full bird row. */
+function costMetricsRowHtml(cost, weightText, valueText, opts) {
+  opts = opts || {};
+  const compact = opts.compact ? " cost-metrics-row-compact" : "";
+  return `<div class="cost-metrics-row${compact}">
+    <div class="cost-metric tone-rust"><div class="cost-metric-label">Cost</div><div class="cost-metric-value">${fmtMoney(cost)}</div></div>
+    <div class="cost-metric"><div class="cost-metric-label">Weight</div><div class="cost-metric-value">${weightText}</div></div>
+    <div class="cost-metric tone-sage"><div class="cost-metric-label">Value</div><div class="cost-metric-value">${valueText}</div></div>
+  </div>`;
+}
+
 function openCostBreakdownModal(kind) {
   const { dozen, meat, scopeLabel } = lastCostBreakdowns;
   const row = (label, value, tone) => `<div class="stat-panel-row"><span class="stat-panel-row-label">${label}</span><span class="stat-panel-row-value${tone ? " tone-" + tone : ""}">${value}</span></div>`;
@@ -5361,17 +5399,15 @@ function openCostBreakdownModal(kind) {
         const weight = Number(b.harvest_weight) || 0;
         const value = weight * (Number(b.price_per_lb) || 0);
         // Only a Processed bird has a dressed weight and value -- a Deceased
-        // one never got that far, so showing $0.00 there would misleadingly
-        // read as "worth nothing" rather than "never weighed."
-        const detail = b.status === "Processed"
-          ? (weight > 0 ? `${weightLabel(weight)} → ${fmtMoney(value)} value` : "no weight recorded")
-          : "lost before processing — no weight or value";
-        return `<div class="stat-panel-row" style="align-items:flex-start">
-          <span class="stat-panel-row-label" style="flex-direction:column;align-items:flex-start;gap:1px">
-            <span>${nameLabel}</span>
-            <span class="dim" style="font-size:11px">${detail}</span>
-          </span>
-          <span class="stat-panel-row-value${b.status === "Deceased" ? " tone-rust" : ""}">${fmtMoney(b.acquisition_cost || 0)}</span>
+        // one never got that far, so "—" rather than a literal $0.00, which
+        // would misleadingly read as "worth nothing" instead of "never
+        // weighed."
+        const weightText = b.status === "Processed" && weight > 0 ? weightLabel(weight) : "—";
+        const valueText = b.status === "Processed" && weight > 0 ? fmtMoney(value) : "—";
+        const lostNote = b.status === "Deceased" ? ` <span class="dim" style="font-size:11px;font-weight:400">— lost before processing</span>` : "";
+        return `<div class="cost-bird-block">
+          <div class="cost-bird-name">${nameLabel}${lostNote}</div>
+          ${costMetricsRowHtml(b.acquisition_cost || 0, weightText, valueText)}
         </div>`;
       };
       const groups = groupBirdsByBatch([...meat.processedBirds, ...meat.deceasedBirds]);
@@ -5380,26 +5416,26 @@ function openCostBreakdownModal(kind) {
         const label = g.batchName ? esc(g.batchName) : "Individually added";
         const countLabel = [g.processedCount ? `${g.processedCount} processed` : null, g.deceasedCount ? `${g.deceasedCount} lost` : null].filter(Boolean).join(" · ");
         const groupSpans = g.birds.some(b => spanInfo(b));
-        // Batch-level weight/value subtotal -- only meaningful across the
-        // PROCESSED birds (a deceased one contributes 0 to both), shown once
-        // per batch rather than making the collapsed summary line any
-        // busier than it already is.
+        // Batch totals get the SAME three-chip treatment as an individual
+        // bird, living inside <summary> itself so they're visible whether
+        // the batch is expanded or not -- only the individual bird list
+        // underneath is what actually collapses.
         const groupWeight = g.birds.reduce((s, b) => s + (Number(b.harvest_weight) || 0), 0);
         const groupValue = g.birds.reduce((s, b) => s + (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || 0), 0);
-        const subtotal = groupWeight > 0 ? `<div class="dim" style="font-size:11px;padding:2px 0 6px 18px">${weightLabel(groupWeight)} dressed → ${fmtMoney(groupValue)} value</div>` : "";
         return `<details class="cost-breakdown-batch">
           <summary>
-            <span class="cost-breakdown-batch-name">${groupSpans ? "⚠️ " : ""}${label}</span>
-            <span class="cost-breakdown-batch-count dim">${countLabel}</span>
-            <span class="cost-breakdown-batch-total">${fmtMoney(g.totalCost)}</span>
+            <div class="cost-breakdown-batch-head">
+              <span class="cost-breakdown-batch-name">${groupSpans ? "⚠️ " : ""}${label}</span>
+              <span class="cost-breakdown-batch-count dim">${countLabel}</span>
+            </div>
+            ${costMetricsRowHtml(g.totalCost, groupWeight > 0 ? weightLabel(groupWeight) : "—", groupWeight > 0 ? fmtMoney(groupValue) : "—", { compact: true })}
           </summary>
-          ${subtotal}
-          <div class="stat-panel-rows">${g.birds.map(birdRow).join("")}</div>
+          <div class="cost-bird-list">${g.birds.map(birdRow).join("")}</div>
         </details>`;
       }).join("");
       listHtml = `<div class="stat-panel-subhead">Birds counted (${chickCount}, ${groups.length} batch${groups.length !== 1 ? "es" : ""}) -- tap a batch to see its birds</div>
         ${anySpanning ? `<div class="dim" style="font-size:11px;margin-bottom:8px">⚠️ marks a bird acquired in an earlier year than it was processed or lost. The numbers above are correct -- its feed cost is still split by the days it actually ate in each year -- but its acquisition cost and weight only count here, in ${esc(String(scopeLabel))}, not in the year it started.</div>` : ""}
-        <div style="max-height:340px;overflow-y:auto">${groupHtml}</div>`;
+        <div style="max-height:400px;overflow-y:auto">${groupHtml}</div>`;
     }
   } else {
     return; // stale click after a re-render with nothing to show -- nothing to open
@@ -6285,6 +6321,13 @@ function getCoopSettings() {
   try { return JSON.parse(coop.settings); } catch { return {}; }
 }
 const LB_TO_KG = 0.45359237;
+/** Supply-alert categories the person has muted for this coop (e.g. Meat
+ * Feed while there are no meat birds this season) -- stored the same way as
+ * weight_unit, in the coop's settings JSON. */
+function getMutedAlertCategories() {
+  const m = getCoopSettings().muted_alert_categories;
+  return Array.isArray(m) ? m : [];
+}
 function getWeightUnit() {
   return getCoopSettings().weight_unit === "kg" ? "kg" : "lb"; // lb is the default/canonical storage unit
 }
@@ -6637,20 +6680,8 @@ function renderCoopOverview() {
   const currentYear = String(new Date().getFullYear());
   const ys = computeYearStats(currentYear);
   const tr = computeCardTrends();
-  // Each card is a tap-through to the tab where its data lives -- the
-  // dashboard doubles as navigation. Sparkline = last 8 weeks, weekly;
-  // delta chip = month-to-date vs the same point last month. The cards
-  // themselves stay on calendar-month numbers deliberately (they pair with
-  // the "this year" subline as bookkeeping); the range toggle below keeps
-  // driving the usage figures and charts, as it always has.
-  const statCard = ({ tone, styleAttr = "", goto, label, value, sub, spark, chip }) => `
-    <div class="stat stat-tappable tone-${tone}" ${styleAttr} data-goto-tab="${goto}" role="button" tabindex="0" title="Open ${goto === "dashboard" ? "details" : goto}">
-      <div class="stat-label">${label}</div>
-      <div class="stat-value-row"><div class="stat-value">${value}</div>${chip || ""}</div>
-      <div class="stat-sub">${sub}</div>
-      ${spark ? `<div class="stat-spark-wrap">${spark}</div>` : ""}
-    </div>`;
   el.innerHTML = `
+    <div class="card-title" style="margin-bottom:12px">Overview — ${esc(monthLabelOf(monthKeyOf(todayStr())))}</div>
     <div class="section-gap">
       <div class="grid-stats-2">
         ${(() => {
@@ -6664,14 +6695,14 @@ function renderCoopOverview() {
           }) + statPanelRows(
             statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layers`, s.layers)
             + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat birds`, s.meatActive)
-            + statPanelRow("Losses this month", s.lossesThisMonth, s.lossesThisMonth > 0 ? "rust" : "")
-            + statPanelRow("Processed this month", s.processedThisMonth)
+            + statPanelRow("Losses", s.lossesThisMonth, s.lossesThisMonth > 0 ? "rust" : "")
+            + statPanelRow("Processed", s.processedThisMonth)
           ) + statPanelSubhead("🌾 Feed & Bedding") + statPanelRows(
             statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layer feed used`, `${displayWeight(feedTotalForMonth(thisMonthKey, "layer"))} ${getWeightUnit()}`)
             + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat feed used`, `${displayWeight(feedTotalForMonth(thisMonthKey, "meat"))} ${getWeightUnit()}`)
             + statPanelRow("Bedding used", `${beddingTotalForMonth(thisMonthKey).toFixed(1)} cu ft`)
           );
-          const valueBody = statPanelHero("Value Produced This Month", fmtMoney(s.incomeMonth), {
+          const valueBody = statPanelHero("Value Produced", fmtMoney(s.incomeMonth), {
             chip: deltaChipHtml(tr.cur.value, tr.prev.value),
           }) + statPanelRows(
             statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Eggs collected`, s.eggsThisMonth)
@@ -6725,9 +6756,12 @@ function renderCoopOverview() {
       </div>
 
       ${(() => {
-        const low = lowSupplyCategories(STATE.supplies);
+        const muted = getMutedAlertCategories();
+        const allLow = lowSupplyCategories(STATE.supplies);
+        const low = allLow.filter(l => !muted.includes(l.category));
+        const mutedActive = allLow.filter(l => muted.includes(l.category));
         const activeClutches = STATE.hatches.filter(h => h.status !== "Complete").sort((a, b) => a.date_started.localeCompare(b.date_started));
-        if (!low.length && !activeClutches.length) return "";
+        if (!low.length && !activeClutches.length && !mutedActive.length) return "";
         const STATUS_TEXT = { "1/2": "1/2 left", "1/4": "1/4 left", "Empty": "out" };
         const anyToday = activeClutches.some(h => hatchNextEventInfo(h.date_started).isToday);
         const anyOverdue = activeClutches.some(h => hatchNextEventInfo(h.date_started).overdue);
@@ -6739,9 +6773,10 @@ function renderCoopOverview() {
           ${low.length ? `
           <div class="flock-section-header" style="${sectionHeaderStyle};margin-top:0">⚠️ Running low</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-            ${low.map(l => `<span class="stamp tone-${l.tone}">${esc(l.category)} -- ${STATUS_TEXT[l.status] || l.status}</span>`).join("")}
+            ${low.map(l => `<span class="stamp tone-${l.tone} stamp-mutable">${esc(l.category)} -- ${STATUS_TEXT[l.status] || l.status}<button class="stamp-mute-btn" data-mute-alert="${esc(l.category)}" title="Don't show this alert for now">✕</button></span>`).join("")}
           </div>
           ` : ""}
+          ${mutedActive.length ? `<div class="dim" style="font-size:11px;margin-top:8px">Muted: ${mutedActive.map(l => esc(l.category)).join(", ")} -- turn back on in Settings → App</div>` : ""}
           ${activeClutches.length ? `
           <div class="flock-section-header" style="${sectionHeaderStyle}">🐣 Hatching</div>
           <div style="display:flex;flex-direction:column;gap:4px;margin-top:8px">
@@ -6897,6 +6932,18 @@ function renderCoopOverview() {
     switchTab("eggs");
     eggsSubTab = "hatching";
     renderEggsHub();
+  }));
+  el.querySelectorAll("[data-mute-alert]").forEach(btn => btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const category = btn.dataset.muteAlert;
+    const settings = getCoopSettings();
+    const muted = new Set(getMutedAlertCategories());
+    muted.add(category);
+    settings.muted_alert_categories = [...muted];
+    await localCoopUpdate(currentCoopId, { settings: JSON.stringify(settings) });
+    await loadCoops();
+    showToast(`${category} alerts muted`, "update");
+    renderCoopOverview();
   }));
   wireStatPanelGoto(el);
   drawDashboardCharts();
