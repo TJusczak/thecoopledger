@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-220";
+const APP_VERSION = "2026.07.13-221";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -49,11 +49,26 @@ let reviewMoneyMode = "net";   // Year Review money chart -- net first, same as 
 // Dashboard "money" mega-chart: mode (spend/income/net) plus which pill is
 // selected within spend and income modes (null = all).
 let dashMoneyMode = "net";
-let dashSpendPill = null;   // an EXPENSE_CATEGORIES value, or null for all
-let dashIncomePill = null;  // "Egg value" | "Meat value" | an income category, or null
+let dashSpendPill = new Set();   // EXPENSE_CATEGORIES values selected; empty = all
+let dashIncomePill = new Set();  // "Egg value" | "Meat value" | income categories selected; empty = all
 // Year Review mega-chart pill selection (mode reuses reviewMoneyMode).
-let reviewSpendPill = null;
-let reviewIncomePill = null;
+let reviewSpendPill = new Set();
+let reviewIncomePill = new Set();
+/** Toggles a multi-select pill Set in place: clicking "All" (empty value)
+ * clears the selection back to "show everyone"; clicking a specific pill
+ * adds it if not already selected, removes it if it is -- so tapping Layer
+ * Feed then Meat Feed shows both together, and tapping either one again
+ * drops just that one back out, leaving the other still selected. */
+function togglePillSelection(set, value) {
+  if (!value) { set.clear(); return; }
+  if (set.has(value)) set.delete(value);
+  else set.add(value);
+}
+/** Readable label for a chart title: "" when empty (All), the one name when
+ * a single pill is selected, or a comma-joined list for multiple. */
+function pillLabel(set) {
+  return set.size ? [...set].join(", ") : "";
+}
 let reviewProduceType = "eggs"; // Year Review produce card: "eggs" | "meat"
 let reviewFeedType = "both";    // Year Review feed card: "layer" | "meat" | "both"
 let charts = {};
@@ -4865,11 +4880,14 @@ function eggsDailyForMonth(key) {
 }
 
 /** Total spend per day for a month (expenses only, not income). */
-function spendDailyForMonth(key, category) {
+function spendDailyForMonth(key, categories) {
+  // categories: null/empty Set means "all"; otherwise a Set of category
+  // names to include -- lets the money chart's pills be multi-select.
   const arr = Array(daysInMonthKey(key)).fill(0);
+  const filterActive = categories && categories.size > 0;
   STATE.expenses.forEach(x => {
     if (x.entry_type === "income") return;
-    if (category && x.category !== category) return;
+    if (filterActive && !categories.has(x.category)) return;
     const d = dayInMonth(x.date, key);
     if (d > 0) arr[d - 1] += Number(x.amount) || 0;
   });
@@ -4916,28 +4934,33 @@ function meatValueDailyForMonth(key) {
   });
   return arr;
 }
-/** Other-income (non egg/meat sale) per day for a given category, in a month. */
-function otherIncomeDailyForMonth(key, category) {
+/** Other-income (non egg/meat sale) per day for a month, filtered to a Set
+ * of categories (or null/empty Set for all). */
+function otherIncomeDailyForMonth(key, categories) {
   const arr = Array(daysInMonthKey(key)).fill(0);
+  const filterActive = categories && categories.size > 0;
   STATE.expenses.forEach(x => {
     if (x.entry_type !== "income") return;
     if (x.category === "Egg Sale" || x.category === "Meat Sale") return; // already in egg/meat value
-    if (category && x.category !== category) return;
+    if (filterActive && !categories.has(x.category)) return;
     const dm = dayInMonth(x.date, key);
     if (dm > 0) arr[dm - 1] += Number(x.amount) || 0;
   });
   return arr;
 }
 
-/** Total income value per day for a month, optionally filtered to one source
- * ("Egg value", "Meat value", or an other-income category). */
-function incomeDailyForMonth(key, source) {
+/** Total income value per day for a month, optionally filtered to a Set of
+ * sources ("Egg value", "Meat value", and/or other-income categories). An
+ * empty/null Set means all sources combined. */
+function incomeDailyForMonth(key, sources) {
   const n = daysInMonthKey(key);
-  if (source === "Egg value") return eggValueDailyForMonth(key);
-  if (source === "Meat value") return meatValueDailyForMonth(key);
-  if (source) return otherIncomeDailyForMonth(key, source);
-  // All sources combined.
-  const egg = eggValueDailyForMonth(key), meat = meatValueDailyForMonth(key), other = otherIncomeDailyForMonth(key, null);
+  const wantAll = !sources || sources.size === 0;
+  const egg = (wantAll || sources.has("Egg value")) ? eggValueDailyForMonth(key) : Array(n).fill(0);
+  const meat = (wantAll || sources.has("Meat value")) ? meatValueDailyForMonth(key) : Array(n).fill(0);
+  // "Egg value"/"Meat value" are synthetic source names, not real expense
+  // categories, so passing the Set straight through here is safe -- they
+  // simply never match any real x.category and are harmlessly ignored.
+  const other = otherIncomeDailyForMonth(key, wantAll ? null : sources);
   return Array.from({ length: n }, (_, i) => egg[i] + meat[i] + other[i]);
 }
 
@@ -5719,16 +5742,16 @@ function renderYearReviewSection() {
           ${[["both", "Both"], ["layer", `${BIRD_TYPE_ICONS.layer.emoji} Layer`], ["meat", `${BIRD_TYPE_ICONS.meat.emoji} Meat`]].map(([v, label]) => `<button class="pill-btn ${reviewFeedType === v ? "range-btn active" : ""}" data-feed-type="${v}">${label}</button>`).join("")}
         </div>
       </div><div class="chart-box"><canvas id="reviewFeedChart"></canvas></div></div>
-      <div class="card" style="grid-column:1/-1"><div class="chart-head chart-head-grow"><div class="money-mega-head"><div class="card-title">${reviewMoneyMode === "income" ? "💰 Income / value" : reviewMoneyMode === "net" ? "⚖️ Net" : "💵 Spend"} by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}${reviewMoneyMode === "spend" && reviewSpendPill ? ` · ${esc(reviewSpendPill)}` : reviewMoneyMode === "income" && reviewIncomePill ? ` · ${esc(reviewIncomePill)}` : ""}</div>
+      <div class="card" style="grid-column:1/-1"><div class="chart-head chart-head-grow"><div class="money-mega-head"><div class="card-title">${reviewMoneyMode === "income" ? "💰 Income / value" : reviewMoneyMode === "net" ? "⚖️ Net" : "💵 Spend"} by month — ${selectedYear}${hasPrev ? ` vs ${prevYear}` : ""}${reviewMoneyMode === "spend" && reviewSpendPill.size ? ` · ${esc(pillLabel(reviewSpendPill))}` : reviewMoneyMode === "income" && reviewIncomePill.size ? ` · ${esc(pillLabel(reviewIncomePill))}` : ""}</div>
         <div class="pill-row money-mode-pills" id="reviewMoneyMode">
           ${[["spend", "💵 Spend"], ["income", "💰 Income"], ["net", "⚖️ Net"]].map(([v, label]) => `<button class="pill-btn ${reviewMoneyMode === v ? "range-btn active" : ""}" data-money-mode="${v}">${label}</button>`).join("")}
         </div></div>
         ${reviewMoneyMode === "spend" ? `<div class="pill-row" id="reviewSpendPills">
-          <button class="pill-btn ${!reviewSpendPill ? "range-btn active" : ""}" data-spend-pill="">All</button>
-          ${spendCategoriesPresent().map(c => `<button class="pill-btn ${reviewSpendPill === c ? "range-btn active" : ""}" data-spend-pill="${esc(c)}">${(CATEGORY_ICONS[c] || CATEGORY_ICONS["Other"]).emoji} ${esc(c)}</button>`).join("")}
+          <button class="pill-btn ${reviewSpendPill.size === 0 ? "range-btn active" : ""}" data-spend-pill="">All</button>
+          ${spendCategoriesPresent().map(c => `<button class="pill-btn ${reviewSpendPill.has(c) ? "range-btn active" : ""}" data-spend-pill="${esc(c)}">${(CATEGORY_ICONS[c] || CATEGORY_ICONS["Other"]).emoji} ${esc(c)}</button>`).join("")}
         </div>` : reviewMoneyMode === "income" ? `<div class="pill-row" id="reviewIncomePills">
-          <button class="pill-btn ${!reviewIncomePill ? "range-btn active" : ""}" data-income-pill="">All</button>
-          ${incomeSourcesPresent().map(src => { const ic = incomeSourceIcon(src); return `<button class="pill-btn ${reviewIncomePill === src ? "range-btn active" : ""}" data-income-pill="${esc(src)}">${ic.emoji} ${esc(src)}</button>`; }).join("")}
+          <button class="pill-btn ${reviewIncomePill.size === 0 ? "range-btn active" : ""}" data-income-pill="">All</button>
+          ${incomeSourcesPresent().map(src => { const ic = incomeSourceIcon(src); return `<button class="pill-btn ${reviewIncomePill.has(src) ? "range-btn active" : ""}" data-income-pill="${esc(src)}">${ic.emoji} ${esc(src)}</button>`; }).join("")}
         </div>` : ""}
       </div><div class="chart-box"><canvas id="reviewExpenseChart"></canvas></div>
         ${(() => {
@@ -5754,14 +5777,14 @@ function renderYearReviewSection() {
   if (reviewSpendPillsEl) reviewSpendPillsEl.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-spend-pill]");
     if (!btn) return;
-    reviewSpendPill = btn.dataset.spendPill || null;
+    togglePillSelection(reviewSpendPill, btn.dataset.spendPill);
     renderYearReviewSection();
   });
   const reviewIncomePillsEl = document.getElementById("reviewIncomePills");
   if (reviewIncomePillsEl) reviewIncomePillsEl.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-income-pill]");
     if (!btn) return;
-    reviewIncomePill = btn.dataset.incomePill || null;
+    togglePillSelection(reviewIncomePill, btn.dataset.incomePill);
     renderYearReviewSection();
   });
   const reviewProduceToggle = document.getElementById("reviewProduceType");
@@ -5825,8 +5848,11 @@ function moneyMonthlyForYear(year, mode, pill) {
   const eggFallback = Number(getCoopDefaults().eggPrice) || 0, meatFallback = Number(getCoopDefaults().pricePerLb) || 0;
   const eggVal = monthlyBuckets(STATE.eggs.map(e => ({ date: e.date, v: (Number(e.count) || 0) * (Number(e.price_per_egg) || eggFallback) })), year, it => it.v);
   const meatVal = monthlyBuckets(STATE.birds.filter(b => b.status === "Processed" && b.harvest_date).map(b => ({ date: b.harvest_date, v: (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || meatFallback) })), year, it => it.v);
-  const otherIncome = (cat) => monthlyBuckets(STATE.expenses.filter(x => x.entry_type === "income" && x.category !== "Egg Sale" && x.category !== "Meat Sale" && (!cat || x.category === cat)), year, x => Number(x.amount) || 0);
-  const spend = (cat) => monthlyBuckets(STATE.expenses.filter(x => x.entry_type !== "income" && (!cat || x.category === cat)), year, x => Number(x.amount) || 0);
+  // cats: null/empty Set means "all"; otherwise a Set of names to include --
+  // lets a chart's pills be multi-select (tap Layer Feed and Meat Feed, get
+  // both together) rather than only "all" or "exactly one."
+  const otherIncome = (cats) => { const active = cats && cats.size > 0; return monthlyBuckets(STATE.expenses.filter(x => x.entry_type === "income" && x.category !== "Egg Sale" && x.category !== "Meat Sale" && (!active || cats.has(x.category))), year, x => Number(x.amount) || 0); };
+  const spend = (cats) => { const active = cats && cats.size > 0; return monthlyBuckets(STATE.expenses.filter(x => x.entry_type !== "income" && (!active || cats.has(x.category))), year, x => Number(x.amount) || 0); };
   const add = (...arrs) => arrs[0].map((_, i) => arrs.reduce((s, a) => s + a[i], 0));
 
   // Cumulative across the year for income and net, matching the dashboard --
@@ -5836,10 +5862,14 @@ function moneyMonthlyForYear(year, mode, pill) {
   const runningTotal = (arr) => { let r = 0; return arr.map(v => (r += v)); };
   if (mode === "spend") return spend(pill);
   if (mode === "income") {
-    if (pill === "Egg value") return runningTotal(eggVal);
-    if (pill === "Meat value") return runningTotal(meatVal);
-    if (pill) return runningTotal(otherIncome(pill));
-    return runningTotal(add(eggVal, meatVal, otherIncome(null)));
+    const active = pill && pill.size > 0;
+    const wantEgg = !active || pill.has("Egg value");
+    const wantMeat = !active || pill.has("Meat value");
+    const zeros = eggVal.map(() => 0);
+    // "Egg value"/"Meat value" are synthetic source names, not real expense
+    // categories -- passing the raw Set into otherIncome() is safe, they
+    // simply never match any x.category and are harmlessly ignored there.
+    return runningTotal(add(wantEgg ? eggVal : zeros, wantMeat ? meatVal : zeros, otherIncome(active ? pill : null)));
   }
   // net = running total of (income value − spend) across the months, so the
   // line ends at the year's net and a zero-crossing marks break-even.
@@ -5859,6 +5889,37 @@ function spendCategoryMonthlyForYear(year) {
     color: (CATEGORY_ICONS[cat] || CATEGORY_ICONS["Other"]).from,
     data: monthlyBuckets(STATE.expenses.filter(x => x.entry_type !== "income" && x.category === cat), year, x => Number(x.amount) || 0),
   })).filter(d => d.data.some(v => v > 0));
+}
+/** Per-month income broken out by source, for the "All" stacked-bar view --
+ * Egg value / Meat value (if produced that year) plus each other-income
+ * category actually logged, each colored to match incomeSourceIcon's spec
+ * used for the pills, so a bar segment's color always matches its pill. */
+function incomeSourceMonthlyForYear(year) {
+  const eggFallback = Number(getCoopDefaults().eggPrice) || 0, meatFallback = Number(getCoopDefaults().pricePerLb) || 0;
+  const out = [];
+  const eggData = monthlyBuckets(STATE.eggs.map(e => ({ date: e.date, v: (Number(e.count) || 0) * (Number(e.price_per_egg) || eggFallback) })), year, it => it.v);
+  if (eggData.some(v => v > 0)) out.push({ source: "Egg value", color: incomeSourceIcon("Egg value").from, data: eggData });
+  const meatData = monthlyBuckets(STATE.birds.filter(b => b.status === "Processed" && b.harvest_date).map(b => ({ date: b.harvest_date, v: (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || meatFallback) })), year, it => it.v);
+  if (meatData.some(v => v > 0)) out.push({ source: "Meat value", color: incomeSourceIcon("Meat value").from, data: meatData });
+  const otherCats = [...new Set(STATE.expenses.filter(x => x.entry_type === "income" && x.category !== "Egg Sale" && x.category !== "Meat Sale" && x.date && x.date.slice(0, 4) === year).map(x => x.category))];
+  otherCats.forEach(cat => {
+    const data = monthlyBuckets(STATE.expenses.filter(x => x.entry_type === "income" && x.category === cat), year, x => Number(x.amount) || 0);
+    if (data.some(v => v > 0)) out.push({ source: cat, color: incomeSourceIcon(cat).from, data });
+  });
+  return out;
+}
+/** Raw (non-cumulative) per-month income and spend totals, all sources and
+ * categories combined -- the context bars behind the Net chart's running-
+ * total line, so "did I net positive this specific month" is visible
+ * alongside "where does my running balance stand." */
+function incomeSpendMonthlyForYear(year) {
+  const eggFallback = Number(getCoopDefaults().eggPrice) || 0, meatFallback = Number(getCoopDefaults().pricePerLb) || 0;
+  const eggVal = monthlyBuckets(STATE.eggs.map(e => ({ date: e.date, v: (Number(e.count) || 0) * (Number(e.price_per_egg) || eggFallback) })), year, it => it.v);
+  const meatVal = monthlyBuckets(STATE.birds.filter(b => b.status === "Processed" && b.harvest_date).map(b => ({ date: b.harvest_date, v: (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || meatFallback) })), year, it => it.v);
+  const otherInc = monthlyBuckets(STATE.expenses.filter(x => x.entry_type === "income" && x.category !== "Egg Sale" && x.category !== "Meat Sale"), year, x => Number(x.amount) || 0);
+  const income = eggVal.map((v, i) => v + meatVal[i] + otherInc[i]);
+  const spend = monthlyBuckets(STATE.expenses.filter(x => x.entry_type !== "income"), year, x => Number(x.amount) || 0);
+  return { income, spend };
 }
 
 function drawYearReviewCharts(year) {
@@ -5920,21 +5981,42 @@ function drawYearReviewCharts(year) {
     const moneyOpts = yearChartOpts(hasPrev, (v) => fmtMoney(v));
     moneyOpts.scales.x.stacked = true;
     moneyOpts.scales.y.stacked = true;
-    let datasets;
-    if (reviewSpendPill) {
-      const data = moneyMonthlyForYear(year, "spend", reviewSpendPill);
-      datasets = [{ label: year, data, backgroundColor: "#B84C3E", borderRadius: 3 }];
-      if (hasPrev) datasets.push({ type: "line", label: lastYear, data: moneyMonthlyForYear(lastYear, "spend", reviewSpendPill), ...prevDash("#C7B9A6") });
-    } else {
-      const cats = spendCategoryMonthlyForYear(year);
-      datasets = cats.length
-        ? cats.map(c => ({ label: c.category, data: c.data, backgroundColor: c.color, borderRadius: 2 }))
-        : [{ label: year, data: Array(12).fill(0), backgroundColor: "#B84C3E", borderRadius: 3 }];
-      // The legend is how a stacked bar's colors get identified back to
-      // category names -- always shown here, unlike the single-line charts
-      // below where it's only worth the space when comparing two years.
-      moneyOpts.plugins.legend = { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } };
-      if (hasPrev) datasets.push({ type: "line", label: lastYear, data: moneyMonthlyForYear(lastYear, "spend", null), ...prevDash("#C7B9A6") });
+    // One stacked bar per category, always -- selecting one or more pills
+    // just narrows WHICH categories participate in the stack (tap Layer Feed
+    // and Meat Feed, see both as separate colored segments in each month's
+    // bar); "All" is the same code path with nothing filtered out.
+    let cats = spendCategoryMonthlyForYear(year);
+    if (reviewSpendPill.size > 0) cats = cats.filter(c => reviewSpendPill.has(c.category));
+    const datasets = cats.length
+      ? cats.map(c => ({ label: c.category, data: c.data, backgroundColor: c.color, borderRadius: 2 }))
+      : [{ label: year, data: Array(12).fill(0), backgroundColor: "#B84C3E", borderRadius: 3 }];
+    // The legend is how a stacked bar's colors get identified back to
+    // category names -- always shown here, unlike the single-line charts
+    // below where it's only worth the space when comparing two years.
+    moneyOpts.plugins.legend = { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } };
+    if (hasPrev) datasets.push({ type: "line", label: lastYear, data: moneyMonthlyForYear(lastYear, "spend", reviewSpendPill), ...prevDash("#C7B9A6") });
+    reviewCharts.expenses = new Chart(document.getElementById("reviewExpenseChart"), {
+      type: "bar",
+      data: { labels: MONTH_LABELS, datasets },
+      options: moneyOpts
+    });
+  } else if (reviewMoneyMode === "income") {
+    const moneyOpts = yearChartOpts(hasPrev, (v) => fmtMoney(v));
+    moneyOpts.scales.x.stacked = true;
+    moneyOpts.scales.y.stacked = true;
+    // Same multi-select-stack pattern as Spend, just by income source
+    // (Egg value, Meat value, other income categories) instead of category.
+    let srcs = incomeSourceMonthlyForYear(year);
+    if (reviewIncomePill.size > 0) srcs = srcs.filter(s => reviewIncomePill.has(s.source));
+    const datasets = srcs.length
+      ? srcs.map(s => ({ label: s.source, data: s.data, backgroundColor: s.color, borderRadius: 2 }))
+      : [{ label: year, data: Array(12).fill(0), backgroundColor: "#8A9A5B", borderRadius: 3 }];
+    moneyOpts.plugins.legend = { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } };
+    if (hasPrev) {
+      let prevSrcs = incomeSourceMonthlyForYear(lastYear);
+      if (reviewIncomePill.size > 0) prevSrcs = prevSrcs.filter(s => reviewIncomePill.has(s.source));
+      const prevTotal = Array(12).fill(0).map((_, i) => prevSrcs.reduce((sum, s) => sum + s.data[i], 0));
+      datasets.push({ type: "line", label: lastYear, data: prevTotal, ...prevDash("#C7B9A6") });
     }
     reviewCharts.expenses = new Chart(document.getElementById("reviewExpenseChart"), {
       type: "bar",
@@ -5942,17 +6024,46 @@ function drawYearReviewCharts(year) {
       options: moneyOpts
     });
   } else {
-    const moneyData = moneyMonthlyForYear(year, reviewMoneyMode, reviewMoneyMode === "income" ? reviewIncomePill : null);
-    const moneyPrev = hasPrev ? moneyMonthlyForYear(lastYear, reviewMoneyMode, reviewMoneyMode === "income" ? reviewIncomePill : null) : null;
-    const isNet = reviewMoneyMode === "net";
-    const moneyColor = "#8A9A5B"; // income and net are both sage; spend (the only rust one) is handled above
-    const mainDs = { label: year, data: moneyData, borderColor: moneyColor, backgroundColor: moneyColor + "33", tension: 0.25, pointRadius: 2, fill: !isNet };
-    if (isNet) mainDs.segment = { borderColor: (ctx) => (ctx.p1.parsed.y != null && ctx.p1.parsed.y < 0 ? "#B84C3E" : "#8A9A5B") };
-    const moneyOpts = yearChartOpts(hasPrev, (v) => fmtMoney(v));
-    if (isNet) moneyOpts.scales.y.beginAtZero = false;
+    // Net: income and spend as per-month diverging bars (income up, spend
+    // down -- so a month's balance is visible as the gap between them),
+    // with the running Net balance threaded through as a line. The two live
+    // on separate scales (left: per-month magnitude, right: cumulative
+    // balance) since a whole year's running total and one month's spend can
+    // be wildly different sizes -- sharing one axis would flatten the bars
+    // to nothing by December.
+    const { income, spend } = incomeSpendMonthlyForYear(year);
+    const netLine = moneyMonthlyForYear(year, "net", null);
+    const moneyOpts = {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { position: "bottom", labels: { color: "#C7B9A6", font: { size: 11 }, boxWidth: 12 } },
+        tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${fmtMoney(Math.abs(ctx.parsed.y))}` } },
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: "#C7B9A6", font: { size: 10 }, maxRotation: 0 }, grid: { color: "#5A4B3C40" } },
+        y: { position: "left", ticks: { color: "#C7B9A6", font: { size: 10 }, callback: (v) => fmtMoney(Math.abs(v)) }, grid: { color: "#5A4B3C40" } },
+        y1: { position: "right", ticks: { color: "#D4A017", font: { size: 10 } }, grid: { display: false } },
+      }
+    };
+    const datasets = [
+      { type: "bar", label: "Income", data: income, backgroundColor: "#8A9A5B", borderRadius: 2, yAxisID: "y" },
+      { type: "bar", label: "Spend", data: spend.map(v => -v), backgroundColor: "#B84C3E", borderRadius: 2, yAxisID: "y" },
+      {
+        type: "line", label: "Net balance", data: netLine, borderWidth: 2,
+        backgroundColor: "transparent", tension: 0.25, pointRadius: 2, fill: false, yAxisID: "y1",
+        // Gold above zero / rust below -- distinct from the green/red bars
+        // so the line reads as its own thing threading through, not a third
+        // bar color, while still marking the zero-crossing (the month the
+        // running balance flipped) the same way it always has.
+        borderColor: "#D4A017",
+        segment: { borderColor: (ctx) => (ctx.p1.parsed.y != null && ctx.p1.parsed.y < 0 ? "#B84C3E" : "#D4A017") },
+      },
+    ];
     reviewCharts.expenses = new Chart(document.getElementById("reviewExpenseChart"), {
-      type: "line",
-      data: { labels: MONTH_LABELS, datasets: withPrev(mainDs, moneyPrev, "#C7B9A6") },
+      type: "bar",
+      data: { labels: MONTH_LABELS, datasets },
       options: moneyOpts
     });
   }
@@ -6529,7 +6640,7 @@ function renderCoopOverview() {
           <div class="card" style="grid-column:1/-1">
             <div class="chart-head chart-head-grow">
               <div class="money-mega-head">
-                <div class="card-title">${dashMoneyMode === "income" ? "💰 Income / value" : dashMoneyMode === "net" ? "⚖️ Net (value − spend)" : "💵 Spending"}${dashMoneyMode === "spend" && dashSpendPill ? ` — ${esc(dashSpendPill)}` : dashMoneyMode === "income" && dashIncomePill ? ` — ${esc(dashIncomePill)}` : ""}</div>
+                <div class="card-title">${dashMoneyMode === "income" ? "💰 Income / value" : dashMoneyMode === "net" ? "⚖️ Net (value − spend)" : "💵 Spending"}${dashMoneyMode === "spend" && dashSpendPill.size ? ` — ${esc(pillLabel(dashSpendPill))}` : dashMoneyMode === "income" && dashIncomePill.size ? ` — ${esc(pillLabel(dashIncomePill))}` : ""}</div>
                 <div class="pill-row money-mode-pills" id="dashMoneyMode">
                   ${[["spend", "💵 Spend"], ["income", "💰 Income"], ["net", "⚖️ Net"]].map(([v, label]) => `<button class="pill-btn ${dashMoneyMode === v ? "range-btn active" : ""}" data-money-mode="${v}">${label}</button>`).join("")}
                 </div>
@@ -6541,11 +6652,11 @@ function renderCoopOverview() {
                 return dashTotalBlock(shown, comp, (v) => fmtMoney(v), { invertColors: dashMoneyMode === "spend" });
               })()}
               ${dashMoneyMode === "spend" ? `<div class="pill-row" id="dashSpendPills">
-                <button class="pill-btn ${!dashSpendPill ? "range-btn active" : ""}" data-spend-pill="">All</button>
-                ${spendCategoriesPresent().map(c => `<button class="pill-btn ${dashSpendPill === c ? "range-btn active" : ""}" data-spend-pill="${esc(c)}">${(CATEGORY_ICONS[c] || CATEGORY_ICONS["Other"]).emoji} ${esc(c)}</button>`).join("")}
+                <button class="pill-btn ${dashSpendPill.size === 0 ? "range-btn active" : ""}" data-spend-pill="">All</button>
+                ${spendCategoriesPresent().map(c => `<button class="pill-btn ${dashSpendPill.has(c) ? "range-btn active" : ""}" data-spend-pill="${esc(c)}">${(CATEGORY_ICONS[c] || CATEGORY_ICONS["Other"]).emoji} ${esc(c)}</button>`).join("")}
               </div>` : dashMoneyMode === "income" ? `<div class="pill-row" id="dashIncomePills">
-                <button class="pill-btn ${!dashIncomePill ? "range-btn active" : ""}" data-income-pill="">All</button>
-                ${incomeSourcesPresent().map(src => { const ic = incomeSourceIcon(src); return `<button class="pill-btn ${dashIncomePill === src ? "range-btn active" : ""}" data-income-pill="${esc(src)}">${ic.emoji} ${esc(src)}</button>`; }).join("")}
+                <button class="pill-btn ${dashIncomePill.size === 0 ? "range-btn active" : ""}" data-income-pill="">All</button>
+                ${incomeSourcesPresent().map(src => { const ic = incomeSourceIcon(src); return `<button class="pill-btn ${dashIncomePill.has(src) ? "range-btn active" : ""}" data-income-pill="${esc(src)}">${ic.emoji} ${esc(src)}</button>`; }).join("")}
               </div>` : `<div class="dash-substat">Value produced minus money spent, per day</div>`}
             </div>
             <div class="chart-box"><canvas id="dashMoneyChart"></canvas></div>
@@ -6585,14 +6696,14 @@ function renderCoopOverview() {
   if (spendPills) spendPills.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-spend-pill]");
     if (!btn) return;
-    dashSpendPill = btn.dataset.spendPill || null;
+    togglePillSelection(dashSpendPill, btn.dataset.spendPill);
     renderCoopOverview();
   });
   const incomePills = document.getElementById("dashIncomePills");
   if (incomePills) incomePills.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-income-pill]");
     if (!btn) return;
-    dashIncomePill = btn.dataset.incomePill || null;
+    togglePillSelection(dashIncomePill, btn.dataset.incomePill);
     renderCoopOverview();
   });
   const feedTypeToggle = document.getElementById("dashFeedType");
