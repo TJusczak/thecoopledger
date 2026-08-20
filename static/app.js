@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-222";
+const APP_VERSION = "2026.07.13-223";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5243,8 +5243,22 @@ function costPerDozenIn(eggCount, inWindow) {
 function costPerLbMeatIn(meatWeightLb, inWindow) {
   if (!(meatWeightLb > 0)) return null;
   const { cost: feedCost, lbs } = pricedFeedConsumed("Meat Feed", inWindow);
+  // A bird that died before reaching slaughter weight still cost what it
+  // cost -- that money didn't come back. Leaving mortality out would
+  // understate the true cost of the meat that DID make it: if 3 of 25 chicks
+  // die, the survivors' meat is what that batch's money actually bought, and
+  // true cost-per-lb has to carry the loss, not pretend it didn't happen.
+  // Gated on death_date the same way a processed bird is gated on
+  // harvest_date -- the loss belongs to whichever period it happened in.
+  // Restricted to Meat/Dual Purpose types: a dead Layer was never headed for
+  // the table, so its loss has nothing to do with the cost of meat. No
+  // double-counting risk either way -- a bird is never both Processed and
+  // Deceased at once.
   const chickCost = STATE.birds
-    .filter(b => b.status === "Processed" && b.harvest_date && inWindow(b.harvest_date))
+    .filter(b => (
+      (b.status === "Processed" && b.harvest_date && inWindow(b.harvest_date)) ||
+      (b.status === "Deceased" && (b.type === "Meat" || b.type === "Dual Purpose") && b.death_date && inWindow(b.death_date))
+    ))
     .reduce((s, b) => s + (Number(b.acquisition_cost) || 0), 0);
   return lbs > 0 ? (feedCost + chickCost) / meatWeightLb : null;
 }
