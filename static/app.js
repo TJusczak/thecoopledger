@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-230";
+const APP_VERSION = "2026.07.13-231";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5580,12 +5580,47 @@ function weightedAvgMeatPrice(birdEntries, fallback) {
   const totalValue = birdEntries.reduce((s, b) => s + (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || 0), 0);
   return totalValue / totalWeight;
 }
+/** Bird counts as they stood at the END of a given month -- the historical
+ * analog of "Active Birds right now." A bird counts if it had already been
+ * acquired or hatched by the end of that month, and hadn't yet left the
+ * flock by then either. "Left" means whichever ONE of harvest/death/sold/
+ * retired date actually applies to that bird's current status -- a bird is
+ * never more than one of those at once. This app doesn't track status
+ * history, only where a bird currently stands and the one date that got it
+ * there, so a bird that somehow changed status more than once can only be
+ * reconstructed from where it ended up, not the path it took there -- an
+ * acceptable simplification given nothing else in the data model tracks
+ * that either. */
+function flockCountsAsOf(monthKey) {
+  const endOfMonth = `${monthKey}-${String(daysInMonthKey(monthKey)).padStart(2, "0")}`;
+  let active = 0, layers = 0, meatActive = 0;
+  STATE.birds.forEach(b => {
+    const start = b.acquired_date || b.hatch_date;
+    if (!start || start > endOfMonth) return; // didn't exist yet
+    const exit = b.harvest_date || b.death_date || b.sold_date || b.retired_date || null;
+    if (exit && exit <= endOfMonth) return; // already gone by then
+    active++;
+    if (b.type === "Layer" || b.type === "Dual Purpose") layers++;
+    else if (b.type === "Meat") meatActive++;
+  });
+  return { active, layers, meatActive };
+}
 
 function computeStats(monthKey) {
   monthKey = monthKey || monthKeyOf(todayStr());
-  const active = STATE.birds.filter(b => b.status === "Active");
-  const layers = active.filter(b => b.type === "Layer" || b.type === "Dual Purpose").length;
-  const meatActive = active.filter(b => b.type === "Meat").length;
+  // "Active Birds" for the CURRENT month reads live status, same as always.
+  // For any other (historical) month, there's no "status right now" to read
+  // -- it's reconstructed from each bird's own acquired/hatch date and
+  // whichever exit date applies, via flockCountsAsOf.
+  let active, layers, meatActive;
+  if (monthKey === monthKeyOf(todayStr())) {
+    const activeBirds = STATE.birds.filter(b => b.status === "Active");
+    active = activeBirds.length;
+    layers = activeBirds.filter(b => b.type === "Layer" || b.type === "Dual Purpose").length;
+    meatActive = activeBirds.filter(b => b.type === "Meat").length;
+  } else {
+    ({ active, layers, meatActive } = flockCountsAsOf(monthKey));
+  }
   const processed = STATE.birds.filter(b => b.status === "Processed");
   const totalWeight = processed.reduce((s, b) => s + (Number(b.harvest_weight) || 0), 0);
   const totalEggs = STATE.eggs.reduce((s, e) => s + (Number(e.count) || 0), 0);
@@ -5681,7 +5716,7 @@ function computeStats(monthKey) {
   const processedThisMonth = processed.filter(b => b.harvest_date && isThisMonth(b.harvest_date)).length;
   const weightThisMonth = processed.filter(b => b.harvest_date && isThisMonth(b.harvest_date)).reduce((s, b) => s + (Number(b.harvest_weight) || 0), 0);
 
-  return { active: active.length, layers, meatActive, processed: processed.length, totalWeight, totalEggs, last7, last30, eggsThisMonth, processedThisMonth, weightThisMonth, totalExpenses, thisMonth, costPerDozenLayers, costPerLbMeat, eggIncomeAll, eggIncomeMonth, meatIncomeAll, meatIncomeMonth, eggActualIncomeAll, eggActualIncomeMonth, meatActualIncomeAll, meatActualIncomeMonth, eggTotalValueAll, eggTotalValueMonth, meatTotalValueAll, meatTotalValueMonth, incomeAll, incomeMonth, actualIncomeAll, actualIncomeMonth, netAll, netMonth, lossesAll, lossesThisYear, lossesThisMonth, chicksHatchedAll, hatchClearAll, hatchQuitAll, hatchFailedAll, hatchLossAll };
+  return { active, layers, meatActive, processed: processed.length, totalWeight, totalEggs, last7, last30, eggsThisMonth, processedThisMonth, weightThisMonth, totalExpenses, thisMonth, costPerDozenLayers, costPerLbMeat, eggIncomeAll, eggIncomeMonth, meatIncomeAll, meatIncomeMonth, eggActualIncomeAll, eggActualIncomeMonth, meatActualIncomeAll, meatActualIncomeMonth, eggTotalValueAll, eggTotalValueMonth, meatTotalValueAll, meatTotalValueMonth, incomeAll, incomeMonth, actualIncomeAll, actualIncomeMonth, netAll, netMonth, lossesAll, lossesThisYear, lossesThisMonth, chicksHatchedAll, hatchClearAll, hatchQuitAll, hatchFailedAll, hatchLossAll };
 }
 
 function allCoopYears() {
@@ -6750,9 +6785,12 @@ function renderCoopOverview() {
   const ys = computeYearStats(currentYear);
   const tr = computeCardTrends();
   el.innerHTML = `
-    <div class="toolbar">
+    <div class="toolbar" style="${isCurrentMonth ? "" : "border-left:3px solid var(--gold);padding-left:10px"}">
       <div class="card-title" style="margin:0">Overview — ${esc(monthLabelOf(selectedMonthKey))}</div>
-      <select id="dashMonthSelect" style="max-width:170px">${months.map(m => `<option value="${m}" ${m === selectedMonthKey ? "selected" : ""}>${esc(monthLabelOf(m))}</option>`).join("")}</select>
+      <div style="display:flex;align-items:center;gap:8px">
+        ${isCurrentMonth ? "" : `<button class="btn ghost small" id="dashBackToTodayBtn" title="Back to the current month">📅 Today</button>`}
+        <select id="dashOverviewMonthSelect" style="max-width:170px">${monthOptionsGroupedByYear(months, selectedMonthKey)}</select>
+      </div>
     </div>
     <div class="section-gap">
       <div class="grid-stats-2">
@@ -6764,7 +6802,7 @@ function renderCoopOverview() {
             + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat birds`, s.meatActive)
             + statPanelRow("Losses", s.lossesThisMonth, s.lossesThisMonth > 0 ? "rust" : "")
             + statPanelRow("Processed", s.processedThisMonth)
-          ) + (isCurrentMonth ? "" : `<div class="dim" style="font-size:11px;margin:6px 0 -2px">Active Birds, Layers, and Meat birds always show today's actual flock, not ${esc(monthLabelOf(selectedMonthKey))} -- there's no month to look back to for a count that only ever reflects right now.</div>`)
+          )
           + statPanelSubhead("🌾 Feed & Bedding") + statPanelRows(
             statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layer feed used`, `${displayWeight(feedTotalForMonth(selectedMonthKey, "layer"))} ${getWeightUnit()}`)
             + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat feed used`, `${displayWeight(feedTotalForMonth(selectedMonthKey, "meat"))} ${getWeightUnit()}`)
@@ -6878,17 +6916,17 @@ function renderCoopOverview() {
         const thisMonth = monthKeyOf(todayStr());
         if (!dashMonthKey) dashMonthKey = thisMonth;
         if (!dashCompareKey) dashCompareKey = shiftMonthKey(thisMonth, -1);
-        const monthOptions = dashboardMonthOptions();
+        const monthOptions = allCoopMonths();
         return `
         <div class="month-picker">
           <div class="month-picker-row">
             <label class="month-field"><span>Showing</span>
-              <select id="dashMonthSelect">${monthOptions.map(k => `<option value="${k}" ${k === dashMonthKey ? "selected" : ""}>${monthLabelOf(k)}</option>`).join("")}</select>
+              <select id="dashMonthSelect">${monthOptionsGroupedByYear(monthOptions, dashMonthKey)}</select>
             </label>
             <label class="month-field"><span>Compare to</span>
               <select id="dashCompareSelect">
                 <option value="">— none —</option>
-                ${monthOptions.filter(k => k !== dashMonthKey).map(k => `<option value="${k}" ${k === dashCompareKey ? "selected" : ""}>${monthLabelOf(k)}</option>`).join("")}
+                ${monthOptionsGroupedByYear(monthOptions.filter(k => k !== dashMonthKey), dashCompareKey)}
               </select>
             </label>
           </div>
@@ -7017,8 +7055,13 @@ function renderCoopOverview() {
     renderCoopOverview();
   }));
   wireStatPanelGoto(el);
-  document.getElementById("dashMonthSelect").addEventListener("change", (e) => {
+  document.getElementById("dashOverviewMonthSelect").addEventListener("change", (e) => {
     dashSelectedMonth = e.target.value;
+    renderCoopOverview();
+  });
+  const backToTodayBtn = document.getElementById("dashBackToTodayBtn");
+  if (backToTodayBtn) backToTodayBtn.addEventListener("click", () => {
+    dashSelectedMonth = null; // renderCoopOverview resolves null back to the real current month
     renderCoopOverview();
   });
   drawDashboardCharts();
@@ -7126,16 +7169,30 @@ function monthLabelShort(key) {
   const [y, m] = key.split("-").map(Number);
   return `${MONTH_NAMES_SHORT[m - 1]} ${y}`;
 }
-
-/** Months offered in the dashboard picker: every month that has any data,
- * plus the current month, newest first. */
-function dashboardMonthOptions() {
-  const keys = new Set();
-  STATE.eggs.forEach(e => { const k = monthKeyOf(e.date); if (k) keys.add(k); });
-  STATE.expenses.forEach(x => { const k = monthKeyOf(x.date); if (k) keys.add(k); });
-  STATE.supplies.forEach(s => { const k = monthKeyOf(s.date_emptied); if (k) keys.add(k); });
-  keys.add(monthKeyOf(todayStr()));
-  return [...keys].sort().reverse();
+/** Just the month name, no year -- for an <option> living inside an
+ * <optgroup> already labeled with the year, so the year isn't repeated on
+ * every single line. */
+function monthNameOnly(key) {
+  const [, m] = key.split("-").map(Number);
+  return MONTH_NAMES_SHORT[m - 1];
+}
+/** <option>/<optgroup> markup for a list of month keys, grouped by year --
+ * newest year first, newest month first within each year. A flat list gets
+ * long to scroll after a couple years of use; grouping solves that without
+ * adding a second cascading dropdown (which would need its own state, its
+ * own "does this year have this month" edge cases, and a way to keep the
+ * two controls in sync) -- one control, same data, just organized. */
+function monthOptionsGroupedByYear(monthKeys, selected) {
+  const byYear = new Map();
+  monthKeys.forEach(k => {
+    const y = k.slice(0, 4);
+    if (!byYear.has(y)) byYear.set(y, []);
+    byYear.get(y).push(k);
+  });
+  return [...byYear.keys()].sort().reverse().map(y => {
+    const opts = byYear.get(y).map(k => `<option value="${k}" ${k === selected ? "selected" : ""}>${monthNameOnly(k)}</option>`).join("");
+    return `<optgroup label="${y}">${opts}</optgroup>`;
+  }).join("");
 }
 
 /** Draws the three dashboard month charts (eggs, feed, spend), each showing the
