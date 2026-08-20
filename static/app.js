@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-225";
+const APP_VERSION = "2026.07.13-227";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5337,21 +5337,68 @@ function openCostBreakdownModal(kind) {
       + row("÷ Dressed weight", `${displayWeight(meat.meatWeightLb)} ${getWeightUnit()}`);
     formulaHtml = `(${fmtMoney(meat.feedCost)} feed + ${fmtMoney(meat.chickCost)} chick cost) ÷ ${displayWeight(meat.meatWeightLb)} ${getWeightUnit()} = <strong style="color:var(--text)">${fmtMoney(displayPricePerLb(meat.result))}/${getWeightUnit()}</strong>`;
     if (chickCount > 0) {
-      const birdRow = (b) => row(esc(b.name || "(unnamed)"), fmtMoney(b.acquisition_cost || 0), b.status === "Deceased" ? "rust" : "");
+      // Only meaningful in a single-year view -- All-Time has no year
+      // boundary for a bird's growing/processing dates to fall on either
+      // side of, so flagging there would just be noise. A bird can only
+      // span FORWARD (acquired in an earlier year than it was processed or
+      // lost), never the reverse -- you can't harvest a bird before it
+      // existed -- so the direction is always "started {startYear}, counted
+      // here in {endYear}."
+      const isYearScope = /^\d{4}$/.test(String(scopeLabel || ""));
+      const spanInfo = (b) => {
+        if (!isYearScope) return null;
+        const startDate = b.acquired_date || b.hatch_date;
+        const endDate = b.status === "Processed" ? b.harvest_date : b.death_date;
+        if (!startDate || !endDate) return null;
+        const startYear = startDate.slice(0, 4), endYear = endDate.slice(0, 4);
+        return startYear !== endYear ? { startYear, endYear } : null;
+      };
+      const birdRow = (b) => {
+        const span = spanInfo(b);
+        const nameLabel = span
+          ? `⚠️ ${esc(b.name || "(unnamed)")} <span class="dim" style="font-weight:400">— started ${span.startYear}</span>`
+          : esc(b.name || "(unnamed)");
+        const weight = Number(b.harvest_weight) || 0;
+        const value = weight * (Number(b.price_per_lb) || 0);
+        // Only a Processed bird has a dressed weight and value -- a Deceased
+        // one never got that far, so showing $0.00 there would misleadingly
+        // read as "worth nothing" rather than "never weighed."
+        const detail = b.status === "Processed"
+          ? (weight > 0 ? `${weightLabel(weight)} → ${fmtMoney(value)} value` : "no weight recorded")
+          : "lost before processing — no weight or value";
+        return `<div class="stat-panel-row" style="align-items:flex-start">
+          <span class="stat-panel-row-label" style="flex-direction:column;align-items:flex-start;gap:1px">
+            <span>${nameLabel}</span>
+            <span class="dim" style="font-size:11px">${detail}</span>
+          </span>
+          <span class="stat-panel-row-value${b.status === "Deceased" ? " tone-rust" : ""}">${fmtMoney(b.acquisition_cost || 0)}</span>
+        </div>`;
+      };
       const groups = groupBirdsByBatch([...meat.processedBirds, ...meat.deceasedBirds]);
+      const anySpanning = isYearScope && groups.some(g => g.birds.some(b => spanInfo(b)));
       const groupHtml = groups.map(g => {
         const label = g.batchName ? esc(g.batchName) : "Individually added";
         const countLabel = [g.processedCount ? `${g.processedCount} processed` : null, g.deceasedCount ? `${g.deceasedCount} lost` : null].filter(Boolean).join(" · ");
+        const groupSpans = g.birds.some(b => spanInfo(b));
+        // Batch-level weight/value subtotal -- only meaningful across the
+        // PROCESSED birds (a deceased one contributes 0 to both), shown once
+        // per batch rather than making the collapsed summary line any
+        // busier than it already is.
+        const groupWeight = g.birds.reduce((s, b) => s + (Number(b.harvest_weight) || 0), 0);
+        const groupValue = g.birds.reduce((s, b) => s + (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || 0), 0);
+        const subtotal = groupWeight > 0 ? `<div class="dim" style="font-size:11px;padding:2px 0 6px 18px">${weightLabel(groupWeight)} dressed → ${fmtMoney(groupValue)} value</div>` : "";
         return `<details class="cost-breakdown-batch">
           <summary>
-            <span class="cost-breakdown-batch-name">${label}</span>
+            <span class="cost-breakdown-batch-name">${groupSpans ? "⚠️ " : ""}${label}</span>
             <span class="cost-breakdown-batch-count dim">${countLabel}</span>
             <span class="cost-breakdown-batch-total">${fmtMoney(g.totalCost)}</span>
           </summary>
+          ${subtotal}
           <div class="stat-panel-rows">${g.birds.map(birdRow).join("")}</div>
         </details>`;
       }).join("");
       listHtml = `<div class="stat-panel-subhead">Birds counted (${chickCount}, ${groups.length} batch${groups.length !== 1 ? "es" : ""}) -- tap a batch to see its birds</div>
+        ${anySpanning ? `<div class="dim" style="font-size:11px;margin-bottom:8px">⚠️ marks a bird acquired in an earlier year than it was processed or lost. The numbers above are correct -- its feed cost is still split by the days it actually ate in each year -- but its acquisition cost and weight only count here, in ${esc(String(scopeLabel))}, not in the year it started.</div>` : ""}
         <div style="max-height:340px;overflow-y:auto">${groupHtml}</div>`;
     }
   } else {
