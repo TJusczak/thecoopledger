@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-236";
+const APP_VERSION = "2026.07.13-237";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -540,12 +540,6 @@ function withinRange(dateStr, days) {
   if (!days) return true;
   return (new Date() - new Date(dateStr + "T00:00:00")) / 86400000 <= days;
 }
-function weekStart(dateStr) {
-  const d = new Date(dateStr + "T00:00:00");
-  const day = d.getDay();
-  d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day));
-  return localDateStr(d);
-}
 function addDays(dateStr, days) {
   const d = new Date(dateStr + "T00:00:00");
   d.setDate(d.getDate() + days);
@@ -587,17 +581,6 @@ async function apiUploadPhoto(id, blob, resource = "birds") {
   if (!res.ok) throw new Error(`Photo upload failed (${res.status})`);
   return res.json();
 }
-function pickBucketMode(days) {
-  if (days && days <= 60) return "day";
-  if (!days || days > 365) return "month";
-  return "week";
-}
-function bucketLabel(dateStr, mode) {
-  if (mode === "day") return dateStr.slice(5);
-  if (mode === "week") return weekStart(dateStr).slice(5);
-  return dateStr.slice(0, 7);
-}
-
 // ---------- API ----------
 // ---------- Configurable server connection ----------
 // Defaults to "" (same-origin, current behavior). Settable from Settings ->
@@ -3843,46 +3826,10 @@ function renderAppSection() {
  * estimate, otherwise just the plain collected value -- so the breakdown
  * only shows up when there's actually something to explain, rather than
  * cluttering every card for someone who's never logged a sale. */
-function valueBreakdownHtml(estimateAfterWashout, actualSold) {
-  if (actualSold > 0) return `${fmtMoney(estimateAfterWashout)} collected + ${fmtMoney(actualSold)} sold`;
-  return `${fmtMoney(estimateAfterWashout)} value`;
-}
-
 function meatProcessedValue(count, weight, value) {
   if (count === 0) return "No birds processed";
   if (weight > 0) return `${displayWeight(weight)} ${getWeightUnit()} · ${fmtMoney(value)}`;
   return `${count} bird${count !== 1 ? "s" : ""}`;
-}
-/** Sub-line for a meat-processed stat card: bird count plus per-bird
- * averages, rather than the total value again -- the headline value from
- * meatProcessedValue() above already IS the total, so restating it (or, in
- * the common case of nothing sold yet, restating the exact same number) just
- * duplicated it. Averages are the one thing the headline doesn't say. */
-function meatProcessedSub(count, weight, value) {
-  if (count === 0) return "";
-  const avgWeight = weight > 0 ? weight / count : 0;
-  const avgValue = value > 0 ? value / count : 0;
-  const bits = [`${count} bird${count !== 1 ? "s" : ""} processed`];
-  if (avgWeight > 0) bits.push(`${weightLabel(avgWeight)} avg`);
-  if (avgValue > 0) bits.push(`${fmtMoney(avgValue)}/bird`);
-  return bits.join(" · ");
-}
-
-/** Months elapsed since the coop's first recorded activity, at least 1.
- * Used for all-time "per month" averages -- dividing a lifetime total by the
- * months it accumulated over is the honest denominator, and a brand-new coop
- * shouldn't divide by zero. */
-function monthsSinceCoopStart() {
-  const dates = [];
-  STATE.expenses.forEach(x => { if (x.date) dates.push(x.date); });
-  STATE.eggs.forEach(e => { if (e.date) dates.push(e.date); });
-  STATE.birds.forEach(b => { const d = b.acquired_date || b.hatch_date; if (d) dates.push(d); });
-  if (!dates.length) return 1;
-  const first = dates.reduce((a, b) => (a < b ? a : b));
-  const [fy, fm] = first.split("-").map(Number);
-  const today = todayStr();
-  const [ty, tm] = today.split("-").map(Number);
-  return Math.max(1, (ty - fy) * 12 + (tm - fm) + 1);
 }
 
 function renderAllTimeStatsSection() {
@@ -3896,20 +3843,9 @@ function renderAllTimeStatsSection() {
   // already lives on the Overview tab; this is the all-time counterpart.
   const layersAllTime = STATE.birds.filter(b => b.type === "Layer" || b.type === "Dual Purpose").length;
   const meatAllTime = STATE.birds.filter(b => b.type === "Meat").length;
-  const totalCleanouts = STATE.bedding.filter(b => b.entry_type === "Full Clean-out").length;
   const catTotals = {};
   STATE.expenses.filter(x => x.entry_type !== "income").forEach(x => { catTotals[x.category] = (catTotals[x.category] || 0) + (Number(x.amount) || 0); });
   const usage = feedBeddingUsageInRange(STATE.supplies, null);
-  // Cost per lb of feed = cost of the feed actually CONSUMED, valued at each
-  // bag's real per-lb cost, divided by the lbs consumed. NOT total spend /
-  // consumption -- that inflates the figure whenever you've bought feed you
-  // haven't finished yet (a full bag's cost spread over a partial bag's use).
-  const layerConsumed = pricedFeedConsumed("Layer Feed", () => true);
-  const meatConsumed = pricedFeedConsumed("Meat Feed", () => true);
-  const costPerLbLayerFeed = layerConsumed.lbs > 0 ? layerConsumed.cost / layerConsumed.lbs : null;
-  const costPerLbMeatFeed = meatConsumed.lbs > 0 ? meatConsumed.cost / meatConsumed.lbs : null;
-  const beddingSpendAll = STATE.expenses.filter(x => x.category === "Bedding" && x.entry_type !== "income").reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
-  const costPerCuFtBedding = usage.beddingCuFt > 0 ? beddingSpendAll / usage.beddingCuFt : null;
   const ty = yearlyTrends(); // one bucket per calendar year with data
   el.innerHTML = `
     <div class="toolbar">
@@ -5455,86 +5391,6 @@ function openCostBreakdownModal(kind) {
   `);
 }
 
-function feedBeddingCumulativeSeries(supplies, days, axisBuckets) {
-  // Build each emptied bag's consumption as a per-day amount, spread linearly
-  // across its open->emptied window (opened_at = 0 used, date_emptied = full
-  // quantity used). A bag with no opened_at, or opened and emptied the same
-  // day, lands as a single step on its emptied date -- there's no window to
-  // ramp over, and inventing one would be a guess.
-  const perDay = { "Layer Feed": {}, "Meat Feed": {}, "Bedding": {} };
-  const addOnDay = (cat, dayStr, amount) => { perDay[cat][dayStr] = (perDay[cat][dayStr] || 0) + amount; };
-
-  supplies.filter(s => s.date_emptied).forEach(s => {
-    const qty = Number(s.quantity) || 0;
-    const cat = s.category;
-    if (!perDay[cat]) return;
-    const end = s.date_emptied;
-    const start = s.opened_at && s.opened_at < end ? s.opened_at : null;
-    if (!start) { addOnDay(cat, end, qty); return; }
-    const spanDays = Math.round((new Date(end + "T00:00:00") - new Date(start + "T00:00:00")) / 86400000) + 1;
-    const perDayQty = qty / spanDays;
-    for (let i = 0; i < spanDays; i++) addOnDay(cat, addDays(start, i), perDayQty);
-  });
-
-  const cats = ["Layer Feed", "Meat Feed", "Bedding"];
-  // Build a lookup of true cumulative-to-date, per category, for every day
-  // that had any consumption. This is the range-independent backbone: the
-  // total consumed up to and including any given day never depends on the
-  // chart window.
-  const activeSum = (cat) => supplies.filter(s => s.category === cat && !s.date_emptied)
-    .reduce((sum, s) => sum + (Number(s.quantity) || 0) * (STATUS_USED_FRACTION[s.status] ?? 0), 0);
-  const today = todayStr();
-
-  // cumAsOf(cat, dayStr): total consumed for cat through the END of dayStr,
-  // including the open-bag partial estimate once we reach today.
-  const sortedDays = {};
-  const cumByDay = {};
-  cats.forEach(c => {
-    const days = Object.keys(perDay[c]).sort();
-    sortedDays[c] = days;
-    let run = 0; const map = {};
-    days.forEach(d => { run += perDay[c][d]; map[d] = run; });
-    cumByDay[c] = map;
-  });
-  const cumAsOf = (cat, dayStr) => {
-    // Largest recorded day <= dayStr gives the running total at that point.
-    const days = sortedDays[cat];
-    let val = 0;
-    for (let i = 0; i < days.length; i++) { if (days[i] <= dayStr) val = cumByDay[cat][days[i]]; else break; }
-    if (dayStr >= today) val += activeSum(cat); // open-bag partial only counts as-of today
-    return val;
-  };
-
-  // If a shared axis was provided, emit one value per shared bucket (using the
-  // bucket's last calendar date as the "as of" reference). This keeps every
-  // chart on the same x-axis while preserving true cumulative totals.
-  if (axisBuckets) {
-    const layer = [], meat = [], bedding = [];
-    axisBuckets.forEach(({ asOfDate }) => {
-      layer.push(cumAsOf("Layer Feed", asOfDate));
-      meat.push(cumAsOf("Meat Feed", asOfDate));
-      bedding.push(cumAsOf("Bedding", asOfDate));
-    });
-    return { labels: axisBuckets.map(b => b.key), layer, meat, bedding };
-  }
-
-  // No shared axis (e.g. a caller that wants raw daily points): emit one point
-  // per calendar day from the window start (or first data) through today.
-  const allDays = [...new Set(cats.flatMap(c => Object.keys(perDay[c])))].sort();
-  if (allDays.length === 0) return { labels: [], layer: [], meat: [], bedding: [] };
-  const windowStart = days ? addDays(today, -(days - 1)) : allDays[0];
-  const firstDay = allDays[0] < windowStart ? windowStart : allDays[0];
-  const labels = [], layer = [], meat = [], bedding = [];
-  let cursor = firstDay;
-  for (let guard = 0; guard < 800 && cursor <= today; guard++) {
-    labels.push(cursor.slice(5));
-    layer.push(cumAsOf("Layer Feed", cursor));
-    meat.push(cumAsOf("Meat Feed", cursor));
-    bedding.push(cumAsOf("Bedding", cursor));
-    cursor = addDays(cursor, 1);
-  }
-  return { labels, layer, meat, bedding };
-}
 /** Which of Layer Feed / Meat Feed / Bedding are actually running low right
  * now -- "low" means the best (fullest) currently-active supply item for
  * that category is down to 1/4 or Empty, i.e. there's no fuller backup
@@ -5634,15 +5490,6 @@ function computeStats(monthKey) {
   const isThisMonth = (d) => d && monthKeyOf(d) === monthKey;
   const isThisYear = (d) => { const dt = new Date(d + "T00:00:00"); return dt.getFullYear() === now.getFullYear(); };
   const thisMonth = STATE.expenses.filter(x => x.entry_type !== "income" && isThisMonth(x.date)).reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  // Now that Feed is split into Layer Feed / Meat Feed categories, the category
-  // itself tells us which flock it's for -- no need to also gate on for_type.
-  // Building Materials/Equipment are excluded on purpose: one-time capital costs
-  // that would spike this number in whatever month you built or bought
-  // something, rather than reflecting the ongoing cost of keeping birds fed.
-  const layerAttributable = STATE.expenses.filter(x => x.category === "Layer Feed" && x.entry_type !== "income").reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  const meatAttributable = STATE.expenses.filter(x => x.category === "Meat Feed" && x.entry_type !== "income").reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  const costPerDozenLayers = totalEggs > 0 ? layerAttributable / (totalEggs / 12) : null;
-  const costPerLbMeat = totalWeight > 0 ? meatAttributable / totalWeight : null;
 
   const eggIncomeOf = (e) => (Number(e.count) || 0) * (Number(e.price_per_egg) || 0);
   const meatIncomeOf = (b) => (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || 0);
@@ -5715,7 +5562,7 @@ function computeStats(monthKey) {
   const processedThisMonth = processed.filter(b => b.harvest_date && isThisMonth(b.harvest_date)).length;
   const weightThisMonth = processed.filter(b => b.harvest_date && isThisMonth(b.harvest_date)).reduce((s, b) => s + (Number(b.harvest_weight) || 0), 0);
 
-  return { active, layers, meatActive, processed: processed.length, totalWeight, totalEggs, last7, last30, eggsThisMonth, processedThisMonth, weightThisMonth, totalExpenses, thisMonth, costPerDozenLayers, costPerLbMeat, eggIncomeAll, eggIncomeMonth, meatIncomeAll, meatIncomeMonth, eggActualIncomeAll, eggActualIncomeMonth, meatActualIncomeAll, meatActualIncomeMonth, eggTotalValueAll, eggTotalValueMonth, meatTotalValueAll, meatTotalValueMonth, incomeAll, incomeMonth, actualIncomeAll, actualIncomeMonth, netAll, netMonth, lossesAll, lossesThisYear, lossesThisMonth, chicksHatchedAll, hatchClearAll, hatchQuitAll, hatchFailedAll, hatchLossAll };
+  return { active, layers, meatActive, processed: processed.length, totalWeight, totalEggs, last7, last30, eggsThisMonth, processedThisMonth, weightThisMonth, totalExpenses, thisMonth, eggIncomeAll, eggIncomeMonth, meatIncomeAll, meatIncomeMonth, eggActualIncomeAll, eggActualIncomeMonth, meatActualIncomeAll, meatActualIncomeMonth, eggTotalValueAll, eggTotalValueMonth, meatTotalValueAll, meatTotalValueMonth, incomeAll, incomeMonth, actualIncomeAll, actualIncomeMonth, netAll, netMonth, lossesAll, lossesThisYear, lossesThisMonth, chicksHatchedAll, hatchClearAll, hatchQuitAll, hatchFailedAll, hatchLossAll };
 }
 
 function allCoopYears() {
@@ -5841,21 +5688,6 @@ function yearlyTrends() {
   return out;
 }
 
-function statSpark(values) {
-  // A trend needs at least two points to mean anything; one bucket (a
-  // brand-new coop's first month/year) draws nothing rather than a dot.
-  if (!values || values.length < 2 || values.every(v => v === 0)) return "";
-  return `<div class="stat-spark-wrap">${sparklineSvg(values)}</div>`;
-}
-/** Same "not enough data yet" guard as statSpark, but returns the bare SVG
- * with no wrapping div -- for use inside a stat-panel hero, which supplies
- * its own wrapper (stat-panel-hero-spark-wrap) sized and positioned for that
- * layout. statSpark's own div is sized for the old individual stat cards. */
-function statSparkRaw(values) {
-  if (!values || values.length < 2 || values.every(v => v === 0)) return "";
-  return sparklineSvg(values);
-}
-
 function computeYearStats(year) {
   const inYear = (d) => d && d.slice(0, 4) === year;
 
@@ -5922,12 +5754,6 @@ function computeYearStats(year) {
   const income = eggValue + meatValue + actualIncome;
   const net = income - totalExpenses;
 
-  // Feed-only cost, same methodology as the Coop tab's all-time figure but
-  // scoped to just this year's Layer/Meat Feed expenses and this year's eggs/meat.
-  const layerFeedAttributable = trueExpensesInYear.filter(x => x.category === "Layer Feed").reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  const meatFeedAttributable = trueExpensesInYear.filter(x => x.category === "Meat Feed").reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  const costPerDozenLayers = eggCount > 0 ? layerFeedAttributable / (eggCount / 12) : null;
-  const costPerLbMeat = processedWeight > 0 ? meatFeedAttributable / processedWeight : null;
 
   const suppliesEmptiedInYear = STATE.supplies.filter(s => s.date_emptied && inYear(s.date_emptied));
   let layerFeedLbs = suppliesEmptiedInYear.filter(s => s.category === "Layer Feed").reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
@@ -5945,16 +5771,8 @@ function computeYearStats(year) {
     meatFeedLbs += activeSum("Meat Feed");
     beddingCuFt += activeSum("Bedding");
   }
-  // Consumption-based cost/lb: cost of feed actually eaten this year (each bag
-  // at its real per-lb cost) / lbs eaten. Not year's feed spend / consumption,
-  // which inflates when a bag is bought this year but not fully used.
-  const layerConsumedYr = pricedFeedConsumed("Layer Feed", inYear);
-  const meatConsumedYr = pricedFeedConsumed("Meat Feed", inYear);
-  const costPerLbLayerFeed = layerConsumedYr.lbs > 0 ? layerConsumedYr.cost / layerConsumedYr.lbs : null;
-  const costPerLbMeatFeed = meatConsumedYr.lbs > 0 ? meatConsumedYr.cost / meatConsumedYr.lbs : null;
-  const layerFeedCost = layerConsumedYr.cost, meatFeedCost = meatConsumedYr.cost;
 
-  return { eggCount, eggValue, totalExpenses, categoryBreakdown, processedCount: processedInYear.length, processedWeight, meatValue, lossesInYear, newBirds: newBirdIds.size, newLayerBirds: newLayerBirds.size, newMeatBirds: newMeatBirds.size, cleanoutsByArea, income, net, actualIncome, eggActualIncome, meatActualIncome, eggTotalValue, meatTotalValue, costPerDozenLayers, costPerLbMeat, layerFeedLbs, meatFeedLbs, beddingCuFt, costPerLbLayerFeed, costPerLbMeatFeed, layerFeedCost, meatFeedCost, chicksHatched, hatchClear, hatchQuit, hatchFailed, hatchLoss };
+  return { eggCount, eggValue, totalExpenses, categoryBreakdown, processedCount: processedInYear.length, processedWeight, meatValue, lossesInYear, newBirds: newBirdIds.size, newLayerBirds: newLayerBirds.size, newMeatBirds: newMeatBirds.size, cleanoutsByArea, income, net, actualIncome, eggActualIncome, meatActualIncome, eggTotalValue, meatTotalValue, layerFeedLbs, meatFeedLbs, beddingCuFt, chicksHatched, hatchClear, hatchQuit, hatchFailed, hatchLoss };
 }
 
 function renderYearReviewSection() {
@@ -6628,27 +6446,6 @@ function statPanel(tone, icon, title, bodyHtml, goto) {
   </div>`;
 }
 
-function sparklineSvg(values) {
-  const w = 100, h = 24, pad = 2;
-  const max = Math.max(...values), min = Math.min(...values);
-  const span = (max - min) || 1;
-  const step = (w - pad * 2) / Math.max(values.length - 1, 1);
-  const pts = values.map((v, i) => {
-    const x = pad + i * step;
-    const y = max === min ? h - pad : pad + (1 - (v - min) / span) * (h - pad * 2);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  });
-  const last = pts[pts.length - 1].split(",");
-  return `<svg class="stat-spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
-    <polyline points="${pts.join(" ")}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
-    <circle cx="${last[0]}" cy="${last[1]}" r="2" fill="currentColor"/>
-  </svg>`;
-}
-
-/** "▲ 12% vs last month" chip. Compares month-to-date against the SAME
- * number of days into last month -- comparing 13 days of July against all
- * 31 of June would make every month look like a collapse until the 20th.
- * goodUp flips the coloring for numbers where rising is bad (spending). */
 function deltaChipHtml(current, previous, { goodUp = true, label = "last month" } = {}) {
   if (!(previous > 0)) {
     // No meaningful baseline to compare against (zero, or a metric that
@@ -7111,35 +6908,6 @@ function wireCostBreakdownCards(el) {
   });
 }
 
-/** Every distinct bucket (day/week/month, matching pickBucketMode) between the
- * start of the selected range and today, paired with the actual last calendar
- * date in that bucket -- used as the "as of" reference for the flock-size
- * chart, since population is a state check (was this bird active on this day)
- * rather than a sparse event like eggs/expenses. */
-function allBucketsInRange(mode, days) {
-  const endStr = todayStr();
-  let startStr;
-  if (days) {
-    startStr = addDays(endStr, -days);
-  } else {
-    const dates = [];
-    STATE.birds.forEach(b => { const d = b.acquired_date || b.hatch_date; if (d) dates.push(d); });
-    startStr = dates.length ? dates.sort()[0] : endStr;
-  }
-  const order = [];
-  const asOf = {};
-  let cursor = startStr;
-  let guard = 0;
-  while (cursor <= endStr && guard < 20000) {
-    const key = bucketLabel(cursor, mode);
-    if (!(key in asOf)) order.push(key);
-    asOf[key] = cursor; // overwritten each day, so the final value is the last date in this bucket
-    cursor = addDays(cursor, 1);
-    guard++;
-  }
-  return order.map(key => ({ key, asOfDate: asOf[key] }));
-}
-
 const sum = (arr) => arr.reduce((a, b) => a + (Number(b) || 0), 0);
 /** Feed used total for a month: the last value of its cumulative series, which
  * is the month-to-date total for the current month and the full-month total
@@ -7357,25 +7125,6 @@ function monthChartOpts(showLegend, yFormatter) {
     },
     scales: {
       x: { ticks: { color: "#C7B9A6", font: { size: 10 }, autoSkip: true, maxTicksLimit: 10, maxRotation: 0 }, grid: { color: "#5A4B3C40" }, title: { display: true, text: "Day of month", color: "#8A7A68", font: { size: 9 } } },
-      y: { ticks: { color: "#C7B9A6", font: { size: 10 } }, grid: { color: "#5A4B3C40" }, beginAtZero: true }
-    }
-  };
-}
-
-function chartOpts(yFormatter) {
-  return {
-    responsive: true,
-    maintainAspectRatio: false,
-    // Tap/hover anywhere on a chart column to read that point's values --
-    // the default (intersect: true) needs a direct hit on a 2px point,
-    // which effectively means tooltips never appear on a touchscreen.
-    interaction: { mode: "index", intersect: false },
-    plugins: { legend: { display: false }, tooltip: { callbacks: yFormatter ? { label: (ctx) => yFormatter(ctx.parsed.y) } : undefined } },
-    scales: {
-      // autoSkip + a tick cap keeps the axis readable now that the feed/bedding
-      // charts plot one point per day (up to ~90 on the 90-day view, more on
-      // all-time) -- without it every date would try to render and collide.
-      x: { ticks: { color: "#C7B9A6", font: { size: 10 }, autoSkip: true, maxTicksLimit: 8, maxRotation: 0 }, grid: { color: "#5A4B3C40" } },
       y: { ticks: { color: "#C7B9A6", font: { size: 10 } }, grid: { color: "#5A4B3C40" }, beginAtZero: true }
     }
   };
@@ -8597,18 +8346,21 @@ function wireBatchEditModal(batchName) {
       : `Rename this batch (and all ${birds.length} of its birds) to "${esc(newName)}"?`;
     if (!(await showConfirmDialog(message, collides ? "Merge" : "Rename"))) return;
     // A bird created as part of this batch got its own name auto-filled as
-    // "{batch name} #N" -- if it's STILL exactly that (nobody's since given
-    // it its own name, like "Henrietta"), the rename carries through to it
-    // too, since that name was really just standing in for the batch name in
-    // the first place. Anything that's been individually customized is left
-    // completely alone -- an exact-pattern match is a narrow, safe way to
-    // tell "still auto-generated" apart from "somebody named this bird."
+    // "{batch name} #N" (old style) or "{batch name}-N" (current) -- if a
+    // bird's name is STILL exactly that (nobody's since given it its own
+    // name, like "Henrietta"), the rename carries through to it too, since
+    // that name was really just standing in for the batch name in the first
+    // place. Anything that's been individually customized is left completely
+    // alone -- an exact-pattern match is a narrow, safe way to tell "still
+    // auto-generated" apart from "somebody named this bird." Always
+    // regenerated in the current "-N" style regardless of which one matched,
+    // so an older batch naturally migrates the first time it's touched.
     const escaped = batchName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const autoNamePattern = new RegExp(`^${escaped} #(\\d+)$`);
+    const autoNamePattern = new RegExp(`^${escaped}(?: #|-)(\\d+)$`);
     let renamedCount = 0;
     const fieldsFor = (b) => {
       const m = b.name && b.name.match(autoNamePattern);
-      if (m) { renamedCount++; return { batch_name: newName, name: `${newName} #${m[1]}` }; }
+      if (m) { renamedCount++; return { batch_name: newName, name: `${newName}-${m[1]}` }; }
       return { batch_name: newName };
     };
     await localBulkUpdate("birds", birds.map(b => ({ id: b.id, fields: fieldsFor(b) })), currentCoopId);
@@ -9705,7 +9457,7 @@ function showBulkForm() {
       acquisition_cost: perBirdCost,
       source_expense_id: sourceExpenseId,
     };
-    const created = await localBulkCreate("birds", Array.from({ length: count }, (_, i) => ({ ...shared, name: `${batchName} #${i + 1}` })));
+    const created = await localBulkCreate("birds", Array.from({ length: count }, (_, i) => ({ ...shared, name: `${batchName}-${i + 1}` })));
     const photoFile = document.getElementById("k_photo").files[0];
     if (photoFile) {
       const blob = await resizeImageFileToBlob(photoFile);
