@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-231";
+const APP_VERSION = "2026.07.13-232";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -362,7 +362,6 @@ let newProductCategory = null; // which category "+ Add Product" was clicked for
 let pendingProductPhotoBlob = null;
 let feedSupplyVisibleCount = PAGE_SIZE;
 let beddingSupplyVisibleCount = PAGE_SIZE;
-let emptySupplyVisibleCount = PAGE_SIZE;
 const SUPPLY_STATUSES = ["Full", "3/4", "1/2", "1/4", "Empty"];
 const FEED_SUPPLY_CATEGORIES = new Set(["Layer Feed", "Meat Feed", "Treats"]); // Feed section, and also the categories locked to "lb" below
 function supplyStatusTone(status) {
@@ -5976,6 +5975,7 @@ function renderYearReviewSection() {
   // A delta chip comparing this year's value to last year's, labeled with the
   // actual year. goodUp=false for things where more is worse (losses, spend).
   const yoy = (cur, prev, goodUp = true) => hasPrev ? deltaChipHtml(cur, prev, { goodUp, label: prevYear }) : "";
+  const yoyAbs = (cur, prev, goodUp = true) => hasPrev ? deltaChipHtmlAbs(cur, prev, { goodUp, label: prevYear }) : "";
 
   el.innerHTML = `
     <div class="toolbar">
@@ -6011,7 +6011,7 @@ function renderYearReviewSection() {
         + statPanelSubhead("💵 Finances")
         + statPanelHeroPair(
           statPanelHero("Spent", fmtMoney(s.totalExpenses), { chip: yoy(s.totalExpenses, sp && sp.totalExpenses, false) }),
-          statPanelHero(`Net for ${selectedYear}`, fmtMoney(s.net), { chip: yoy(s.net, sp && sp.net), valueTone: s.net >= 0 ? "sage" : "rust" })
+          statPanelHero(`Net for ${selectedYear}`, fmtMoney(s.net), { chip: yoyAbs(s.net, sp && sp.net), valueTone: s.net >= 0 ? "sage" : "rust" })
         ), "expenses"
       )}
       ${(s.chicksHatched + s.hatchLoss) > 0 ? statPanel("gold", "🐣", "Hatching",
@@ -6650,12 +6650,33 @@ function sparklineSvg(values) {
  * 31 of June would make every month look like a collapse until the 20th.
  * goodUp flips the coloring for numbers where rising is bad (spending). */
 function deltaChipHtml(current, previous, { goodUp = true, label = "last month" } = {}) {
-  if (!(previous > 0)) return ""; // nothing meaningful to compare against yet
+  if (!(previous > 0)) {
+    // No meaningful baseline to compare against (zero, or a metric that
+    // legitimately started at nothing) -- but if there's real activity NOW,
+    // say so rather than showing nothing at all just because there was
+    // nothing to divide by.
+    if (current > 0) return `<span class="delta-chip tone-gold">✦ new vs ${label}</span>`;
+    return "";
+  }
   const pct = Math.round(((current - previous) / previous) * 100);
   if (Math.abs(pct) < 1) return `<span class="delta-chip tone-slate">≈ ${label}</span>`;
   const up = pct > 0;
   const tone = up === goodUp ? "sage" : "rust";
   return `<span class="delta-chip tone-${tone}">${up ? "▲" : "▼"} ${Math.abs(pct)}% vs ${label}</span>`;
+}
+/** Absolute-dollar delta chip, for a figure that can legitimately be
+ * negative (Net: a month or year can genuinely net a loss). A percentage
+ * comparison isn't well-defined when the baseline can be zero or negative --
+ * dividing by a negative flips the sign, so an improvement from a loss to a
+ * profit would misleadingly read as a negative percentage. A plain dollar
+ * difference has no such problem: it's unambiguous regardless of either
+ * side's sign. */
+function deltaChipHtmlAbs(current, previous, { goodUp = true, label = "last month" } = {}) {
+  const diff = current - previous;
+  if (Math.abs(diff) < 0.005) return `<span class="delta-chip tone-slate">≈ ${label}</span>`;
+  const up = diff > 0;
+  const tone = up === goodUp ? "sage" : "rust";
+  return `<span class="delta-chip tone-${tone}">${up ? "▲" : "▼"} ${fmtMoney(Math.abs(diff))} vs ${label}</span>`;
 }
 
 /** Weekly trend series (oldest -> newest, 8 buckets) and month-over-month
@@ -6821,7 +6842,7 @@ function renderCoopOverview() {
             + statPanelRow("Avg weight / bird", s.processedThisMonth > 0 ? weightLabel(s.weightThisMonth / s.processedThisMonth) : "—")
           ) + statPanelSubhead("💵 Finances") + statPanelHeroPair(
             statPanelHero("Spent", fmtMoney(s.thisMonth), { chip: deltaChipHtml(spendCompare.cur, spendCompare.prev, { goodUp: false }) }),
-            statPanelHero("Net", fmtMoney(s.netMonth), { chip: deltaChipHtml(netCompare.cur, netCompare.prev), valueTone: s.netMonth >= 0 ? "sage" : "rust" })
+            statPanelHero("Net", fmtMoney(s.netMonth), { chip: deltaChipHtmlAbs(netCompare.cur, netCompare.prev), valueTone: s.netMonth >= 0 ? "sage" : "rust" })
           );
           return statPanel("sage", "🪶", "Flock", flockBody, "flock")
             + statPanel("gold", "💲", "Value", valueBody, "expenses");
@@ -11112,31 +11133,52 @@ function openSupplyGroupModal(key) {
 
 function emptySupplyModalHtml() {
   const emptyItems = STATE.supplies.filter(s => s.status === "Empty").sort((a, b) => (b.date_emptied || "").localeCompare(a.date_emptied || ""));
-  const paged = emptyItems.slice(0, emptySupplyVisibleCount);
+  // Grouped by year, newest first -- an active coop can empty a LOT of bags
+  // over a few years (feed and bedding together), and a flat list that long
+  // stops being something you can actually scan. Narrowing to one year at a
+  // time keeps each group small enough that it doesn't need its own
+  // pagination on top of the grouping.
+  const byYear = new Map();
+  emptyItems.forEach(s => {
+    const y = s.date_emptied ? s.date_emptied.slice(0, 4) : "Unknown date";
+    if (!byYear.has(y)) byYear.set(y, []);
+    byYear.get(y).push(s);
+  });
+  const years = [...byYear.keys()].sort().reverse();
+  const supplyRow = (s) => {
+    const product = s.product_id ? STATE.supplyProducts.find(p => p.id === s.product_id) : null;
+    const photo = product ? productPhotoUrl(product) : null;
+    return `
+      <div class="list-card tone-slate" data-edit-supply="${s.id}" style="cursor:pointer">
+        ${photo ? `<div style="width:44px;height:44px;border-radius:6px;overflow:hidden;flex:0 0 auto;margin-right:2px"><img src="${photo}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(product)};${photoTransformStyle(product)}opacity:0.75"></div>` : ""}
+        <div class="list-card-main">
+          <div style="font-weight:600">${esc(s.brand || s.description || s.category)}</div>
+          <div class="list-card-desc dim">${esc(s.category)}${s.quantity ? ` · ${displayQty(s.quantity, s.unit)} ${esc(unitLabel(s.unit))}` : ""}</div>
+          <div class="list-card-desc dim">${s.date_added ? `added ${fmtDate(s.date_added)}` : ""}${s.opened_at ? ` · opened ${fmtDate(s.opened_at)}` : ""}${s.date_emptied ? ` · emptied ${fmtDate(s.date_emptied)}` : ""}${s.opened_at && s.date_emptied ? ` · used over ${Math.max(1, daysSince(s.opened_at) - daysSince(s.date_emptied))}d` : ""}</div>
+        </div>
+        <div class="list-card-side">
+          <button class="icon-btn" data-restore-supply="${s.id}" title="Not actually empty -- restore to Full" onclick="event.stopPropagation()">↺</button>
+          <button class="icon-btn" data-del-supply-modal="${s.id}" title="Delete permanently" onclick="event.stopPropagation()">🗑</button>
+        </div>
+      </div>`;
+  };
   return `
     <div class="form-head">Emptied (${emptyItems.length})</div>
     <div class="dim" style="font-size:12px;margin:8px 0 14px">Kept for your records — how long each one lasted stays intact for future cost/usage stats. Slide one back to a fill level if it was marked empty by mistake, or delete it for good.</div>
     ${emptyItems.length === 0 ? `<div class="empty">Nothing emptied yet.</div>` : `
-    <div class="list-stack">
-      ${paged.map(s => {
-        const product = s.product_id ? STATE.supplyProducts.find(p => p.id === s.product_id) : null;
-        const photo = product ? productPhotoUrl(product) : null;
-        return `
-        <div class="list-card tone-slate" data-edit-supply="${s.id}" style="cursor:pointer">
-          ${photo ? `<div style="width:44px;height:44px;border-radius:6px;overflow:hidden;flex:0 0 auto;margin-right:2px"><img src="${photo}" style="width:100%;height:100%;object-fit:cover;object-position:${photoPosition(product)};${photoTransformStyle(product)}opacity:0.75"></div>` : ""}
-          <div class="list-card-main">
-            <div style="font-weight:600">${esc(s.brand || s.description || s.category)}</div>
-            <div class="list-card-desc dim">${esc(s.category)}${s.quantity ? ` · ${displayQty(s.quantity, s.unit)} ${esc(unitLabel(s.unit))}` : ""}</div>
-            <div class="list-card-desc dim">${s.date_added ? `added ${fmtDate(s.date_added)}` : ""}${s.opened_at ? ` · opened ${fmtDate(s.opened_at)}` : ""}${s.date_emptied ? ` · emptied ${fmtDate(s.date_emptied)}` : ""}${s.opened_at && s.date_emptied ? ` · used over ${Math.max(1, daysSince(s.opened_at) - daysSince(s.date_emptied))}d` : ""}</div>
+    <div style="max-height:420px;overflow-y:auto">
+      ${years.map((y, i) => `
+      <details class="cost-breakdown-batch"${i === 0 ? " open" : ""}>
+        <summary>
+          <div class="cost-breakdown-batch-head">
+            <span class="cost-breakdown-batch-name">${esc(y)}</span>
+            <span class="cost-breakdown-batch-count dim">${byYear.get(y).length} emptied</span>
           </div>
-          <div class="list-card-side">
-            <button class="icon-btn" data-restore-supply="${s.id}" title="Not actually empty -- restore to Full" onclick="event.stopPropagation()">↺</button>
-            <button class="icon-btn" data-del-supply-modal="${s.id}" title="Delete permanently" onclick="event.stopPropagation()">🗑</button>
-          </div>
-        </div>`;
-      }).join("")}
+        </summary>
+        <div class="list-stack" style="padding-left:2px">${byYear.get(y).map(supplyRow).join("")}</div>
+      </details>
+      `).join("")}
     </div>
-    ${loadMoreButtonHtml(emptyItems.length, emptySupplyVisibleCount, "loadMoreEmptyBtn")}
     `}
   `;
 }
@@ -11163,16 +11205,9 @@ function wireEmptySupplyModal() {
     wireEmptySupplyModal();
     renderSupplyInventory();
   }));
-  const loadMoreEmptyEl = document.getElementById("loadMoreEmptyBtn");
-  if (loadMoreEmptyEl) loadMoreEmptyEl.addEventListener("click", () => {
-    emptySupplyVisibleCount += PAGE_SIZE;
-    refreshModalContent(emptySupplyModalHtml());
-    wireEmptySupplyModal();
-  });
 }
 
 function openEmptySupplyModal() {
-  emptySupplyVisibleCount = PAGE_SIZE;
   openModal(emptySupplyModalHtml());
   wireEmptySupplyModal();
 }
