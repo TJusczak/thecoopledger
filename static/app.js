@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-237";
+const APP_VERSION = "2026.07.13-238";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -2290,24 +2290,89 @@ function rowsToCsv(rows, fields) {
 }
 
 /** Plain-text CSVs for a spreadsheet, one file per table -- not a backup
- * (there's no import path for this, and it can't hold photos), just a
- * quick way to get the data into a format a spreadsheet program can open.
- * Works with zero connection, same as everything else offline. */
+ * Standardized spreadsheet export: a handful of clean, human-readable files
+ * rather than a raw dump of every internal table -- foreign keys resolved
+ * (a health log shows the bird's name, not its id), weight always in lb and
+ * labeled as such (a spreadsheet export needs one fixed, predictable unit,
+ * not one that silently depends on the display toggle), money as a bare
+ * decimal so SUM() works without stripping a "$" first. Ported field-for-
+ * field from the server's export_coop_csv -- this is the client-side,
+ * offline-capable path the export button actually reaches, so this copy is
+ * the one that has to be right, not just the server's.
+ * Not a backup (there's no import path for this, and it can't hold photos),
+ * just a clean way to get the data into a spreadsheet program. Works with
+ * zero connection, same as everything else offline. */
 async function exportLocalCsv(coopId) {
   const coop = await localGetOne("coops", coopId);
   const zip = new JSZip();
-  for (const table of ["birds", "eggs", "expenses", "bedding", "bird_logs", "notes", "supplies", "hatches", "hatch_eggs", "bird_photos", "supply_products"]) {
-    const rows = await localGetAll(table, coopId);
-    if (rows.length === 0) continue;
-    const fields = Object.keys(rows[0]).filter(f => f !== "coop_id" && f !== "photo");
-    zip.file(`${table}.csv`, rowsToCsv(rows, fields));
-  }
+  const num = (v, digits = 2) => (v === null || v === undefined || v === "" ? "" : Math.round(Number(v) * 10 ** digits) / 10 ** digits);
+  const write = (filename, headerObjs) => zip.file(filename, rowsToCsv(headerObjs, Object.keys(headerObjs[0] || {})));
+
+  const birds = await localGetAll("birds", coopId);
+  const eggs = await localGetAll("eggs", coopId);
+  const expenses = await localGetAll("expenses", coopId);
+  const supplies = await localGetAll("supplies", coopId);
+  const bedding = await localGetAll("bedding", coopId);
+  const birdLogs = await localGetAll("bird_logs", coopId);
+  const hatches = await localGetAll("hatches", coopId);
+  const notes = await localGetAll("notes", coopId);
+
+  const birdNameById = {};
+  birds.forEach(b => { birdNameById[b.id] = b.name || "(unnamed)"; });
+
+  if (birds.length) write("Flock.csv", birds.map(b => ({
+    "Name": b.name || "(unnamed)", "Type": b.type || "", "Breed": b.breed || "", "Gender": b.gender || "",
+    "Status": b.status || "", "Batch": b.batch_name || "", "Location": b.location || "",
+    "Hatch Date": b.hatch_date || "", "Acquired Date": b.acquired_date || "", "Target Harvest Date": b.target_harvest_date || "",
+    "Harvest Date": b.harvest_date || "", "Dressed Weight (lb)": num(b.harvest_weight), "Price per lb": num(b.price_per_lb),
+    "Harvest Value": num(b.harvest_weight && b.price_per_lb ? Number(b.harvest_weight) * Number(b.price_per_lb) : null),
+    "Death Date": b.death_date || "", "Death Cause": b.death_cause || "", "Notes": b.notes || "",
+  })));
+
+  if (eggs.length) write("Eggs.csv", eggs.map(e => ({
+    "Date": e.date || "", "Count": num(e.count, 0), "Price per Egg": num(e.price_per_egg, 4),
+    "Value": num(e.count && e.price_per_egg ? Number(e.count) * Number(e.price_per_egg) : null),
+    "Notes": e.notes || "",
+  })));
+
+  if (expenses.length) write("Finances.csv", expenses.map(x => ({
+    "Date": x.date || "", "Type": x.entry_type === "income" ? "Income" : "Expense",
+    "Category": x.category || "", "Description": x.description || "", "Amount": num(x.amount),
+    "Quantity": num(x.quantity), "Unit": x.unit || "", "Applies To": x.for_type || "", "Notes": "",
+  })));
+
+  if (supplies.length) write("Inventory.csv", supplies.map(s => ({
+    "Category": s.category || "", "Description": s.description || "", "Brand": s.brand || "",
+    "Quantity": num(s.quantity), "Unit": s.unit || "", "Cost": num(s.cost), "Status": s.status || "",
+    "Date Added": s.date_added || "", "Opened": s.opened_at || "", "Emptied": s.date_emptied || "",
+  })));
+
+  if (bedding.length) write("Bedding.csv", bedding.map(bd => ({
+    "Date": bd.date || "", "Area": bd.area || "", "Material": bd.material || "",
+    "Type": bd.entry_type || "", "Notes": bd.notes || "",
+  })));
+
+  if (birdLogs.length) write("Health Log.csv", birdLogs.map(log => ({
+    "Date": log.date || "", "Bird": birdNameById[log.bird_id] || "(deleted bird)", "Note": log.note || "",
+  })));
+
+  if (hatches.length) write("Hatches.csv", hatches.map(h => ({
+    "Breed": h.breed || "", "Date Started": h.date_started || "", "Status": h.status || "",
+    "Eggs Set": num(h.egg_count, 0), "Hatched": num(h.hatched_count, 0), "Named": num(h.named_count, 0),
+    "Clear": num(h.clear_count, 0), "Quit": num(h.quit_count, 0), "Failed to Hatch": num(h.failed_count, 0),
+    "Notes": h.notes || "",
+  })));
+
+  if (notes.length) write("Notes.csv", notes.map(n => ({
+    "Date": n.created_date || "", "Category": n.category || "", "Title": n.title || "", "Note": n.body || "",
+  })));
+
   const zipBlob = await zip.generateAsync({ type: "blob" });
   const url = URL.createObjectURL(zipBlob);
   const a = document.createElement("a");
   const safeName = (coop.name || "coop").toLowerCase().replace(/[^a-z0-9]+/g, "-");
   a.href = url;
-  a.download = `${safeName}-csv-${todayStr()}.zip`;
+  a.download = `${safeName}-spreadsheet-${todayStr()}.zip`;
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
 }
