@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-232";
+const APP_VERSION = "2026.07.13-234";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -11470,6 +11470,12 @@ function supplyFormHtml(editingSupply) {
     <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="sp_opened" ${editingSupply.opened_at ? "checked" : ""} style="width:auto"><span>Opened -- won't group with sealed spares even at Full</span></label>
     <label class="field" id="sp_opened_date_field" style="margin-top:8px;${editingSupply.opened_at ? "" : "display:none"}"><span>Date opened</span><input type="date" id="sp_opened_at" value="${editingSupply.opened_at || todayStr()}"><span class="dim" style="font-size:11px;margin-top:4px">Feed usage is drawn as a straight line from this date (0 used) to the emptied date (fully used). Correcting an opened date fixes the curve and the daily-average estimate.</span></label>
     ` : ""}
+    ${editingSupply && editingSupply.opened_at && editingSupply.status !== "Empty" ? `
+    <div class="note-box" style="margin-top:14px">
+      <strong style="color:var(--text)">Not going to finish this bag for a while?</strong> Leaving it open keeps spreading its cost thinner every day that passes, even on days nothing was eaten -- so a bag set aside for months would understate what it actually cost per day while it was really in use, and that number would keep drifting the longer it sits. Closing it out now locks in the real cost for the time it was actually used, splitting both the amount AND the cost between what's really been eaten and what's left -- so the leftover carries its own fair share of what you paid, not a discount, and this batch isn't charged for food it never got to.
+      <div style="margin-top:8px"><button class="btn ghost small" id="closeOutRemainderBtn">📦 Close out &amp; store the rest</button></div>
+    </div>
+    ` : ""}
     ${!editingSupply ? `<div class="dim" style="font-size:11px;margin-top:8px">Buying multiple bags at once? Set the count above -- each one is added as its own separate, independently trackable item rather than a single item marked "3 bags." Identical full bags collapse into one compact card automatically -- "Open one" peels a single bag off to track it on its own.</div>` : ""}
     <div class="modal-actions">
       <button class="btn btn-confirm" id="saveSupply">${editingSupply ? "✓ Save changes" : "+ Add item"}</button>
@@ -11497,6 +11503,34 @@ function wireSupplyForm(editingSupply) {
   if (openedToggle && openedDateField) {
     openedToggle.addEventListener("change", () => { openedDateField.style.display = openedToggle.checked ? "" : "none"; });
   }
+  const closeOutBtn = document.getElementById("closeOutRemainderBtn");
+  if (closeOutBtn) closeOutBtn.addEventListener("click", async () => {
+    const consumedFraction = STATUS_USED_FRACTION[editingSupply.status] ?? 0;
+    const remainingFraction = 1 - consumedFraction;
+    const originalQty = Number(editingSupply.quantity) || 0;
+    const originalCost = Number(editingSupply.cost) || 0;
+    const remainingQty = originalQty * remainingFraction;
+    if (!(remainingQty > 0)) { showToast("Nothing left to carry over -- this bag is already fully used.", "update"); return; }
+    if (!(await showConfirmDialog(`Close out this bag as of today, and carry the remaining ${displayQty(remainingQty, editingSupply.unit)} ${unitLabel(editingSupply.unit)} over as a new, unopened item? It keeps its own fair share of what this bag cost (${fmtMoney(originalCost * remainingFraction)}), so whichever batch eats it later is charged for it -- not this one, and not for free either.`, "Close out"))) return;
+    // Marking a bag Empty tells the app the WHOLE recorded quantity was used
+    // across the real open-to-emptied window -- that's true for a bag that
+    // genuinely ran out, but not here, where only part of it really got
+    // eaten. Both the quantity AND cost on the ORIGINAL record need to
+    // shrink to just the truly-consumed share, or the finishing batch gets
+    // charged for food it never ate, and the leftover carries none of what
+    // it actually cost -- silently free to whichever batch opens it next.
+    await localSupplyUpdate(editingSupply.id, {
+      quantity: originalQty * consumedFraction, cost: originalCost * consumedFraction,
+      status: "Empty", date_emptied: todayStr(),
+    });
+    await localSupplyCreate({
+      coop_id: currentCoopId, category: editingSupply.category, brand: editingSupply.brand, description: editingSupply.description,
+      quantity: remainingQty, unit: editingSupply.unit, cost: originalCost * remainingFraction, status: "Full", date_added: todayStr(), opened_at: null,
+    }, { suppressUndo: true }); // one undo entry (the close-out) reads more clearly than two separate ones for what's really one action
+    showToast("Closed out -- the remainder is now a stored, unopened item with its own fair share of the cost", "update");
+    closeModal();
+    refreshAndRender();
+  });
   document.getElementById("saveSupply").addEventListener("click", async () => {
     const status = document.getElementById("sp_status").value;
     // Cost is required -- every bag needs a cost so feed cost-per-lb, cost per
