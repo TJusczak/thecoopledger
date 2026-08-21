@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-235";
+const APP_VERSION = "2026.07.13-236";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -8596,9 +8596,25 @@ function wireBatchEditModal(batchName) {
       ? `A batch named "${esc(newName)}" already exists. Renaming will merge this batch's ${birds.length} bird${birds.length !== 1 ? "s" : ""} into it -- they'll become one group. Continue?`
       : `Rename this batch (and all ${birds.length} of its birds) to "${esc(newName)}"?`;
     if (!(await showConfirmDialog(message, collides ? "Merge" : "Rename"))) return;
-    await localBulkUpdate("birds", birds.map(b => ({ id: b.id, fields: { batch_name: newName } })), currentCoopId);
+    // A bird created as part of this batch got its own name auto-filled as
+    // "{batch name} #N" -- if it's STILL exactly that (nobody's since given
+    // it its own name, like "Henrietta"), the rename carries through to it
+    // too, since that name was really just standing in for the batch name in
+    // the first place. Anything that's been individually customized is left
+    // completely alone -- an exact-pattern match is a narrow, safe way to
+    // tell "still auto-generated" apart from "somebody named this bird."
+    const escaped = batchName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const autoNamePattern = new RegExp(`^${escaped} #(\\d+)$`);
+    let renamedCount = 0;
+    const fieldsFor = (b) => {
+      const m = b.name && b.name.match(autoNamePattern);
+      if (m) { renamedCount++; return { batch_name: newName, name: `${newName} #${m[1]}` }; }
+      return { batch_name: newName };
+    };
+    await localBulkUpdate("birds", birds.map(b => ({ id: b.id, fields: fieldsFor(b) })), currentCoopId);
     if (currentOpenBatchName === batchName) currentOpenBatchName = newName;
-    showToast(collides ? "Batches merged" : "Batch renamed", "update");
+    const suffix = renamedCount > 0 ? ` -- ${renamedCount} bird${renamedCount !== 1 ? "s'" : "'s"} own name${renamedCount !== 1 ? "s" : ""} updated to match, ${birds.length - renamedCount} left as customized` : "";
+    showToast(`${collides ? "Batches merged" : "Batch renamed"}${suffix}`, "update");
     await loadCoopData();
     closeModal();
   });
