@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-234";
+const APP_VERSION = "2026.07.13-235";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -8527,6 +8527,12 @@ function batchEditModalHtml(batchName) {
     </div>
 
     <div class="form-block" style="margin-bottom:14px">
+      <div class="dim" style="font-size:12px;margin-bottom:8px">Batch name -- renames every bird in this group</div>
+      <label class="field"><span>Name</span><input id="batch_rename" value="${esc(batchName)}"></label>
+      <button class="btn ghost small" id="applyBatchRename" style="margin-top:10px">Rename batch</button>
+    </div>
+
+    <div class="form-block" style="margin-bottom:14px">
       <div class="dim" style="font-size:12px;margin-bottom:8px">Group location -- applies to every bird in this batch</div>
       <label class="field"><span>Location</span><select id="batch_location"><option value="">(unspecified)</option>${getBeddingAreas().map(a => `<option value="${esc(a)}" ${sharedLocation === a ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></label>
       <button class="btn ghost small" id="applyBatchLocation" style="margin-top:10px">Apply to whole batch</button>
@@ -8575,6 +8581,27 @@ function wireBatchEditModal(batchName) {
   const birds = STATE.birds.filter(b => b.batch_name === batchName);
   const refresh = () => { refreshModalContent(batchEditModalHtml(batchName)); wireBatchEditModal(batchName); };
   document.getElementById("closeBatchEditModal").addEventListener("click", () => closeModal());
+  const applyBatchRenameBtn = document.getElementById("applyBatchRename");
+  if (applyBatchRenameBtn) applyBatchRenameBtn.addEventListener("click", async () => {
+    const newName = document.getElementById("batch_rename").value.trim();
+    if (!newName) { showToast("Enter a name first", "update"); return; }
+    if (newName === batchName) return; // unchanged, nothing to do
+    // Renaming to a name that's already in use isn't necessarily a mistake --
+    // it's a reasonable way to merge two batches that should've been one --
+    // but it should be a deliberate choice, not an accidental typo landing
+    // on another batch's name, so the confirmation wording changes to say
+    // plainly what's about to happen either way.
+    const collides = STATE.birds.some(b => b.batch_name === newName);
+    const message = collides
+      ? `A batch named "${esc(newName)}" already exists. Renaming will merge this batch's ${birds.length} bird${birds.length !== 1 ? "s" : ""} into it -- they'll become one group. Continue?`
+      : `Rename this batch (and all ${birds.length} of its birds) to "${esc(newName)}"?`;
+    if (!(await showConfirmDialog(message, collides ? "Merge" : "Rename"))) return;
+    await localBulkUpdate("birds", birds.map(b => ({ id: b.id, fields: { batch_name: newName } })), currentCoopId);
+    if (currentOpenBatchName === batchName) currentOpenBatchName = newName;
+    showToast(collides ? "Batches merged" : "Batch renamed", "update");
+    await loadCoopData();
+    closeModal();
+  });
   document.getElementById("applyBatchLocation").addEventListener("click", async () => {
     const location = document.getElementById("batch_location").value;
     await localBulkUpdate("birds", birds.map(b => ({ id: b.id, fields: { location: location || null } })), currentCoopId);
