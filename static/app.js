@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-243";
+const APP_VERSION = "2026.07.13-245";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5467,6 +5467,16 @@ function openCostBreakdownModal(kind) {
  * different kinds of information, and mixing them would make the list
  * harder to scan, not easier. Past sorts newest first; future sorts
  * soonest first, since that's the order each is actually useful in. */
+/** "Sep 15, 2026 · in 25d" (or "· overdue 3d", "· today") -- a future
+ * event's detail line. Same relative-day wording already used by the
+ * bedding freshness card, so "in Nd" means the same thing everywhere in
+ * the app, not a second convention for the calendar specifically. */
+function relativeDayLabel(dateStr, todayKey) {
+  const days = Math.round((new Date(dateStr + "T00:00:00") - new Date(todayKey + "T00:00:00")) / 86400000);
+  if (days < 0) return `overdue ${-days}d`;
+  if (days === 0) return "today";
+  return `in ${days}d`;
+}
 function allCalendarEvents() {
   const past = [], future = [];
   const todayKey = todayStr();
@@ -5486,7 +5496,7 @@ function allCalendarEvents() {
     if (b.sold_date) past.push({ date: b.sold_date, icon: "💵", title: `${label} sold`, tone: "gold", kind: "sold", groupKey: `sold:${batchKey}`, groupLabel: "birds sold", ...src });
     if (b.retired_date) past.push({ date: b.retired_date, icon: "🏡", title: `${label} retired`, tone: "slate", kind: "retired", groupKey: `retired:${batchKey}`, groupLabel: "birds retired", ...src });
     if (b.status === "Active" && b.target_harvest_date && b.target_harvest_date >= todayKey) {
-      future.push({ date: b.target_harvest_date, icon: "🎯", title: `${label} target harvest`, tone: "gold", kind: "target", groupKey: `target:${batchKey}`, groupLabel: `birds with this target harvest date${b.batch_name ? ` (${b.batch_name})` : ""}`, ...src });
+      future.push({ date: b.target_harvest_date, icon: "🎯", title: `${label} target harvest`, detail: `${fmtDate(b.target_harvest_date)} · ${relativeDayLabel(b.target_harvest_date, todayKey)}`, tone: "gold", kind: "target", groupKey: `target:${batchKey}`, groupLabel: `birds with this target harvest date${b.batch_name ? ` (${b.batch_name})` : ""}`, ...src });
     }
   });
 
@@ -5525,7 +5535,8 @@ function allCalendarEvents() {
     const t = getBeddingThresholds(area);
     if (bs.lastCleanout) {
       const daysUntil = t.danger - daysSince(bs.lastCleanout.date);
-      future.push({ date: addDays(todayKey, daysUntil), icon: "🧹", title: `${area}: clean-out due`, tone: daysUntil < 0 ? "rust" : "gold", kind: "cleanout-due", groupKey: `cleanout-due:${area}`, groupLabel: `${area}: clean-out due` });
+      const dueDate = addDays(todayKey, daysUntil);
+      future.push({ date: dueDate, icon: "🧹", title: `${area}: clean-out due`, detail: `${fmtDate(dueDate)} · ${relativeDayLabel(dueDate, todayKey)}`, tone: daysUntil < 0 ? "rust" : "gold", kind: "cleanout-due", groupKey: `cleanout-due:${area}`, groupLabel: `${area}: clean-out due` });
     }
   });
 
@@ -5800,8 +5811,16 @@ function computeStats(monthKey) {
   const eggTotalValueMonth = eggIncomeMonth + eggActualIncomeMonth;
   const meatTotalValueAll = meatIncomeAll + meatActualIncomeAll;
   const meatTotalValueMonth = meatIncomeMonth + meatActualIncomeMonth;
-  const incomeAll = eggIncomeAll + meatIncomeAll + actualIncomeAll;
-  const incomeMonth = eggIncomeMonth + meatIncomeMonth + actualIncomeMonth;
+  // Bird sale value has no washout to do -- unlike eggs/meat (which are an
+  // ESTIMATE that might separately get sold for real, needing reconciliation
+  // against a second entry), a bird's sold_amount already IS the one real
+  // number for what it actually sold for. Nothing else to double-count
+  // against.
+  const soldBirds = STATE.birds.filter(b => b.sold_date && Number(b.sold_amount) > 0);
+  const birdSaleValueAll = soldBirds.reduce((s, b) => s + Number(b.sold_amount), 0);
+  const birdSaleValueMonth = soldBirds.filter(b => isThisMonth(b.sold_date)).reduce((s, b) => s + Number(b.sold_amount), 0);
+  const incomeAll = eggIncomeAll + meatIncomeAll + birdSaleValueAll + actualIncomeAll;
+  const incomeMonth = eggIncomeMonth + meatIncomeMonth + birdSaleValueMonth + actualIncomeMonth;
   const netAll = incomeAll - totalExpenses;
   const netMonth = incomeMonth - thisMonth;
 
@@ -5815,12 +5834,27 @@ function computeStats(monthKey) {
   const hatchQuitAll = STATE.hatchEggs.filter(e => e.status === "Quit").length;
   const hatchFailedAll = STATE.hatchEggs.filter(e => e.status === "Failed to Hatch").length;
   const hatchLossAll = hatchClearAll + hatchQuitAll + hatchFailedAll;
+  // Month-scoped, using each egg's own resolved_date (when its outcome
+  // actually happened) rather than the clutch's date_started (when it went
+  // into the incubator) -- a clutch started in one month often resolves in
+  // the next, so the clutch date would misattribute it. Eggs recorded
+  // before this field existed fall back to date_started rather than being
+  // silently excluded from every month view.
+  const hatchDateById = {};
+  STATE.hatches.forEach(h => { hatchDateById[h.id] = h.date_started; });
+  const hatchEggEffectiveDate = (e) => e.resolved_date || hatchDateById[e.hatch_id] || null;
+  const hatchEggsThisMonth = STATE.hatchEggs.filter(e => isThisMonth(hatchEggEffectiveDate(e)));
+  const chicksHatchedMonth = hatchEggsThisMonth.filter(e => e.status === "Hatched").length;
+  const hatchClearMonth = hatchEggsThisMonth.filter(e => e.status === "Clear").length;
+  const hatchQuitMonth = hatchEggsThisMonth.filter(e => e.status === "Quit").length;
+  const hatchFailedMonth = hatchEggsThisMonth.filter(e => e.status === "Failed to Hatch").length;
+  const hatchLossMonth = hatchClearMonth + hatchQuitMonth + hatchFailedMonth;
 
   const eggsThisMonth = STATE.eggs.filter(e => isThisMonth(e.date)).reduce((s, e) => s + (Number(e.count) || 0), 0);
   const processedThisMonth = processed.filter(b => b.harvest_date && isThisMonth(b.harvest_date)).length;
   const weightThisMonth = processed.filter(b => b.harvest_date && isThisMonth(b.harvest_date)).reduce((s, b) => s + (Number(b.harvest_weight) || 0), 0);
 
-  return { active, layers, meatActive, processed: processed.length, totalWeight, totalEggs, last7, last30, eggsThisMonth, processedThisMonth, weightThisMonth, totalExpenses, thisMonth, eggIncomeAll, eggIncomeMonth, meatIncomeAll, meatIncomeMonth, eggActualIncomeAll, eggActualIncomeMonth, meatActualIncomeAll, meatActualIncomeMonth, eggTotalValueAll, eggTotalValueMonth, meatTotalValueAll, meatTotalValueMonth, incomeAll, incomeMonth, actualIncomeAll, actualIncomeMonth, netAll, netMonth, lossesAll, lossesThisYear, lossesThisMonth, chicksHatchedAll, hatchClearAll, hatchQuitAll, hatchFailedAll, hatchLossAll };
+  return { active, layers, meatActive, processed: processed.length, totalWeight, totalEggs, last7, last30, eggsThisMonth, processedThisMonth, weightThisMonth, totalExpenses, thisMonth, eggIncomeAll, eggIncomeMonth, meatIncomeAll, meatIncomeMonth, eggActualIncomeAll, eggActualIncomeMonth, meatActualIncomeAll, meatActualIncomeMonth, eggTotalValueAll, eggTotalValueMonth, meatTotalValueAll, meatTotalValueMonth, birdSaleValueAll, birdSaleValueMonth, incomeAll, incomeMonth, actualIncomeAll, actualIncomeMonth, netAll, netMonth, lossesAll, lossesThisYear, lossesThisMonth, chicksHatchedAll, hatchClearAll, hatchQuitAll, hatchFailedAll, hatchLossAll, chicksHatchedMonth, hatchClearMonth, hatchQuitMonth, hatchFailedMonth, hatchLossMonth };
 }
 
 function allCoopYears() {
@@ -5876,8 +5910,9 @@ function rawValueBetween(fromDate, toDate) {
   const inRange = (dt) => dt && dt >= fromDate && dt <= toDate;
   const eggVal = STATE.eggs.filter(e => inRange(e.date)).reduce((s, e) => s + (Number(e.count) || 0) * (Number(e.price_per_egg) || eggFallback), 0);
   const meatVal = STATE.birds.filter(b => b.status === "Processed" && inRange(b.harvest_date)).reduce((s, b) => s + (Number(b.harvest_weight) || 0) * (Number(b.price_per_lb) || meatFallback), 0);
+  const birdSaleVal = STATE.birds.filter(b => b.sold_date && inRange(b.sold_date) && Number(b.sold_amount) > 0).reduce((s, b) => s + Number(b.sold_amount), 0);
   const otherInc = STATE.expenses.filter(x => x.entry_type === "income" && x.category !== "Egg Sale" && x.category !== "Meat Sale" && inRange(x.date)).reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  return eggVal + meatVal + otherInc;
+  return eggVal + meatVal + birdSaleVal + otherInc;
 }
 function spendBetween(fromDate, toDate) {
   const inRange = (dt) => dt && dt >= fromDate && dt <= toDate;
@@ -6009,7 +6044,11 @@ function computeYearStats(year) {
   const cleanoutsByArea = {};
   cleanoutsInYear.forEach(b => { cleanoutsByArea[b.area] = (cleanoutsByArea[b.area] || 0) + 1; });
 
-  const income = eggValue + meatValue + actualIncome;
+  // Same reasoning as computeStats: a bird's sold_amount is already the one
+  // real number for what it sold for, so there's no washout to reconcile
+  // against the way eggs/meat need.
+  const birdSaleValue = STATE.birds.filter(b => b.sold_date && inYear(b.sold_date) && Number(b.sold_amount) > 0).reduce((s, b) => s + Number(b.sold_amount), 0);
+  const income = eggValue + meatValue + birdSaleValue + actualIncome;
   const net = income - totalExpenses;
 
 
@@ -6030,7 +6069,7 @@ function computeYearStats(year) {
     beddingCuFt += activeSum("Bedding");
   }
 
-  return { eggCount, eggValue, totalExpenses, categoryBreakdown, processedCount: processedInYear.length, processedWeight, meatValue, lossesInYear, newBirds: newBirdIds.size, newLayerBirds: newLayerBirds.size, newMeatBirds: newMeatBirds.size, cleanoutsByArea, income, net, actualIncome, eggActualIncome, meatActualIncome, eggTotalValue, meatTotalValue, layerFeedLbs, meatFeedLbs, beddingCuFt, chicksHatched, hatchClear, hatchQuit, hatchFailed, hatchLoss };
+  return { eggCount, eggValue, totalExpenses, categoryBreakdown, processedCount: processedInYear.length, processedWeight, meatValue, birdSaleValue, lossesInYear, newBirds: newBirdIds.size, newLayerBirds: newLayerBirds.size, newMeatBirds: newMeatBirds.size, cleanoutsByArea, income, net, actualIncome, eggActualIncome, meatActualIncome, eggTotalValue, meatTotalValue, layerFeedLbs, meatFeedLbs, beddingCuFt, chicksHatched, hatchClear, hatchQuit, hatchFailed, hatchLoss };
 }
 
 function renderYearReviewSection() {
@@ -6861,8 +6900,6 @@ function renderCoopOverview() {
   dashSelectedMonth = selectedMonthKey;
   const isCurrentMonth = selectedMonthKey === thisMonthKey;
   const s = computeStats(selectedMonthKey);
-  const currentYear = String(new Date().getFullYear());
-  const ys = computeYearStats(currentYear);
   const tr = computeCardTrends();
   el.innerHTML = `
     <div class="toolbar" style="${isCurrentMonth ? "" : "border-left:3px solid var(--gold);padding-left:10px"}">
@@ -6888,17 +6925,17 @@ function renderCoopOverview() {
             + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat feed used`, `${displayWeight(feedTotalForMonth(selectedMonthKey, "meat"))} ${getWeightUnit()}`)
             + statPanelRow("Bedding used", `${beddingTotalForMonth(selectedMonthKey).toFixed(1)} cu ft`)
           )
-          // Hatching happens on its own schedule (a clutch takes weeks to
-          // resolve), not something a calendar month can honestly bound the
-          // way Losses/Processed can -- so this reads "this year" rather
-          // than pretending to be scoped to whatever month is selected
-          // above. Always shown, even at zero, rather than only appearing
-          // once you've hatched something -- the point is confirming the
-          // tracking is there.
-          + statPanelSubhead(`🐣 Hatching (${currentYear})`) + statPanelRows(
-            statPanelRow("Chicks hatched", ys.chicksHatched)
-            + statPanelRow("Lost from hatching", ys.hatchLoss, ys.hatchLoss > 0 ? "rust" : "")
-            + statPanelRow("Clear · Quit · Failed", `${ys.hatchClear} · ${ys.hatchQuit} · ${ys.hatchFailed}`)
+          // Genuinely scoped to the selected month now, same as every other
+          // row here -- each hatch egg's own resolved_date (when its outcome
+          // actually happened) makes this possible, rather than the clutch's
+          // date_started, which is when it went INTO the incubator, not when
+          // any individual egg's fate was decided. Always shown, even at
+          // zero, rather than only appearing once you've hatched something --
+          // the point is confirming the tracking is there.
+          + statPanelSubhead("🐣 Hatching") + statPanelRows(
+            statPanelRow("Chicks hatched", s.chicksHatchedMonth)
+            + statPanelRow("Lost from hatching", s.hatchLossMonth, s.hatchLossMonth > 0 ? "rust" : "")
+            + statPanelRow("Clear · Quit · Failed", `${s.hatchClearMonth} · ${s.hatchQuitMonth} · ${s.hatchFailedMonth}`)
           );
           const valueCompare = monthOverMonthCompare(selectedMonthKey, rawValueBetween);
           const spendCompare = monthOverMonthCompare(selectedMonthKey, spendBetween);
@@ -9450,9 +9487,9 @@ function showBirdForm(bird) {
       <div style="${FORM_SECTION_HEAD}">Sold</div>
       <div class="grid-form">
         <label class="field"><span>Date sold</span><input type="date" id="f_sold_date" value="${f.sold_date || ""}"></label>
-        <label class="field"><span>Sold for${f.source_income_id ? " (from its income entry)" : ""}</span><input type="number" step="0.01" min="0" id="f_sold_amount" value="${f.sold_amount != null ? f.sold_amount : ""}" placeholder="e.g. 25.00"></label>
+        <label class="field"><span>Sold for</span><input type="number" step="0.01" min="0" id="f_sold_amount" value="${f.sold_amount != null ? f.sold_amount : ""}" placeholder="e.g. 25.00"></label>
       </div>
-      ${!f.source_income_id ? `<div class="dim" style="font-size:11px;margin:-8px 0 0">Logged as a Bird Sale income entry automatically -- counted in Value Produced and the income charts, same as an egg or meat sale.</div>` : ""}
+      <div class="dim" style="font-size:11px;margin:-8px 0 0">Counted in Value Produced and the income charts, same as meat processing -- see it on the Finance tab as a linked reference, tap it there to come straight back to this bird.</div>
       ` : ""}
 
       ${showRetired ? `
@@ -9621,24 +9658,10 @@ function showBirdForm(bird) {
         acquisition_cost: current.acquisition_cost,
         source_expense_id: isEdit ? bird.source_expense_id : null,
         sold_amount: current.sold_amount,
-        source_income_id: isEdit ? bird.source_income_id : null,
       };
       if (!payload.name) return;
       let birdId = isEdit ? bird.id : null;
       if (isEdit) {
-        // A sold amount entered for the first time (the bird didn't already
-        // have a linked income entry) logs its own Bird Sale income
-        // automatically -- the sale side of the same idea as acquisition
-        // cost logging a Birds/Chicks expense. Already having one means
-        // this is just a later correction to the number, not a new sale,
-        // so it doesn't spawn a second entry.
-        if (payload.sold_amount > 0 && !bird.source_income_id) {
-          const income = await localExpenseCreate({
-            coop_id: currentCoopId, date: payload.sold_date || todayStr(), category: "Bird Sale",
-            description: payload.name, amount: payload.sold_amount, entry_type: "income",
-          }, { suppressUndo: true });
-          payload.source_income_id = income.id;
-        }
         await localBirdUpdate(birdId, payload);
       } else {
         // A price entered on a brand-new bird logs its own Birds/Chicks
@@ -9919,13 +9942,15 @@ const HATCH_EGG_STATUSES = ["Incubating", "Hatched", "Clear", "Quit", "Failed to
 function hatchEggFormHtml(egg, hatch) {
   const bird = egg.bird_id ? STATE.birds.find(b => b.id === egg.bird_id) : null;
   const needsNaming = egg.status === "Hatched" && !bird && !egg.tracked_externally;
+  const showResolvedDate = egg.status !== "Incubating";
   return `
     <div class="form-head">Egg #${egg.position}</div>
     <div class="grid-form">
       <label class="field"><span>Status</span><select id="eg_status">${HATCH_EGG_STATUSES.map(s => `<option ${egg.status === s ? "selected" : ""}>${s}</option>`).join("")}</select></label>
       <label class="field"><span>Gender</span><select id="eg_gender">${["", "Hen", "Rooster"].map(g => `<option value="${g}" ${(egg.gender || "") === g ? "selected" : ""}>${g || "Unknown"}</option>`).join("")}</select></label>
+      ${showResolvedDate ? `<label class="field"><span>Date</span><input type="date" id="eg_resolved_date" value="${egg.resolved_date || todayStr()}"></label>` : ""}
     </div>
-    <div class="dim" style="font-size:11px;margin-top:6px">Gender is usually only knowable once hatched (or right at hatch for autosexing breeds) -- set it whenever you actually know it.</div>
+    <div class="dim" style="font-size:11px;margin-top:6px">Gender is usually only knowable once hatched (or right at hatch for autosexing breeds) -- set it whenever you actually know it.${showResolvedDate ? " The date is when this was actually decided -- not the clutch's start date -- so monthly/yearly hatching stats land in the right period." : ""}</div>
 
     ${bird ? `
       <div class="note-box" style="margin-top:12px">Already in the flock as <strong style="color:var(--text)">${esc(bird.name)}</strong> -- edit that bird directly from the Flock tab for anything beyond gender here.</div>
@@ -9990,7 +10015,9 @@ function wireHatchEggModal(egg, hatch) {
   document.getElementById("saveHatchEgg").addEventListener("click", async () => {
     const status = document.getElementById("eg_status").value;
     const gender = document.getElementById("eg_gender").value || null;
-    await localHatchEggUpdate(egg.id, { status, gender });
+    const resolvedDateEl = document.getElementById("eg_resolved_date");
+    const resolved_date = status === "Incubating" ? null : (resolvedDateEl ? resolvedDateEl.value : (egg.resolved_date || todayStr()));
+    await localHatchEggUpdate(egg.id, { status, gender, resolved_date });
     showToast("Egg updated", "update");
     closeModal();
     STATE.hatchEggs = await localGetAll("hatch_eggs", currentCoopId);
@@ -10004,8 +10031,10 @@ function wireHatchEggModal(egg, hatch) {
     const gender = document.getElementById("eg_gender").value || null;
     const type = document.getElementById("eg_type").value;
     const today = todayStr();
+    const resolvedDateEl = document.getElementById("eg_resolved_date");
+    const resolved_date = resolvedDateEl ? resolvedDateEl.value : today;
     const createdBird = await localBirdCreate({ coop_id: currentCoopId, name, breed: hatch.breed || "", type, gender, status: "Active", hatch_date: today, acquired_date: today, hatch_id: hatch.id }, { suppressUndo: true });
-    const updatedEgg = await localHatchEggUpdate(egg.id, { status, gender, bird_id: createdBird.id }, { suppressUndo: true });
+    const updatedEgg = await localHatchEggUpdate(egg.id, { status, gender, bird_id: createdBird.id, resolved_date }, { suppressUndo: true });
     pushUndoAction(`Added bird "${name}" from clutch`, [
       { resource: "birds", id: createdBird.id, before: null, after: createdBird },
       { resource: "hatch_eggs", id: egg.id, before: egg, after: updatedEgg },
@@ -10533,6 +10562,14 @@ function renderExpenses() {
         label: `${b.name ? b.name + " processed" : "Bird processed"} — ${weightLabel(weight)}`,
       });
     });
+    STATE.birds.forEach(b => {
+      if (!b.sold_date || !scopeTest(b.sold_date) || !(Number(b.sold_amount) > 0)) return;
+      valueRefRows.push({
+        kind: "sold", date: b.sold_date, sourceId: b.id,
+        amount: Number(b.sold_amount),
+        label: `${b.name ? b.name + " sold" : "Bird sold"}`,
+      });
+    });
   }
 
   // One chronological list for display. Real entries step the running balance
@@ -10604,7 +10641,7 @@ function renderExpenses() {
           // plus link icon in place of a category tile as the "this wasn't
           // added directly here" marker.
           const r = row.ref;
-          const spec = r.kind === "egg" ? BIRD_TYPE_ICONS.layer : BIRD_TYPE_ICONS.meat;
+          const spec = r.kind === "egg" ? BIRD_TYPE_ICONS.layer : r.kind === "sold" ? { emoji: "💵", from: "#D4A017", to: "#A67C0A" } : BIRD_TYPE_ICONS.meat;
           return `
         <div class="list-card expense-row value-ref-row" data-open-ref="${r.kind}:${esc(r.sourceId)}" style="cursor:pointer">
           <div class="value-ref-badge" title="Read-only -- edit this at the source">🔗</div>
@@ -10680,7 +10717,7 @@ function renderExpenses() {
     if (kind === "egg") {
       const egg = STATE.eggs.find(e => e.id === id);
       if (egg) openEggModal(egg);
-    } else if (kind === "meat") {
+    } else if (kind === "meat" || kind === "sold") {
       const bird = STATE.birds.find(b => b.id === id);
       if (bird) showBirdForm(bird);
     }

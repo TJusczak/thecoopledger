@@ -98,13 +98,12 @@ const ok = (cond, msg) => { assert.ok(cond, msg); passed++; };
   globalThis.spendBetween = () => 0;
   globalThis.netBetween = () => 0;
 
-  const s = { active: 6, layers: 6, meatActive: 0, lossesThisMonth: 0, processedThisMonth: 0, incomeMonth: 42.5, eggsThisMonth: 6, eggTotalValueMonth: 2.4, weightThisMonth: 0, meatTotalValueMonth: 0, thisMonth: 30, netMonth: 12.5 };
-  const ys = { chicksHatched: 3, hatchLoss: 1, hatchClear: 0, hatchQuit: 0, hatchFailed: 1 };
+  const s = { active: 6, layers: 6, meatActive: 0, lossesThisMonth: 0, processedThisMonth: 0, incomeMonth: 42.5, eggsThisMonth: 6, eggTotalValueMonth: 2.4, weightThisMonth: 0, meatTotalValueMonth: 0, thisMonth: 30, netMonth: 12.5, chicksHatchedMonth: 3, hatchLossMonth: 1, hatchClearMonth: 0, hatchQuitMonth: 0, hatchFailedMonth: 1 };
   const tr = { flockW: [3, 3, 4, 4, 5] };
-  const fn = new Function("s", "ys", "currentYear", "selectedMonthKey", "tr", fnBody);
+  const fn = new Function("s", "selectedMonthKey", "tr", fnBody);
   let html;
-  try { html = fn(s, ys, "2026", "2026-08", tr); } catch (err) { assert.fail(`Flock panel with hatching subhead threw: ${err.message}`); }
-  ok(html.includes("Hatching (2026)"), "hatching subhead should be present and year-labeled");
+  try { html = fn(s, "2026-08", tr); } catch (err) { assert.fail(`Flock panel with hatching subhead threw: ${err.message}`); }
+  ok(html.includes("Hatching"), "hatching subhead should be present");
   ok(html.includes("Chicks hatched"), "hatching row labels should be present");
   ok(!html.includes("undefined"), "rendered Flock panel HTML should never contain the literal string 'undefined'");
 }

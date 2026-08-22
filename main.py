@@ -58,7 +58,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.07.13-243"
+SERVER_VERSION = "2026.07.13-245"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
@@ -190,7 +190,12 @@ SCHEMA = {
         # tracked_externally marks one as "handled" without a real flock
         # record (kept separate from bird_id so a null bird_id still means
         # "still needs naming" rather than being ambiguous with this).
-        "coop_id": "TEXT", "hatch_id": "TEXT", "position": "REAL", "status": "TEXT", "gender": "TEXT", "bird_id": "TEXT", "tracked_externally": "REAL",
+        # resolved_date: when the outcome actually happened -- the clutch's
+        # own date_started is when it went INTO the incubator, not when any
+        # individual egg's fate was decided, so it's the only honest anchor
+        # for a month/year-scoped hatching stat. Null on older rows that
+        # predate this field.
+        "coop_id": "TEXT", "hatch_id": "TEXT", "position": "REAL", "status": "TEXT", "gender": "TEXT", "bird_id": "TEXT", "tracked_externally": "REAL", "resolved_date": "TEXT",
     },
     "activity_log": {
         # Append-only by convention (the app never updates or deletes a log entry) --
