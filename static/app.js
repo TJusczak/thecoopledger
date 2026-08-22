@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-246";
+const APP_VERSION = "2026.07.13-247";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -346,7 +346,7 @@ let expenseScope = "month"; // "month" | "year" | "all"
 // real egg/bird record directly; nothing about it is stored here or editable
 // here, so there's exactly one place these are ever created or changed.
 const SHOW_VALUE_REFS_KEY = "coopLedgerShowValueRefs";
-let showValueRefs = localStorage.getItem(SHOW_VALUE_REFS_KEY) === "1";
+let showValueRefs = localStorage.getItem(SHOW_VALUE_REFS_KEY) !== "0";
 let expenseYearKey = null;
 let expenseYearKeyTo = null; // "to" end when range mode is active
 let expenseMonthKeyTo = null; // "to" end when range mode is active
