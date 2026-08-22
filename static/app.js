@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-238";
+const APP_VERSION = "2026.07.13-239";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5997,6 +5997,11 @@ function renderYearReviewSection() {
 }
 
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** Same gold-serif convention across every dense form (bird, supply, expense)
+ * -- grouping fields into named sections instead of one long undifferentiated
+ * grid, so a form with a dozen fields reads as a handful of small decisions
+ * rather than one big one. */
+const FORM_SECTION_HEAD = "font-family:'Roboto Slab',serif;font-weight:700;font-size:12px;color:var(--gold);letter-spacing:0.3px;text-transform:uppercase;margin:16px 0 6px";
 function monthlyBuckets(items, year, valueFn) {
   const arr = new Array(12).fill(0);
   items.forEach(it => {
@@ -9142,11 +9147,6 @@ function showBirdForm(bird) {
     const showLoss = f.status === "Deceased";
     const showSold = f.status === "Sold";
     const showRetired = f.status === "Retired";
-    // Same gold-serif convention as the Settings page's section headers, just
-    // tightened for a form this dense -- grouping fields into named sections
-    // (Identity, Status & organization, Timeline, Processing, Loss) instead of
-    // one long undifferentiated list of dropdowns.
-    const bfSectionHead = "font-family:'Roboto Slab',serif;font-weight:700;font-size:12px;color:var(--gold);letter-spacing:0.3px;text-transform:uppercase;margin:16px 0 6px";
 
     const html = `
       <div class="form-head">${isEdit ? "Edit bird" : "New bird"}</div>
@@ -9194,7 +9194,7 @@ function showBirdForm(bird) {
         <label class="field"><span>Background</span><select id="f_pattern">${[["solid", "Solid tint"], ["gradient", "Gradient"], ["dots", "Dots"], ["stripes", "Stripes"]].map(([v, l]) => `<option value="${v}" ${(f.card_pattern || "solid") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
       </div>
 
-      <div style="${bfSectionHead}">Identity</div>
+      <div style="${FORM_SECTION_HEAD}">Identity</div>
       <div class="grid-form">
         <label class="field"><span>Name</span><input id="f_name" value="${esc(f.name)}" placeholder="e.g. Nugget"></label>
         <label class="field"><span>Breed</span><input id="f_breed" value="${esc(f.breed)}" placeholder="e.g. Rhode Island Red"></label>
@@ -9202,14 +9202,14 @@ function showBirdForm(bird) {
         <label class="field"><span>Gender</span><select id="f_gender">${["", "Hen", "Rooster"].map(g => `<option value="${g}" ${(f.gender || "") === g ? "selected" : ""}>${g || "Unknown"}</option>`).join("")}</select></label>
       </div>
 
-      <div style="${bfSectionHead}">Status & organization</div>
+      <div style="${FORM_SECTION_HEAD}">Status & organization</div>
       <div class="grid-form">
         <label class="field"><span>Status</span><select id="f_status">${BIRD_STATUSES.map(s => `<option ${f.status === s ? "selected" : ""}>${s}</option>`).join("")}</select></label>
         <label class="field"><span>Location</span><select id="f_location"><option value="">(unspecified)</option>${getBeddingAreas().map(a => `<option value="${esc(a)}" ${f.location === a ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></label>
         <label class="field"><span>Batch</span><input id="f_batch" value="${esc(f.batch_name || "")}" placeholder="(not in a batch)"></label>
       </div>
 
-      <div style="${bfSectionHead}">Timeline</div>
+      <div style="${FORM_SECTION_HEAD}">Timeline</div>
       <div class="grid-form">
         <label class="field"><span>Hatch date</span><input type="date" id="f_hatch" value="${f.hatch_date || ""}"></label>
         <label class="field"><span>Acquired date</span><input type="date" id="f_acquired" value="${f.acquired_date || ""}"></label>
@@ -9221,7 +9221,7 @@ function showBirdForm(bird) {
       ${!isEdit ? `<div class="dim" style="font-size:11px;margin:-8px 0 0">Logged as a Birds/Chicks expense automatically. For a group, use "Add a batch" instead so the cost splits across everyone.</div>` : ""}
 
       ${showProcessed ? `
-      <div style="${bfSectionHead}">🍗 Processing</div>
+      <div style="${FORM_SECTION_HEAD}">🍗 Processing</div>
       <div class="grid-form">
         <label class="field"><span>Harvest date</span><input type="date" id="f_hdate" value="${f.harvest_date || ""}"></label>
         ${weightEntryFieldHtml("f_weight", f.harvest_weight, "Dressed Weight")}
@@ -9230,7 +9230,7 @@ function showBirdForm(bird) {
       ` : ""}
 
       ${showLoss ? `
-      <div style="${bfSectionHead}">Loss</div>
+      <div style="${FORM_SECTION_HEAD}">Loss</div>
       <div class="grid-form">
         <label class="field"><span>Date of loss</span><input type="date" id="f_death_date" value="${f.death_date || ""}"></label>
         <label class="field"><span>Cause of loss</span><input id="f_death_cause" value="${esc(f.death_cause)}" placeholder="e.g. predator, illness"></label>
@@ -9238,14 +9238,14 @@ function showBirdForm(bird) {
       ` : ""}
 
       ${showSold ? `
-      <div style="${bfSectionHead}">Sold</div>
+      <div style="${FORM_SECTION_HEAD}">Sold</div>
       <div class="grid-form">
         <label class="field"><span>Date sold</span><input type="date" id="f_sold_date" value="${f.sold_date || ""}"></label>
       </div>
       ` : ""}
 
       ${showRetired ? `
-      <div style="${bfSectionHead}">Retired</div>
+      <div style="${FORM_SECTION_HEAD}">Retired</div>
       <div class="grid-form">
         <label class="field"><span>Date retired</span><input type="date" id="f_retired_date" value="${f.retired_date || ""}"></label>
       </div>
@@ -10561,15 +10561,21 @@ function expenseFormHtml(editing) {
       <button type="button" class="btn ${expenseFormEntryType === "expense" ? "btn-close" : "ghost"} small" id="entryTypeExpense">💸 Expense</button>
       <button type="button" class="btn ${expenseFormEntryType === "income" ? "btn-confirm" : "ghost"} small" id="entryTypeIncome">💰 Income</button>
     </div>
+
+    <div style="${FORM_SECTION_HEAD}">Details</div>
     <div class="grid-form">
       <label class="field"><span>Date</span><input type="date" id="x_date" value="${editing ? editing.date : todayStr()}"></label>
       <label class="field"><span>Category</span><select id="x_cat">${(expenseFormEntryType === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map(c => `<option ${(editing ? editing.category === c : pendingExpenseCategory === c) ? "selected" : ""}>${c}</option>`).join("")}</select></label>
+      <label class="field"><span>Description</span><input id="x_desc" placeholder="${expenseFormEntryType === "income" ? "e.g. Sold to neighbor" : "e.g. 50lb layer feed, or Heat lamp"}" value="${editing ? esc(editing.description || "") : ""}"></label>
+      ${expenseFormEntryType === "expense" ? `<label class="field"><span>Applies to</span><select id="x_for">${EXPENSE_FOR_TYPES.map(t => `<option ${editing ? (editing.for_type === t ? "selected" : "") : (t === "All Birds" ? "selected" : "")}>${t}</option>`).join("")}</select></label>` : ""}
+    </div>
+
+    <div style="${FORM_SECTION_HEAD}">Amount & Quantity</div>
+    <div class="grid-form">
       <label class="field"><span>Amount ($, total)</span><input type="number" step="0.01" id="x_amount" value="${editing ? editing.amount : ""}"></label>
       ${showQuantityFields ? `<label class="field"><span>Quantity${expenseFormEntryType === "income" ? "" : " (per bag/item)"}</span><input type="number" step="0.01" id="x_qty" placeholder="e.g. 50" value="${editing && editing.quantity != null ? displayQty(editing.quantity, editing.unit) : ""}"></label>` : ""}
       ${showQuantityFields ? `<label class="field"><span>Unit</span><select id="x_unit"><option value="">—</option>${unitOptionsHtml(editing && editing.unit)}</select></label>` : ""}
       ${showQuantityFields && !editing && expenseFormEntryType === "expense" ? `<label class="field"><span>Number of bags/items</span><input type="number" min="1" max="200" step="1" id="x_count" value="1"></label>` : ""}
-      ${expenseFormEntryType === "expense" ? `<label class="field"><span>Applies to</span><select id="x_for">${EXPENSE_FOR_TYPES.map(t => `<option ${editing ? (editing.for_type === t ? "selected" : "") : (t === "All Birds" ? "selected" : "")}>${t}</option>`).join("")}</select></label>` : ""}
-      <label class="field"><span>Description</span><input id="x_desc" placeholder="${expenseFormEntryType === "income" ? "e.g. Sold to neighbor" : "e.g. 50lb layer feed, or Heat lamp"}" value="${editing ? esc(editing.description || "") : ""}"></label>
     </div>
     ${showQuantityFields && expenseFormEntryType === "income" ? `<div class="dim" id="x_rate_display" style="font-size:12px;margin-top:4px">${saleRateLabel(editing ? editing.amount : null, editing ? editing.quantity : null, catValue)}</div>` : ""}
     <div class="note-box" style="margin-top:10px">${expenseFormEntryType === "income"
@@ -11299,10 +11305,16 @@ function renderSupplyInventory() {
 function supplyFormHtml(editingSupply) {
   return `
     <div class="form-head">${editingSupply ? "Edit supply item" : "Add a supply item"}</div>
+
+    <div style="${FORM_SECTION_HEAD}">Identity</div>
     <div class="grid-form">
       <label class="field"><span>Category</span><select id="sp_category">${[...QUANTITY_CATEGORIES].map(c => `<option ${editingSupply && editingSupply.category === c ? "selected" : ""}>${c}</option>`).join("")}</select></label>
       <label class="field"><span>Brand</span><input id="sp_brand" placeholder="e.g. Purina Layena" value="${editingSupply ? esc(editingSupply.brand || "") : ""}"></label>
       <label class="field"><span>Description</span><input id="sp_desc" placeholder="e.g. large bag, opened" value="${editingSupply ? esc(editingSupply.description || "") : ""}"></label>
+    </div>
+
+    <div style="${FORM_SECTION_HEAD}">Quantity & Cost</div>
+    <div class="grid-form">
       <label class="field"><span>Quantity (per item)</span><input type="number" step="0.01" id="sp_qty" value="${editingSupply && editingSupply.quantity != null ? displayQty(editingSupply.quantity, editingSupply.unit) : ""}"></label>
       <label class="field"><span>Unit</span><select id="sp_unit">${unitOptionsHtml(editingSupply && editingSupply.unit)}</select></label>
       <label class="field"><span>Cost for this item ${editingSupply && editingSupply.source_expense_id ? "(from its expense)" : "*"}</span><input type="number" step="0.01" min="0" id="sp_cost" value="${(() => {
@@ -11320,12 +11332,16 @@ function supplyFormHtml(editingSupply) {
         }
         return "";
       })()}" placeholder="e.g. 22.50"><span class="dim" style="font-size:11px;margin-top:4px">Required. Auto-filled from the linked expense when there is one; you can override it. Powers the feed cost per lb, cost per dozen eggs, and cost per lb of meat figures.</span></label>
-      <label class="field"><span>Status</span><select id="sp_status">${SUPPLY_STATUSES.map(s => `<option ${(editingSupply ? editingSupply.status === s : s === "Full") ? "selected" : ""}>${s}</option>`).join("")}</select></label>
-      <label class="field"><span>Date added</span><input type="date" id="sp_date" value="${editingSupply ? (editingSupply.date_added || todayStr()) : todayStr()}"></label>
-      ${editingSupply ? `<label class="field"><span>Date emptied${editingSupply.status !== "Empty" ? " (if applicable)" : ""}</span><input type="date" id="sp_date_emptied" value="${editingSupply.date_emptied || ""}"></label>` : ""}
       ${!editingSupply ? `<label class="field"><span>Number of items</span><input type="number" min="1" max="500" step="1" id="sp_count" value="1" placeholder="e.g. 3 for three separate bags"></label>` : ""}
     </div>
     ${!editingSupply ? `<div id="productPickerHost">${renderProductPickerRow([...QUANTITY_CATEGORIES][0])}</div>` : ""}
+
+    <div style="${FORM_SECTION_HEAD}">Status & Timeline</div>
+    <div class="grid-form">
+      <label class="field"><span>Status</span><select id="sp_status">${SUPPLY_STATUSES.map(s => `<option ${(editingSupply ? editingSupply.status === s : s === "Full") ? "selected" : ""}>${s}</option>`).join("")}</select></label>
+      <label class="field"><span>Date added</span><input type="date" id="sp_date" value="${editingSupply ? (editingSupply.date_added || todayStr()) : todayStr()}"></label>
+      ${editingSupply ? `<label class="field"><span>Date emptied${editingSupply.status !== "Empty" ? " (if applicable)" : ""}</span><input type="date" id="sp_date_emptied" value="${editingSupply.date_emptied || ""}"></label>` : ""}
+    </div>
     ${editingSupply ? `
     <label class="field" style="display:flex;flex-direction:row;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="sp_opened" ${editingSupply.opened_at ? "checked" : ""} style="width:auto"><span>Opened -- won't group with sealed spares even at Full</span></label>
     <label class="field" id="sp_opened_date_field" style="margin-top:8px;${editingSupply.opened_at ? "" : "display:none"}"><span>Date opened</span><input type="date" id="sp_opened_at" value="${editingSupply.opened_at || todayStr()}"><span class="dim" style="font-size:11px;margin-top:4px">Feed usage is drawn as a straight line from this date (0 used) to the emptied date (fully used). Correcting an opened date fixes the curve and the daily-average estimate.</span></label>
