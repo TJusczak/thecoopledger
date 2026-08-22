@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-239";
+const APP_VERSION = "2026.07.13-240";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5460,6 +5460,130 @@ function openCostBreakdownModal(kind) {
  * now -- "low" means the best (fullest) currently-active supply item for
  * that category is down to 1/4 or Empty, i.e. there's no fuller backup
  * bag waiting. A near-empty bag with a full one behind it isn't urgent. */
+/** Every dated thing that's happened (past) or is coming up (future),
+ * pulled from every table that has one -- the data behind "look back and
+ * see what happened on any given day." Each event is { date, icon, title,
+ * detail, tone }. Kept as two separate lists rather than one blended,
+ * sorted list -- "already happened" and "hasn't happened yet" read as
+ * different kinds of information, and mixing them would make the list
+ * harder to scan, not easier. Past sorts newest first; future sorts
+ * soonest first, since that's the order each is actually useful in. */
+function allCalendarEvents() {
+  const past = [], future = [];
+  const todayKey = todayStr();
+
+  STATE.birds.forEach(b => {
+    const label = b.name || "(unnamed bird)";
+    const typeIcon = BIRD_TYPE_ICONS[b.type === "Meat" ? "meat" : "layer"].emoji;
+    if (b.acquired_date) past.push({ date: b.acquired_date, icon: typeIcon, title: `${label} acquired`, tone: "sage" });
+    else if (b.hatch_date) past.push({ date: b.hatch_date, icon: "🐣", title: `${label} hatched`, tone: "sage" });
+    if (b.harvest_date) past.push({ date: b.harvest_date, icon: "🍗", title: `${label} processed`, detail: b.harvest_weight ? weightLabel(b.harvest_weight) : "", tone: "rust" });
+    if (b.death_date) past.push({ date: b.death_date, icon: "💔", title: `${label} lost`, detail: b.death_cause || "", tone: "rust" });
+    if (b.sold_date) past.push({ date: b.sold_date, icon: "💵", title: `${label} sold`, tone: "gold" });
+    if (b.retired_date) past.push({ date: b.retired_date, icon: "🏡", title: `${label} retired`, tone: "slate" });
+    if (b.status === "Active" && b.target_harvest_date && b.target_harvest_date >= todayKey) {
+      future.push({ date: b.target_harvest_date, icon: "🎯", title: `${label} target harvest`, tone: "gold" });
+    }
+  });
+
+  STATE.eggs.forEach(e => {
+    if (e.date) past.push({ date: e.date, icon: "🥚", title: `${Math.round(Number(e.count) || 0)} egg${Math.round(Number(e.count) || 0) !== 1 ? "s" : ""} collected`, tone: "sage" });
+  });
+
+  STATE.expenses.forEach(x => {
+    if (x.date) past.push({ date: x.date, icon: x.entry_type === "income" ? "💰" : "💸", title: `${x.entry_type === "income" ? "Income" : "Expense"}: ${x.category}`, detail: fmtMoney(x.amount), tone: x.entry_type === "income" ? "sage" : "rust" });
+  });
+
+  STATE.supplies.forEach(s => {
+    if (s.opened_at) past.push({ date: s.opened_at, icon: "📦", title: `${s.category} opened`, detail: s.brand || "", tone: "slate" });
+    if (s.date_emptied) past.push({ date: s.date_emptied, icon: "🗑️", title: `${s.category} emptied`, detail: s.brand || "", tone: "slate" });
+  });
+
+  STATE.bedding.forEach(bd => {
+    if (bd.date) past.push({ date: bd.date, icon: "🧹", title: `${bd.area || "Bedding"}: ${bd.entry_type || "logged"}`, tone: "gold" });
+  });
+
+  STATE.hatches.forEach(h => {
+    if (h.date_started) past.push({ date: h.date_started, icon: "🐣", title: `Hatch started: ${h.breed || "eggs"}`, detail: h.egg_count ? `${Math.round(h.egg_count)} eggs set` : "", tone: "gold" });
+  });
+
+  STATE.notes.forEach(n => {
+    if (n.created_date) past.push({ date: n.created_date, icon: "📝", title: n.title || "Note", tone: "slate" });
+  });
+
+  // Future: bedding clean-out due, using the same threshold math that
+  // already drives the dashboard's freshness dots -- not a new calculation,
+  // just this one projected forward into an actual calendar date.
+  getBeddingAreas().forEach(area => {
+    const bs = beddingStatsFor(area);
+    const t = getBeddingThresholds(area);
+    if (bs.lastCleanout) {
+      const daysUntil = t.danger - daysSince(bs.lastCleanout.date);
+      future.push({ date: addDays(todayKey, daysUntil), icon: "🧹", title: `${area}: clean-out due`, tone: daysUntil < 0 ? "rust" : "gold" });
+    }
+  });
+
+  past.sort((a, b) => b.date.localeCompare(a.date));
+  future.sort((a, b) => a.date.localeCompare(b.date));
+  return { past, future };
+}
+
+/** One calendar event as a compact row -- icon, title, optional detail,
+ * tone-colored left edge matching the same rust/sage/gold/slate language
+ * used everywhere else in the app. */
+function calendarEventRow(e) {
+  return `<div class="cal-event-row tone-${e.tone || "slate"}">
+    <span class="cal-event-icon">${e.icon}</span>
+    <span class="cal-event-body">
+      <span class="cal-event-title">${esc(e.title)}</span>
+      ${e.detail ? `<span class="cal-event-detail dim">${esc(e.detail)}</span>` : ""}
+    </span>
+  </div>`;
+}
+/** Past events for one month, grouped by exact day (newest day first) --
+ * a busy day's several events sit under one date header instead of
+ * repeating the date on every row. */
+function calendarHistoryForMonth(monthKey) {
+  const { past } = allCalendarEvents();
+  const byDate = new Map();
+  past.filter(e => monthKeyOf(e.date) === monthKey).forEach(e => {
+    if (!byDate.has(e.date)) byDate.set(e.date, []);
+    byDate.get(e.date).push(e);
+  });
+  const dates = [...byDate.keys()].sort().reverse();
+  if (!dates.length) return `<div class="dim" style="font-size:12px;padding:10px 0">Nothing logged in ${esc(monthLabelOf(monthKey))}.</div>`;
+  return dates.map(date => `
+    <div class="cal-day-group">
+      <div class="cal-day-header">${fmtDate(date)}</div>
+      ${byDate.get(date).map(calendarEventRow).join("")}
+    </div>`).join("");
+}
+function calendarModalHtml(selectedMonth) {
+  const { future } = allCalendarEvents();
+  const months = allCoopMonths();
+  return `
+    <div class="form-head">📅 Calendar</div>
+    <div class="dim" style="font-size:12px;margin-bottom:14px">Everything dated, in one place -- what happened, and what's coming up.</div>
+
+    <div style="${FORM_SECTION_HEAD}">Coming up</div>
+    ${future.length ? future.map(calendarEventRow).join("") : `<div class="dim" style="font-size:12px;padding:6px 0">Nothing on the horizon right now.</div>`}
+
+    <div class="toolbar" style="margin-top:8px">
+      <div style="${FORM_SECTION_HEAD};margin:0">History</div>
+      <select id="calMonthSelect" style="max-width:170px">${monthOptionsGroupedByYear(months, selectedMonth)}</select>
+    </div>
+    <div id="calHistoryList" style="max-height:400px;overflow-y:auto">${calendarHistoryForMonth(selectedMonth)}</div>
+  `;
+}
+function openCalendarModal() {
+  let selectedMonth = monthKeyOf(todayStr());
+  openModal(calendarModalHtml(selectedMonth));
+  document.getElementById("calMonthSelect").addEventListener("change", (e) => {
+    selectedMonth = e.target.value;
+    document.getElementById("calHistoryList").innerHTML = calendarHistoryForMonth(selectedMonth);
+  });
+}
+
 function lowSupplyCategories(supplies) {
   const STATUS_RANK = { "Full": 4, "3/4": 3, "1/2": 2, "1/4": 1, "Empty": 0 };
   const TONE_FOR_RANK = { 2: "gold", 1: "rust", 0: "danger" };
@@ -6758,15 +6882,16 @@ function renderCoopOverview() {
         const low = allLow.filter(l => !muted.includes(l.category));
         const mutedActive = allLow.filter(l => muted.includes(l.category));
         const activeClutches = STATE.hatches.filter(h => h.status !== "Complete").sort((a, b) => a.date_started.localeCompare(b.date_started));
-        if (!low.length && !activeClutches.length && !mutedActive.length) return "";
-        const STATUS_TEXT = { "1/2": "1/2 left", "1/4": "1/4 left", "Empty": "out" };
         const anyToday = activeClutches.some(h => hatchNextEventInfo(h.date_started).isToday);
         const anyOverdue = activeClutches.some(h => hatchNextEventInfo(h.date_started).overdue);
         const anySevereSupply = low.some(l => l.tone === "danger");
         const borderColor = (anySevereSupply || anyOverdue) ? "var(--danger)" : (low.length || anyToday) ? "var(--gold)" : "var(--border)";
         const sectionHeaderStyle = "font-size:13px;border-bottom:2px dotted var(--border);padding-bottom:4px;margin-top:12px";
         return `<div class="card" style="border-color:${borderColor};margin-top:16px">
-          <div class="card-title">🔔 Alerts</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <div class="card-title" style="margin:0">🔔 Alerts</div>
+            <button class="btn ghost small" id="openCalendarBtn">📅 Calendar</button>
+          </div>
           ${low.length ? `
           <div class="flock-section-header" style="${sectionHeaderStyle};margin-top:0">⚠️ Running low</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
@@ -6942,6 +7067,8 @@ function renderCoopOverview() {
     showToast(`${category} alerts muted`, "update");
     renderCoopOverview();
   }));
+  const openCalendarBtn = document.getElementById("openCalendarBtn");
+  if (openCalendarBtn) openCalendarBtn.addEventListener("click", openCalendarModal);
   wireStatPanelGoto(el);
   document.getElementById("dashOverviewMonthSelect").addEventListener("change", (e) => {
     dashSelectedMonth = e.target.value;
