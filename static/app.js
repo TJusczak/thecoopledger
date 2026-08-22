@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-240";
+const APP_VERSION = "2026.07.13-242";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -3930,6 +3930,12 @@ function renderAllTimeStatsSection() {
           statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layer feed used`, `${displayWeight(usage.layerFeedLbs)} ${getWeightUnit()}`)
           + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat feed used`, `${displayWeight(usage.meatFeedLbs)} ${getWeightUnit()}`)
           + statPanelRow("Bedding used", `${usage.beddingCuFt.toFixed(1)} cu ft`)
+        )
+        + statPanelSubhead("🐣 Hatching, All Time")
+        + statPanelRows(
+          statPanelRow("Chicks hatched", s.chicksHatchedAll)
+          + statPanelRow("Lost from hatching", s.hatchLossAll, s.hatchLossAll > 0 ? "rust" : "")
+          + statPanelRow("Clear · Quit · Failed", `${s.hatchClearAll} · ${s.hatchQuitAll} · ${s.hatchFailedAll}`)
         ), "flock"
       )}
       ${statPanel("gold", "💲", "Value",
@@ -3947,13 +3953,6 @@ function renderAllTimeStatsSection() {
           statPanelHero("Net", fmtMoney(s.netAll), { valueTone: s.netAll >= 0 ? "sage" : "rust" })
         ), "expenses"
       )}
-      ${STATE.hatches.length > 0 ? statPanel("gold", "🐣", "Hatching",
-        statPanelRows(
-          statPanelRow("Chicks hatched", s.chicksHatchedAll)
-          + statPanelRow("Lost from hatching", s.hatchLossAll, s.hatchLossAll > 0 ? "rust" : "")
-          + statPanelRow("Clear · Quit · Failed", `${s.hatchClearAll} · ${s.hatchQuitAll} · ${s.hatchFailedAll}`)
-        )
-      ) : ""}
     </div>
     ${(() => {
       // Consumption-based feed cost: layer feed (+ supplements) eaten -> per
@@ -6004,6 +6003,12 @@ function renderYearReviewSection() {
           statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layer feed used`, `${displayWeight(s.layerFeedLbs)} ${getWeightUnit()}`)
           + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat feed used`, `${displayWeight(s.meatFeedLbs)} ${getWeightUnit()}`)
           + statPanelRow("Bedding used", `${s.beddingCuFt.toFixed(1)} cu ft`)
+        )
+        + statPanelSubhead("🐣 Hatching")
+        + statPanelRows(
+          statPanelRow("Chicks hatched", s.chicksHatched)
+          + statPanelRow("Lost from hatching", s.hatchLoss, s.hatchLoss > 0 ? "rust" : "")
+          + statPanelRow("Clear · Quit · Failed", `${s.hatchClear} · ${s.hatchQuit} · ${s.hatchFailed}`)
         ), "flock"
       )}
       ${statPanel("gold", "💲", "Value",
@@ -6021,13 +6026,6 @@ function renderYearReviewSection() {
           statPanelHero(`Net for ${selectedYear}`, fmtMoney(s.net), { chip: yoyAbs(s.net, sp && sp.net), valueTone: s.net >= 0 ? "sage" : "rust" })
         ), "expenses"
       )}
-      ${(s.chicksHatched + s.hatchLoss) > 0 ? statPanel("gold", "🐣", "Hatching",
-        statPanelRows(
-          statPanelRow("Chicks hatched", s.chicksHatched)
-          + statPanelRow("Lost from hatching", s.hatchLoss, s.hatchLoss > 0 ? "rust" : "")
-          + statPanelRow("Clear · Quit · Failed", `${s.hatchClear} · ${s.hatchQuit} · ${s.hatchFailed}`)
-        )
-      ) : ""}
     </div>
 
     ${(() => {
@@ -6819,6 +6817,18 @@ function renderCoopOverview() {
             statPanelRow(`${BIRD_TYPE_ICONS.layer.emoji} Layer feed used`, `${displayWeight(feedTotalForMonth(selectedMonthKey, "layer"))} ${getWeightUnit()}`)
             + statPanelRow(`${BIRD_TYPE_ICONS.meat.emoji} Meat feed used`, `${displayWeight(feedTotalForMonth(selectedMonthKey, "meat"))} ${getWeightUnit()}`)
             + statPanelRow("Bedding used", `${beddingTotalForMonth(selectedMonthKey).toFixed(1)} cu ft`)
+          )
+          // Hatching happens on its own schedule (a clutch takes weeks to
+          // resolve), not something a calendar month can honestly bound the
+          // way Losses/Processed can -- so this reads "this year" rather
+          // than pretending to be scoped to whatever month is selected
+          // above. Always shown, even at zero, rather than only appearing
+          // once you've hatched something -- the point is confirming the
+          // tracking is there.
+          + statPanelSubhead(`🐣 Hatching (${currentYear})`) + statPanelRows(
+            statPanelRow("Chicks hatched", ys.chicksHatched)
+            + statPanelRow("Lost from hatching", ys.hatchLoss, ys.hatchLoss > 0 ? "rust" : "")
+            + statPanelRow("Clear · Quit · Failed", `${ys.hatchClear} · ${ys.hatchQuit} · ${ys.hatchFailed}`)
           );
           const valueCompare = monthOverMonthCompare(selectedMonthKey, rawValueBetween);
           const spendCompare = monthOverMonthCompare(selectedMonthKey, spendBetween);
@@ -6886,6 +6896,7 @@ function renderCoopOverview() {
         const anyOverdue = activeClutches.some(h => hatchNextEventInfo(h.date_started).overdue);
         const anySevereSupply = low.some(l => l.tone === "danger");
         const borderColor = (anySevereSupply || anyOverdue) ? "var(--danger)" : (low.length || anyToday) ? "var(--gold)" : "var(--border)";
+        const STATUS_TEXT = { "1/2": "1/2 left", "1/4": "1/4 left", "Empty": "out" };
         const sectionHeaderStyle = "font-size:13px;border-bottom:2px dotted var(--border);padding-bottom:4px;margin-top:12px";
         return `<div class="card" style="border-color:${borderColor};margin-top:16px">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
@@ -9245,6 +9256,7 @@ function showBirdForm(bird) {
       death_date: val("f_death_date") ?? formState.death_date,
       death_cause: val("f_death_cause") ?? formState.death_cause,
       sold_date: val("f_sold_date") ?? formState.sold_date,
+      sold_amount: val("f_sold_amount") != null ? (val("f_sold_amount") === "" ? null : Number(val("f_sold_amount"))) : formState.sold_amount,
       retired_date: val("f_retired_date") ?? formState.retired_date,
       card_color: val("f_color") ?? formState.card_color,
       border_style: val("f_border_style") ?? formState.border_style,
@@ -9368,7 +9380,9 @@ function showBirdForm(bird) {
       <div style="${FORM_SECTION_HEAD}">Sold</div>
       <div class="grid-form">
         <label class="field"><span>Date sold</span><input type="date" id="f_sold_date" value="${f.sold_date || ""}"></label>
+        <label class="field"><span>Sold for${f.source_income_id ? " (from its income entry)" : ""}</span><input type="number" step="0.01" min="0" id="f_sold_amount" value="${f.sold_amount != null ? f.sold_amount : ""}" placeholder="e.g. 25.00"></label>
       </div>
+      ${!f.source_income_id ? `<div class="dim" style="font-size:11px;margin:-8px 0 0">Logged as a Bird Sale income entry automatically -- counted in Value Produced and the income charts, same as an egg or meat sale.</div>` : ""}
       ` : ""}
 
       ${showRetired ? `
@@ -9536,10 +9550,25 @@ function showBirdForm(bird) {
         notes: current.notes,
         acquisition_cost: current.acquisition_cost,
         source_expense_id: isEdit ? bird.source_expense_id : null,
+        sold_amount: current.sold_amount,
+        source_income_id: isEdit ? bird.source_income_id : null,
       };
       if (!payload.name) return;
       let birdId = isEdit ? bird.id : null;
       if (isEdit) {
+        // A sold amount entered for the first time (the bird didn't already
+        // have a linked income entry) logs its own Bird Sale income
+        // automatically -- the sale side of the same idea as acquisition
+        // cost logging a Birds/Chicks expense. Already having one means
+        // this is just a later correction to the number, not a new sale,
+        // so it doesn't spawn a second entry.
+        if (payload.sold_amount > 0 && !bird.source_income_id) {
+          const income = await localExpenseCreate({
+            coop_id: currentCoopId, date: payload.sold_date || todayStr(), category: "Bird Sale",
+            description: payload.name, amount: payload.sold_amount, entry_type: "income",
+          }, { suppressUndo: true });
+          payload.source_income_id = income.id;
+        }
         await localBirdUpdate(birdId, payload);
       } else {
         // A price entered on a brand-new bird logs its own Birds/Chicks
