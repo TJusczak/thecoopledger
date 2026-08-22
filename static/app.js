@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-247";
+const APP_VERSION = "2026.07.13-248";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -3793,6 +3793,7 @@ function renderAppSection() {
         <label class="switch-row"><span>${cat}</span><input type="checkbox" class="alert-cat-toggle" data-cat="${esc(cat)}" ${mutedCats.includes(cat) ? "" : "checked"}></label>
         `).join("")}
       </div>
+      ${mutedCats.length > 0 ? `<button class="btn ghost small" id="resetAllMutedAlerts" style="margin-top:12px">Reset all -- clear every muted category</button>` : ""}
     </div>
     ` : `<div class="card" style="margin-top:16px"><div class="dim" style="font-size:12px">Units and default values are per-coop -- pick or create a coop to set them.</div></div>`}
 
@@ -3859,7 +3860,17 @@ function renderAppSection() {
     await localCoopUpdate(currentCoopId, { settings: JSON.stringify(settings) });
     await loadCoops();
     showToast(`${cb.dataset.cat} alerts ${cb.checked ? "turned on" : "muted"}`, "update");
+    renderAppSection();
   }));
+  const resetMutedBtn = document.getElementById("resetAllMutedAlerts");
+  if (resetMutedBtn) resetMutedBtn.addEventListener("click", async () => {
+    const settings = getCoopSettings();
+    settings.muted_alert_categories = [];
+    await localCoopUpdate(currentCoopId, { settings: JSON.stringify(settings) });
+    await loadCoops();
+    showToast("All supply alerts reset", "update");
+    renderAppSection();
+  });
   document.getElementById("unitLbBtn").addEventListener("click", async () => {
     const settings = getCoopSettings();
     settings.weight_unit = "lb";
@@ -9666,7 +9677,9 @@ function showBirdForm(bird) {
         notes: current.notes,
         acquisition_cost: current.acquisition_cost,
         source_expense_id: isEdit ? bird.source_expense_id : null,
+        sold_date: current.sold_date,
         sold_amount: current.sold_amount,
+        retired_date: current.retired_date,
       };
       if (!payload.name) return;
       let birdId = isEdit ? bird.id : null;
