@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-245";
+const APP_VERSION = "2026.07.13-246";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5496,7 +5496,7 @@ function allCalendarEvents() {
     if (b.sold_date) past.push({ date: b.sold_date, icon: "💵", title: `${label} sold`, tone: "gold", kind: "sold", groupKey: `sold:${batchKey}`, groupLabel: "birds sold", ...src });
     if (b.retired_date) past.push({ date: b.retired_date, icon: "🏡", title: `${label} retired`, tone: "slate", kind: "retired", groupKey: `retired:${batchKey}`, groupLabel: "birds retired", ...src });
     if (b.status === "Active" && b.target_harvest_date && b.target_harvest_date >= todayKey) {
-      future.push({ date: b.target_harvest_date, icon: "🎯", title: `${label} target harvest`, detail: `${fmtDate(b.target_harvest_date)} · ${relativeDayLabel(b.target_harvest_date, todayKey)}`, tone: "gold", kind: "target", groupKey: `target:${batchKey}`, groupLabel: `birds with this target harvest date${b.batch_name ? ` (${b.batch_name})` : ""}`, ...src });
+      future.push({ date: b.target_harvest_date, icon: "🎯", title: `${label} target harvest`, detail: relativeDayLabel(b.target_harvest_date, todayKey), tone: "gold", kind: "target", groupKey: `target:${batchKey}`, groupLabel: `birds with this target harvest date${b.batch_name ? ` (${b.batch_name})` : ""}`, ...src });
     }
   });
 
@@ -5536,7 +5536,7 @@ function allCalendarEvents() {
     if (bs.lastCleanout) {
       const daysUntil = t.danger - daysSince(bs.lastCleanout.date);
       const dueDate = addDays(todayKey, daysUntil);
-      future.push({ date: dueDate, icon: "🧹", title: `${area}: clean-out due`, detail: `${fmtDate(dueDate)} · ${relativeDayLabel(dueDate, todayKey)}`, tone: daysUntil < 0 ? "rust" : "gold", kind: "cleanout-due", groupKey: `cleanout-due:${area}`, groupLabel: `${area}: clean-out due` });
+      future.push({ date: dueDate, icon: "🧹", title: `${area}: clean-out due`, detail: relativeDayLabel(dueDate, todayKey), tone: daysUntil < 0 ? "rust" : "gold", kind: "cleanout-due", groupKey: `cleanout-due:${area}`, groupLabel: `${area}: clean-out due` });
     }
   });
 
@@ -5614,20 +5614,29 @@ function calendarEventsHtml(events) {
     </details>`;
   }).join("");
 }
-function calendarHistoryForMonth(monthKey) {
-  const { past } = allCalendarEvents();
+/** Groups a flat list of events by their exact date, each date rendered as
+ * a bold header above its events -- the same treatment for History (newest
+ * date first) and Coming Up (soonest date first), so "when is this"
+ * always gets a header you can't miss, not text tucked inside a row. */
+function calendarGroupedByDateHtml(events, { reverse = false, emptyMessage } = {}) {
+  if (!events.length) return `<div class="dim" style="font-size:12px;padding:10px 0">${esc(emptyMessage)}</div>`;
   const byDate = new Map();
-  past.filter(e => monthKeyOf(e.date) === monthKey).forEach(e => {
+  events.forEach(e => {
     if (!byDate.has(e.date)) byDate.set(e.date, []);
     byDate.get(e.date).push(e);
   });
-  const dates = [...byDate.keys()].sort().reverse();
-  if (!dates.length) return `<div class="dim" style="font-size:12px;padding:10px 0">Nothing logged in ${esc(monthLabelOf(monthKey))}.</div>`;
+  let dates = [...byDate.keys()].sort();
+  if (reverse) dates.reverse();
   return dates.map(date => `
     <div class="cal-day-group">
       <div class="cal-day-header">${fmtDate(date)}</div>
       ${calendarEventsHtml(byDate.get(date))}
     </div>`).join("");
+}
+function calendarHistoryForMonth(monthKey) {
+  const { past } = allCalendarEvents();
+  const monthEvents = past.filter(e => monthKeyOf(e.date) === monthKey);
+  return calendarGroupedByDateHtml(monthEvents, { reverse: true, emptyMessage: `Nothing logged in ${monthLabelOf(monthKey)}.` });
 }
 function calendarModalHtml(selectedMonth) {
   const { future } = allCalendarEvents();
@@ -5637,7 +5646,7 @@ function calendarModalHtml(selectedMonth) {
     <div class="dim" style="font-size:12px;margin-bottom:14px">Everything dated, in one place -- what happened, and what's coming up.</div>
 
     <div style="${FORM_SECTION_HEAD}">Coming up</div>
-    ${future.length ? calendarEventsHtml(future) : `<div class="dim" style="font-size:12px;padding:6px 0">Nothing on the horizon right now.</div>`}
+    ${calendarGroupedByDateHtml(future, { reverse: false, emptyMessage: "Nothing on the horizon right now." })}
 
     <div class="toolbar" style="margin-top:8px">
       <div style="${FORM_SECTION_HEAD};margin:0">History</div>
