@@ -835,9 +835,20 @@ tr:hover td { background: var(--surface-raised); }
 .cal-event-row.tone-sage { border-left-color: var(--sage); }
 .cal-event-row.tone-gold { border-left-color: var(--gold); }
 .cal-event-icon { flex: 0 0 auto; font-size: 15px; line-height: 1.3; }
-.cal-event-body { display: flex; flex-direction: column; min-width: 0; }
+.cal-event-body { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .cal-event-title { font-size: 13px; color: var(--text); }
 .cal-event-detail { font-size: 11px; margin-top: 1px; }
+/* A row with a real record behind it invites a tap -- subtle hover/press
+   feedback plus a small trailing arrow, matching how tappable cards read
+   elsewhere in the app. A projected event (no source record) never gets
+   this class, so it never looks tappable when there's nothing to open. */
+.cal-event-clickable { cursor: pointer; -webkit-tap-highlight-color: transparent; border-radius: 4px; transition: background 0.12s ease; }
+.cal-event-clickable:hover, .cal-event-clickable:focus-visible { background: color-mix(in srgb, var(--slate) 10%, transparent); outline: none; }
+.cal-event-clickable:active { background: color-mix(in srgb, var(--slate) 16%, transparent); }
+.cal-event-goto { flex: 0 0 auto; font-size: 15px; align-self: center; opacity: 0.5; }
+/* A grouped batch's individual rows sit indented under its <summary>, same
+   visual relationship as the cost-breakdown modal's batch/bird nesting. */
+.cal-event-list-nested { padding: 4px 0 6px 18px; }
 .cal-day-group { margin-bottom: 14px; }
 .cal-day-header {
   font-family: 'Roboto Slab', serif; font-weight: 700; font-size: 11px; color: var(--text-dim);

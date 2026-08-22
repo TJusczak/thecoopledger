@@ -2,7 +2,7 @@
 // Bump this with any meaningful change and check it in Settings -> App
 // -- if this number doesn't match what you expect after a redeploy, the
 // browser/CDN/service worker is serving stale files, not a code bug.
-const APP_VERSION = "2026.07.13-242";
+const APP_VERSION = "2026.07.13-243";
 // Substituted at build time by each pipeline (see docker-publish.yml and
 // the "Choosing a release channel" section of the README) -- left as the
 // literal placeholder if something builds from source without going
@@ -5474,51 +5474,58 @@ function allCalendarEvents() {
   STATE.birds.forEach(b => {
     const label = b.name || "(unnamed bird)";
     const typeIcon = BIRD_TYPE_ICONS[b.type === "Meat" ? "meat" : "layer"].emoji;
-    if (b.acquired_date) past.push({ date: b.acquired_date, icon: typeIcon, title: `${label} acquired`, tone: "sage" });
-    else if (b.hatch_date) past.push({ date: b.hatch_date, icon: "🐣", title: `${label} hatched`, tone: "sage" });
-    if (b.harvest_date) past.push({ date: b.harvest_date, icon: "🍗", title: `${label} processed`, detail: b.harvest_weight ? weightLabel(b.harvest_weight) : "", tone: "rust" });
-    if (b.death_date) past.push({ date: b.death_date, icon: "💔", title: `${label} lost`, detail: b.death_cause || "", tone: "rust" });
-    if (b.sold_date) past.push({ date: b.sold_date, icon: "💵", title: `${label} sold`, tone: "gold" });
-    if (b.retired_date) past.push({ date: b.retired_date, icon: "🏡", title: `${label} retired`, tone: "slate" });
+    // Batched birds share a groupKey (their batch name); an individually
+    // added bird gets a key unique to itself, so it never collapses into a
+    // group of its own -- there's nothing to group it WITH.
+    const batchKey = b.batch_name ? `batch:${b.batch_name}` : `individual:${b.id}`;
+    const src = { sourceType: "bird", sourceId: b.id };
+    if (b.acquired_date) past.push({ date: b.acquired_date, icon: typeIcon, title: `${label} acquired`, tone: "sage", kind: "acquired", groupKey: `acquired:${batchKey}`, groupLabel: `birds acquired${b.batch_name ? ` (${b.batch_name})` : ""}`, ...src });
+    else if (b.hatch_date) past.push({ date: b.hatch_date, icon: "🐣", title: `${label} hatched`, tone: "sage", kind: "hatched", groupKey: `hatched:${batchKey}`, groupLabel: "birds hatched", ...src });
+    if (b.harvest_date) past.push({ date: b.harvest_date, icon: "🍗", title: `${label} processed`, detail: b.harvest_weight ? weightLabel(b.harvest_weight) : "", tone: "rust", kind: "processed", groupKey: `processed:${batchKey}`, groupLabel: `birds processed${b.batch_name ? ` (${b.batch_name})` : ""}`, ...src });
+    if (b.death_date) past.push({ date: b.death_date, icon: "💔", title: `${label} lost`, detail: b.death_cause || "", tone: "rust", kind: "lost", groupKey: `lost:${batchKey}`, groupLabel: "birds lost", ...src });
+    if (b.sold_date) past.push({ date: b.sold_date, icon: "💵", title: `${label} sold`, tone: "gold", kind: "sold", groupKey: `sold:${batchKey}`, groupLabel: "birds sold", ...src });
+    if (b.retired_date) past.push({ date: b.retired_date, icon: "🏡", title: `${label} retired`, tone: "slate", kind: "retired", groupKey: `retired:${batchKey}`, groupLabel: "birds retired", ...src });
     if (b.status === "Active" && b.target_harvest_date && b.target_harvest_date >= todayKey) {
-      future.push({ date: b.target_harvest_date, icon: "🎯", title: `${label} target harvest`, tone: "gold" });
+      future.push({ date: b.target_harvest_date, icon: "🎯", title: `${label} target harvest`, tone: "gold", kind: "target", groupKey: `target:${batchKey}`, groupLabel: `birds with this target harvest date${b.batch_name ? ` (${b.batch_name})` : ""}`, ...src });
     }
   });
 
   STATE.eggs.forEach(e => {
-    if (e.date) past.push({ date: e.date, icon: "🥚", title: `${Math.round(Number(e.count) || 0)} egg${Math.round(Number(e.count) || 0) !== 1 ? "s" : ""} collected`, tone: "sage" });
+    if (e.date) past.push({ date: e.date, icon: "🥚", title: `${Math.round(Number(e.count) || 0)} egg${Math.round(Number(e.count) || 0) !== 1 ? "s" : ""} collected`, tone: "sage", kind: "eggs", groupKey: "eggs", groupLabel: "egg collections", sourceType: "egg", sourceId: e.id });
   });
 
   STATE.expenses.forEach(x => {
-    if (x.date) past.push({ date: x.date, icon: x.entry_type === "income" ? "💰" : "💸", title: `${x.entry_type === "income" ? "Income" : "Expense"}: ${x.category}`, detail: fmtMoney(x.amount), tone: x.entry_type === "income" ? "sage" : "rust" });
+    const isIncome = x.entry_type === "income";
+    past.push({ date: x.date, icon: isIncome ? "💰" : "💸", title: `${isIncome ? "Income" : "Expense"}: ${x.category}`, detail: fmtMoney(x.amount), tone: isIncome ? "sage" : "rust", kind: isIncome ? "income" : "expense", groupKey: `${isIncome ? "income" : "expense"}:${x.category}`, groupLabel: `${x.category} ${isIncome ? "income" : "expenses"}`, sourceType: "expense", sourceId: x.id });
   });
 
   STATE.supplies.forEach(s => {
-    if (s.opened_at) past.push({ date: s.opened_at, icon: "📦", title: `${s.category} opened`, detail: s.brand || "", tone: "slate" });
-    if (s.date_emptied) past.push({ date: s.date_emptied, icon: "🗑️", title: `${s.category} emptied`, detail: s.brand || "", tone: "slate" });
+    if (s.opened_at) past.push({ date: s.opened_at, icon: "📦", title: `${s.category} opened`, detail: s.brand || "", tone: "slate", kind: "opened", groupKey: `opened:${s.category}`, groupLabel: `${s.category} bags opened`, sourceType: "supply", sourceId: s.id });
+    if (s.date_emptied) past.push({ date: s.date_emptied, icon: "🗑️", title: `${s.category} emptied`, detail: s.brand || "", tone: "slate", kind: "emptied", groupKey: `emptied:${s.category}`, groupLabel: `${s.category} bags emptied`, sourceType: "supply", sourceId: s.id });
   });
 
   STATE.bedding.forEach(bd => {
-    if (bd.date) past.push({ date: bd.date, icon: "🧹", title: `${bd.area || "Bedding"}: ${bd.entry_type || "logged"}`, tone: "gold" });
+    if (bd.date) past.push({ date: bd.date, icon: "🧹", title: `${bd.area || "Bedding"}: ${bd.entry_type || "logged"}`, tone: "gold", kind: "bedding", groupKey: `bedding:${bd.area}:${bd.entry_type}`, groupLabel: `${bd.area || "Bedding"}: ${bd.entry_type || "logged"}`, sourceType: "bedding", sourceId: bd.id });
   });
 
   STATE.hatches.forEach(h => {
-    if (h.date_started) past.push({ date: h.date_started, icon: "🐣", title: `Hatch started: ${h.breed || "eggs"}`, detail: h.egg_count ? `${Math.round(h.egg_count)} eggs set` : "", tone: "gold" });
+    if (h.date_started) past.push({ date: h.date_started, icon: "🐣", title: `Hatch started: ${h.breed || "eggs"}`, detail: h.egg_count ? `${Math.round(h.egg_count)} eggs set` : "", tone: "gold", kind: "hatch-started", groupKey: `hatch-started:${h.id}`, groupLabel: "hatches started", sourceType: "hatch", sourceId: h.id });
   });
 
   STATE.notes.forEach(n => {
-    if (n.created_date) past.push({ date: n.created_date, icon: "📝", title: n.title || "Note", tone: "slate" });
+    if (n.created_date) past.push({ date: n.created_date, icon: "📝", title: n.title || "Note", tone: "slate", kind: "note", groupKey: `note:${n.id}`, groupLabel: "notes", sourceType: "note", sourceId: n.id });
   });
 
   // Future: bedding clean-out due, using the same threshold math that
   // already drives the dashboard's freshness dots -- not a new calculation,
-  // just this one projected forward into an actual calendar date.
+  // just this one projected forward into an actual calendar date. No
+  // source record to link to -- it's a projection, not a logged event.
   getBeddingAreas().forEach(area => {
     const bs = beddingStatsFor(area);
     const t = getBeddingThresholds(area);
     if (bs.lastCleanout) {
       const daysUntil = t.danger - daysSince(bs.lastCleanout.date);
-      future.push({ date: addDays(todayKey, daysUntil), icon: "🧹", title: `${area}: clean-out due`, tone: daysUntil < 0 ? "rust" : "gold" });
+      future.push({ date: addDays(todayKey, daysUntil), icon: "🧹", title: `${area}: clean-out due`, tone: daysUntil < 0 ? "rust" : "gold", kind: "cleanout-due", groupKey: `cleanout-due:${area}`, groupLabel: `${area}: clean-out due` });
     }
   });
 
@@ -5530,18 +5537,72 @@ function allCalendarEvents() {
 /** One calendar event as a compact row -- icon, title, optional detail,
  * tone-colored left edge matching the same rust/sage/gold/slate language
  * used everywhere else in the app. */
+/** One calendar event as a compact row -- icon, title, optional detail,
+ * tone-colored left edge matching the same rust/sage/gold/slate language
+ * used everywhere else in the app. Clickable straight through to its real
+ * record when it has one (data-cal-source); a projected event like a
+ * bedding clean-out due date has no underlying record to open, so it's
+ * left as plain, non-clickable text rather than looking tappable and
+ * doing nothing. */
 function calendarEventRow(e) {
-  return `<div class="cal-event-row tone-${e.tone || "slate"}">
+  const clickable = e.sourceType && e.sourceId;
+  return `<div class="cal-event-row tone-${e.tone || "slate"}${clickable ? " cal-event-clickable" : ""}" ${clickable ? `data-cal-source="${e.sourceType}" data-cal-id="${esc(e.sourceId)}" role="button" tabindex="0"` : ""}>
     <span class="cal-event-icon">${e.icon}</span>
     <span class="cal-event-body">
       <span class="cal-event-title">${esc(e.title)}</span>
       ${e.detail ? `<span class="cal-event-detail dim">${esc(e.detail)}</span>` : ""}
     </span>
+    ${clickable ? `<span class="cal-event-goto dim">›</span>` : ""}
   </div>`;
+}
+/** Opens the real record behind a calendar event, switching to its home
+ * tab/sub-tab first (matching the one existing precedent for this in the
+ * app -- a modal opened while its owning tab isn't mounted yet can't find
+ * what it needs) and giving that a moment to render before the modal
+ * itself opens. */
+function openCalendarSource(sourceType, sourceId) {
+  const openers = {
+    bird: () => { const b = STATE.birds.find(x => x.id === sourceId); if (b) { switchTab("flock"); flockSubTab = "birds"; setTimeout(() => showBirdForm(b), 80); } },
+    expense: () => { const x = STATE.expenses.find(x => x.id === sourceId); if (x) { switchTab("expenses"); setTimeout(() => openExpenseModal(x), 80); } },
+    supply: () => { const s = STATE.supplies.find(x => x.id === sourceId); if (s) { switchTab("bedding"); supplySubTab = "inventory"; setTimeout(() => openSupplyModal(s), 80); } },
+    egg: () => { const e = STATE.eggs.find(x => x.id === sourceId); if (e) { switchTab("eggs"); eggsSubTab = "eggs"; setTimeout(() => openEggModal(e), 80); } },
+    bedding: () => { const b = STATE.bedding.find(x => x.id === sourceId); if (b) { switchTab("bedding"); supplySubTab = "freshness"; setTimeout(() => openBeddingModal(b), 80); } },
+    hatch: () => { const h = STATE.hatches.find(x => x.id === sourceId); if (h) { switchTab("eggs"); eggsSubTab = "hatching"; setTimeout(() => openHatchModal(h), 80); } },
+    note: () => { const n = STATE.notes.find(x => x.id === sourceId); if (n) { switchTab("flock"); flockSubTab = "notes"; setTimeout(() => openNoteModal(n), 80); } },
+  };
+  const opener = openers[sourceType];
+  if (opener) { closeModal(); opener(); }
 }
 /** Past events for one month, grouped by exact day (newest day first) --
  * a busy day's several events sit under one date header instead of
  * repeating the date on every row. */
+/** Groups a flat list of events by groupKey, rendering a lone event as a
+ * plain row and a same-day, same-kind cluster (a whole batch added, several
+ * bags opened, etc.) as one collapsible summary -- "25 birds acquired
+ * (Spring Batch) ▸" -- reusing the same <details> disclosure already
+ * established for batches in the cost-breakdown modal, rather than a wall
+ * of near-identical rows. A group is never collapsed for just one item;
+ * grouping only kicks in once there's actually something to save space on. */
+function calendarEventsHtml(events) {
+  const groups = new Map();
+  events.forEach(e => {
+    if (!groups.has(e.groupKey)) groups.set(e.groupKey, []);
+    groups.get(e.groupKey).push(e);
+  });
+  return [...groups.values()].map(group => {
+    if (group.length === 1) return calendarEventRow(group[0]);
+    const first = group[0];
+    return `<details class="cost-breakdown-batch">
+      <summary>
+        <div class="cost-breakdown-batch-head">
+          <span class="cal-event-icon">${first.icon}</span>
+          <span class="cost-breakdown-batch-name">${esc(String(group.length))} ${esc(first.groupLabel || "items")}</span>
+        </div>
+      </summary>
+      <div class="cal-event-list-nested">${group.map(calendarEventRow).join("")}</div>
+    </details>`;
+  }).join("");
+}
 function calendarHistoryForMonth(monthKey) {
   const { past } = allCalendarEvents();
   const byDate = new Map();
@@ -5554,7 +5615,7 @@ function calendarHistoryForMonth(monthKey) {
   return dates.map(date => `
     <div class="cal-day-group">
       <div class="cal-day-header">${fmtDate(date)}</div>
-      ${byDate.get(date).map(calendarEventRow).join("")}
+      ${calendarEventsHtml(byDate.get(date))}
     </div>`).join("");
 }
 function calendarModalHtml(selectedMonth) {
@@ -5565,7 +5626,7 @@ function calendarModalHtml(selectedMonth) {
     <div class="dim" style="font-size:12px;margin-bottom:14px">Everything dated, in one place -- what happened, and what's coming up.</div>
 
     <div style="${FORM_SECTION_HEAD}">Coming up</div>
-    ${future.length ? future.map(calendarEventRow).join("") : `<div class="dim" style="font-size:12px;padding:6px 0">Nothing on the horizon right now.</div>`}
+    ${future.length ? calendarEventsHtml(future) : `<div class="dim" style="font-size:12px;padding:6px 0">Nothing on the horizon right now.</div>`}
 
     <div class="toolbar" style="margin-top:8px">
       <div style="${FORM_SECTION_HEAD};margin:0">History</div>
@@ -5576,10 +5637,19 @@ function calendarModalHtml(selectedMonth) {
 }
 function openCalendarModal() {
   let selectedMonth = monthKeyOf(todayStr());
+  const wireClicks = () => {
+    document.querySelectorAll("[data-cal-source]").forEach(row => {
+      const go = () => openCalendarSource(row.dataset.calSource, row.dataset.calId);
+      row.addEventListener("click", go);
+      row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
+    });
+  };
   openModal(calendarModalHtml(selectedMonth));
+  wireClicks();
   document.getElementById("calMonthSelect").addEventListener("change", (e) => {
     selectedMonth = e.target.value;
     document.getElementById("calHistoryList").innerHTML = calendarHistoryForMonth(selectedMonth);
+    wireClicks();
   });
 }
 
