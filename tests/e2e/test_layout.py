@@ -92,7 +92,8 @@ def test_page_header_names_the_section_and_the_coop(wide):
     for tab, label in (("flock", "Flock"), ("eggs", "Eggs"), ("expenses", "Finances"), ("settings", "Settings")):
         wide.eval("(t) => switchTab(t)", tab)
         assert wide.page.inner_text("#pageTitle") == label
-        assert wide.page.inner_text("#pageSub") == "Home Flock"
+        assert wide.page.locator("#pageSub").count() == 0, "the coop name lives in the sidebar, not repeated in the top bar"
+        assert "Home Flock" not in wide.page.inner_text(".topbar #pageHeader")
         assert wide.page.get_attribute(f".tab[data-tab='{tab}']", "aria-current") == "page"
         assert wide.eval("document.querySelectorAll('.tab[aria-current]').length") == 1
 
@@ -167,7 +168,8 @@ def test_coop_switcher_lists_coops_and_switches(wide):
     wide.page.wait_for_function("currentCoopId === window.__coops.b")
     assert menu.is_hidden()
     wide.page.wait_for_function("document.querySelector('#coopHeaderName').innerText.includes('Meat Birds 2026')")
-    assert wide.page.inner_text("#pageSub") == "Meat Birds 2026"
+    assert "Meat Birds 2026" in wide.page.inner_text("#sidebar #coopSwitcher")
+    assert "Meat Birds 2026" not in wide.page.inner_text(".topbar")
     wide.page.wait_for_function("document.querySelector('#panel-flock').innerText.includes('Broiler One')")
     assert "Layer 1" not in wide.page.inner_text("#panel-flock")
     wide.assert_no_js_errors()
