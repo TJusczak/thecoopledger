@@ -145,11 +145,11 @@ async def import_coop_zip(file: UploadFile = File(...)):
     try:
         zf = zipfile.ZipFile(io.BytesIO(content))
     except zipfile.BadZipFile:
-        raise HTTPException(400, "That doesn't look like a valid .zip file")
+        raise HTTPException(400, "That doesn't look like a valid .zip file") from None
     try:
         manifest_raw = zf.read("coop.json")
     except KeyError:
-        raise HTTPException(400, "This zip doesn't contain a coop.json -- make sure it's a backup exported from this app")
+        raise HTTPException(400, "This zip doesn't contain a coop.json -- make sure it's a backup exported from this app") from None
     bundle = json.loads(manifest_raw)
 
     def read_zip_photo(rel_path):

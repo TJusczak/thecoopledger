@@ -81,3 +81,18 @@ def coop(client, admin):
     r = client.post("/api/coops", json={"name": "Test Coop"}, headers=admin)
     assert r.status_code == 200
     return r.json()["id"]
+
+
+@pytest.fixture()
+def keep_primary_code(admin_code):
+    """For tests that rotate the primary invite code: put it back afterwards so
+    the session-scoped `admin_code` stays valid for every later test."""
+    import sqlite3
+
+    from coopledger import config
+    yield
+    with sqlite3.connect(config.DB_PATH) as c:
+        current = c.execute("SELECT invite_code FROM auth_settings WHERE id = 1").fetchone()[0]
+        c.execute("UPDATE invite_codes SET code = ? WHERE code = ?", (admin_code, current))
+        c.execute("UPDATE auth_settings SET invite_code = ?, auto_rotate_days = NULL WHERE id = 1", (admin_code,))
+    (config.DATA_DIR / "invite_code.txt").write_text(admin_code + "\n")

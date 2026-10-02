@@ -198,7 +198,7 @@ def sync_resource(resource: str, coop_id: str | None = None, since: str | None =
                 last_ts = rows[-1]["updated_at"]
                 seen = {r["id"] for r in rows}
                 tail_clauses = [c for c in clauses if c != "updated_at > ?"] + ["updated_at = ?"]
-                tail_params = [p for c, p in zip(clauses, params) if c != "updated_at > ?"] + [last_ts]
+                tail_params = [p for c, p in zip(clauses, params, strict=True) if c != "updated_at > ?"] + [last_ts]
                 rows += [dict(r) for r in conn.execute(
                     f"SELECT * FROM {resource} WHERE {' AND '.join(tail_clauses)} ORDER BY id ASC", tail_params,
                 ) if r["id"] not in seen]

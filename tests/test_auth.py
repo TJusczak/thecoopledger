@@ -3,7 +3,7 @@ import sqlite3
 
 import pytest
 
-from coopledger import auth, config, maintenance
+from coopledger import config, maintenance
 
 
 # ---------------------------------------------------------------- auth basics

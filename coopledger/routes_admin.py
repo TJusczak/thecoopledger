@@ -141,7 +141,7 @@ async def update_server_settings(request: Request):
                 try:
                     n = int(raw)
                 except (TypeError, ValueError):
-                    raise HTTPException(400, f"{key} must be a whole number")
+                    raise HTTPException(400, f"{key} must be a whole number") from None
                 lo, hi = spec.get("min"), spec.get("max")
                 if (lo is not None and n < lo) or (hi is not None and n > hi):
                     raise HTTPException(400, f"{key} must be between {lo} and {hi}")
