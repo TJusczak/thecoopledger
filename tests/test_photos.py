@@ -1,5 +1,5 @@
 """Photo upload validation and magic-byte sniffing."""
-from conftest import TINY_PNG
+from helpers import TINY_PNG
 from coopledger import photos
 
 

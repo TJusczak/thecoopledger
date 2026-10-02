@@ -22,6 +22,8 @@ from .db import get_db, now_iso
 # handful of people at once -- request volume and bandwidth both drop for
 # free, without giving up "a fresh deploy shows up fast."
 NO_CACHE_PATHS = {"/", "/sw.js", "/manifest.json", "/app.js", "/style.css", "/index.html"}
+# The app's own scripts live under /js/ -- same freshness rules as app.js.
+NO_CACHE_PREFIXES = ("/js/",)
 
 
 class NoCacheMiddleware:
@@ -43,7 +45,7 @@ class NoCacheMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope["path"] not in NO_CACHE_PATHS:
+        if scope["type"] != "http" or not (scope["path"] in NO_CACHE_PATHS or scope["path"].startswith(NO_CACHE_PREFIXES)):
             await self.app(scope, receive, send)
             return
 

@@ -59,6 +59,29 @@
 
   <script src="vendor/chart.umd.js"></script>
   <script src="vendor/jszip.min.js"></script>
+  <!-- Classic scripts sharing one global scope; ORDER MATTERS (top-level `const`s must exist before the
+       files that use them run at load time). main.js is last and starts the app. -->
   <script src="app.js"></script>
+  <script src="js/state.js"></script>
+  <script src="js/helpers.js"></script>
+  <script src="js/connection-auth.js"></script>
+  <script src="js/local-db.js"></script>
+  <script src="js/sync-core.js"></script>
+  <script src="js/sync.js"></script>
+  <script src="js/local-crud.js"></script>
+  <script src="js/export-import.js"></script>
+  <script src="js/shell.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/notes.js"></script>
+  <script src="js/coops.js"></script>
+  <script src="js/dashboard.js"></script>
+  <script src="js/undo.js"></script>
+  <script src="js/flock.js"></script>
+  <script src="js/eggs.js"></script>
+  <script src="js/finances.js"></script>
+  <script src="js/supply.js"></script>
+  <script src="js/init.js"></script>
+  <script src="js/pwa.js"></script>
+  <script src="js/main.js"></script>
 </body>
 </html>

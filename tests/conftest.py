@@ -30,13 +30,6 @@ from coopledger.app import app  # noqa: E402
 
 DATA_DIR = Path(_TMP)
 
-# A tiny but genuine 1x1 PNG (magic bytes + valid structure).
-TINY_PNG = bytes.fromhex(
-    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
-    "0000000d4944415478da63fcffff3f0300050001a5f645400000000049454e44ae426082"
-)
-
-
 @pytest.fixture(scope="session")
 def client():
     with TestClient(app) as c:  # context manager triggers the lifespan (init_db etc.)
