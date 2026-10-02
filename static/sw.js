@@ -2,7 +2,7 @@
 // background drain below must make exactly the same decisions as the app does.
 importScripts("js/sync-core.js");
 
-const CACHE_NAME = "coop-ledger-shell-v8";
+const CACHE_NAME = "coop-ledger-shell-v9";
 const SHELL_ASSETS = [
   "./",
   "style.css",
