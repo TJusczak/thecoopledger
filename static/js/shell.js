@@ -172,6 +172,18 @@ function renderServerVersionBadge() {
   badge.querySelector(".server-version-badge").innerHTML = `⚠️ Sync server outdated <span class="server-version-badge-sub">tap for details</span>`;
 }
 
+/** Publishes the bottom tab bar's real height as --tabbar-h. The sub-tab strip, the settings strip and the
+ * floating selection bar stack directly above it, and used to assume it was exactly 76px tall -- true only for
+ * one font and text size. With a slightly larger font (or the user's text scaling) the bar grew and the strip
+ * overlapped it. Measuring removes the assumption. */
+function syncTabbarHeight() {
+  const tabs = document.getElementById("tabs");
+  if (tabs && tabs.offsetHeight) document.documentElement.style.setProperty("--tabbar-h", `${tabs.offsetHeight}px`);
+}
+if (typeof ResizeObserver !== "undefined") new ResizeObserver(syncTabbarHeight).observe(document.getElementById("tabs"));
+window.addEventListener("resize", syncTabbarHeight);
+syncTabbarHeight();
+
 function updateTabVisibility() {
   const hasCoop = !!currentCoopId;
   document.querySelectorAll(".tab").forEach(t => {

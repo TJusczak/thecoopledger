@@ -139,7 +139,7 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
   .range-select.sub-nav-fixed {
     position: fixed;
     left: 0; right: 0;
-    bottom: calc(76px + env(safe-area-inset-bottom));
+    bottom: var(--tabbar-h, calc(76px + env(safe-area-inset-bottom))); /* the real bar height, measured by shell.js; 76px+inset is only the fallback */
     margin-bottom: 0;
     background: var(--surface);
     border-top: 1px solid var(--border);
@@ -395,7 +395,7 @@ h1 { font-family: 'Roboto Slab', serif; font-weight: 700; margin: 0; }
   .settings-subnav.visible {
     position: fixed;
     left: 0; right: 0;
-    bottom: calc(76px + env(safe-area-inset-bottom));
+    bottom: var(--tabbar-h, calc(76px + env(safe-area-inset-bottom))); /* the real bar height, measured by shell.js; 76px+inset is only the fallback */
     background: var(--surface);
     border-top: 1px solid var(--border);
     padding: 12px 10px;
@@ -1133,12 +1133,12 @@ tr:hover td { background: var(--surface-raised); }
 .floating-selection-bar { display: none; }
 .floating-selection-spacer { display: none; }
 @media (max-width: 899px) {
-  .floating-selection-spacer { display: block; height: calc(60px + 76px + env(safe-area-inset-bottom)); }
+  .floating-selection-spacer { display: block; height: calc(60px + var(--tabbar-h, calc(76px + env(safe-area-inset-bottom)))); }
   .floating-selection-bar {
     display: block;
     position: fixed;
     left: 0; right: 0;
-    bottom: calc(76px + env(safe-area-inset-bottom));
+    bottom: var(--tabbar-h, calc(76px + env(safe-area-inset-bottom))); /* the real bar height, measured by shell.js; 76px+inset is only the fallback */
     z-index: 48;
     background: var(--surface);
     border-top: 1px solid var(--border);

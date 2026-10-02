@@ -285,3 +285,21 @@ def test_a_short_page_does_not_scroll_for_a_single_pixel(make_device):
     d.page.wait_for_timeout(300)
     m = d.eval("() => ({ sh: document.documentElement.scrollHeight, ih: innerHeight })")
     assert m["sh"] <= m["ih"], f"an almost-empty page overflows the window by {m['sh'] - m['ih']}px"
+
+
+@pytest.mark.parametrize("extra_px", [0, 4, 10])
+def test_subtabs_stack_above_the_tab_bar_whatever_its_height(make_device, extra_px):
+    """The strip used to assume a 76px tab bar. CI fonts made the bar 78px tall and the strip overlapped it; a
+    user's text scaling can do the same. Make the bar taller than the assumption and check nothing overlaps."""
+    d = make_device(390, 800)
+    d.local_only()
+    seed_two_coops(d)
+    d.eval("() => switchTab('flock')")
+    d.eval("(px) => { document.querySelectorAll('.tab').forEach(t => t.style.minHeight = (60 + px) + 'px'); }", extra_px)
+    d.page.wait_for_timeout(300)   # ResizeObserver -> --tabbar-h
+    tabs, nav = box(d, "#tabs"), box(d, "#flockSubNav")
+    assert tabs["h"] >= 76 + extra_px - 1
+    assert nav["b"] <= tabs["y"] + 1, f"sub-tabs overlap the tab bar by {nav['b'] - tabs['y']:.0f}px (bar is {tabs['h']:.0f}px tall)"
+    d.eval("() => switchTab('settings')")
+    nav = box(d, "#settingsSubNav")
+    assert nav["b"] <= tabs["y"] + 1, "same for the settings strip"
