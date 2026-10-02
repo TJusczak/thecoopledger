@@ -56,15 +56,40 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
-      - name: Run tests
+      - name: Lint
+        run: ruff check .
+      - name: Run server tests
         run: pytest -q
+      - name: Frontend syntax check
+        run: for f in static/app.js static/sw.js static/js/*.js; do node --check "$f"; done
       - name: Run frontend series test
         run: node tests/test_feed_engine.mjs
       - name: Run dashboard render test
         run: node tests/test_dashboard_render.mjs
+      - name: Run sync-core test
+        run: node tests/test_sync_core.mjs
+
+  e2e:
+    # Real Chromium against a real server process: offline queueing, two-device
+    # convergence, the service worker's offline shell. Slower than the rest, so
+    # it runs alongside the unit tests rather than inside them.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt -r requirements-dev.txt
+          playwright install --with-deps chromium
+      - name: Run browser tests
+        run: pytest -m e2e -q
 
   build-and-push:
-    needs: test
+    needs: [test, e2e]
     runs-on: ubuntu-latest
     permissions:
       contents: read

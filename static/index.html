@@ -17,48 +17,94 @@
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="sticky-header-group">
-    <div class="sticky-header-bar">
-      <div class="sticky-header-inner">
-        <h1 class="sticky-header-title"><img src="logo-inline.png" alt="" width="20" height="20" style="border-radius:4px;vertical-align:-4px;margin-right:2px"> The Coop Ledger</h1>
-        <div class="sticky-header-right">
-          <button id="globalSearchBtn" class="header-icon-btn" aria-label="Search" title="Search">🔍</button>
-          <div id="todayDate" class="today"></div>
-          <div id="connIndicator" class="conn-indicator"><span class="conn-dot"></span><span id="connLabel">Checking...</span></div>
-          <div id="syncIndicator" class="sync-indicator" style="display:none"></div>
-          <div id="undoRedoSlot"></div>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <!-- App shell. Wide screens (>= 900px): a left sidebar -- brand, current coop, section nav, status --
+       beside a content pane with a page header and the section's sub-tabs along its top.
+       Narrower screens: the same elements collapse into the original top bar + bottom tab bar
+       (the sidebar wrapper simply disappears via display: contents). One DOM, two layouts, so
+       every id below that app code looks up keeps working in both. -->
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="sticky-header-group">
+        <div class="sticky-header-bar">
+          <div class="sticky-header-inner">
+            <h1 class="sticky-header-title"><img src="logo-inline.png" alt="" width="20" height="20" style="border-radius:4px;vertical-align:-4px;margin-right:2px"> <span class="brand-text">The Coop Ledger</span></h1>
+            <div class="sticky-header-right">
+              <button id="globalSearchBtn" class="header-icon-btn" aria-label="Search" title="Search"><span aria-hidden="true">🔍</span><span class="sidebar-only">Search</span></button>
+              <div id="todayDate" class="today"></div>
+              <div id="connIndicator" class="conn-indicator" role="status"><span class="conn-dot"></span><span id="connLabel">Checking...</span></div>
+              <div id="syncIndicator" class="sync-indicator" style="display:none"></div>
+              <div id="undoRedoSlot"></div>
+            </div>
+          </div>
         </div>
+        <div id="statusBannerSlot"></div>
+      </div>
+
+      <button class="coop-banner coop-switcher" id="coopSwitcher" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="coopMenu" title="Switch coop">
+        <span class="coop-switcher-text">
+          <span class="eyebrow" id="eyebrowText"></span>
+          <span id="coopHeaderName" class="coop-banner-name">🐔 No coop selected</span>
+        </span>
+        <span class="coop-switcher-chevron" aria-hidden="true">▾</span>
+      </button>
+
+      <nav class="tabs" id="tabs" aria-label="Sections">
+        <button data-tab="dashboard" class="tab active" aria-current="page"><span class="tab-icon">🐔</span><span class="tab-label">Coop</span></button>
+        <button data-tab="flock" class="tab"><span class="tab-icon">🪶</span><span class="tab-label">Flock</span></button>
+        <button data-tab="eggs" class="tab"><span class="tab-icon">🥚</span><span class="tab-label">Eggs</span></button>
+        <button data-tab="bedding" class="tab"><span class="tab-icon">📦</span><span class="tab-label">Supply</span></button>
+        <button data-tab="expenses" class="tab"><span class="tab-icon">💰</span><span class="tab-label">Finances</span></button>
+        <button data-tab="settings" class="tab"><span class="tab-icon">⚙️</span><span class="tab-label">Settings</span></button>
+      </nav>
+    </aside>
+
+    <div class="content">
+      <header class="page-header" id="pageHeader">
+        <span class="page-header-icon" id="pageIcon" aria-hidden="true"></span>
+        <h2 class="page-header-title" id="pageTitle"></h2>
+        <span class="page-header-sub" id="pageSub"></span>
+      </header>
+      <div class="wrap" id="main-content" tabindex="-1">
+        <nav class="settings-subnav" id="settingsSubNav" aria-label="Settings sections"></nav>
+
+        <main id="panel-dashboard" class="panel"></main>
+        <main id="panel-flock" class="panel" style="display:none"></main>
+        <main id="panel-eggs" class="panel" style="display:none"></main>
+        <main id="panel-expenses" class="panel" style="display:none"></main>
+        <main id="panel-bedding" class="panel" style="display:none"></main>
+        <main id="panel-settings" class="panel" style="display:none"></main>
       </div>
     </div>
-    <div id="statusBannerSlot"></div>
   </div>
-  <div class="wrap">
-    <div class="coop-banner">
-      <span id="coopHeaderName" class="coop-banner-name">🐔 No coop selected</span>
-      <span class="eyebrow" id="eyebrowText"></span>
-    </div>
 
-    <nav class="tabs" id="tabs">
-      <button data-tab="dashboard" class="tab active"><span class="tab-icon">🐔</span><span class="tab-label">Coop</span></button>
-      <button data-tab="flock" class="tab"><span class="tab-icon">🪶</span><span class="tab-label">Flock</span></button>
-      <button data-tab="eggs" class="tab"><span class="tab-icon">🥚</span><span class="tab-label">Eggs</span></button>
-      <button data-tab="bedding" class="tab"><span class="tab-icon">📦</span><span class="tab-label">Supply</span></button>
-      <button data-tab="expenses" class="tab"><span class="tab-icon">💰</span><span class="tab-label">Finances</span></button>
-      <button data-tab="settings" class="tab"><span class="tab-icon">⚙️</span><span class="tab-label">Settings</span></button>
-    </nav>
-
-    <nav class="settings-subnav" id="settingsSubNav"></nav>
-
-    <main id="panel-dashboard" class="panel"></main>
-    <main id="panel-flock" class="panel" style="display:none"></main>
-    <main id="panel-eggs" class="panel" style="display:none"></main>
-    <main id="panel-expenses" class="panel" style="display:none"></main>
-    <main id="panel-bedding" class="panel" style="display:none"></main>
-    <main id="panel-settings" class="panel" style="display:none"></main>
-  </div>
+  <div id="coopMenu" class="coop-menu" role="menu" aria-label="Coops" hidden></div>
 
   <script src="vendor/chart.umd.js"></script>
   <script src="vendor/jszip.min.js"></script>
+  <!-- Classic scripts sharing one global scope; ORDER MATTERS (top-level `const`s must exist before the
+       files that use them run at load time). main.js is last and starts the app. -->
   <script src="app.js"></script>
+  <script src="js/state.js"></script>
+  <script src="js/helpers.js"></script>
+  <script src="js/connection-auth.js"></script>
+  <script src="js/local-db.js"></script>
+  <script src="js/sync-core.js"></script>
+  <script src="js/sync.js"></script>
+  <script src="js/local-crud.js"></script>
+  <script src="js/export-import.js"></script>
+  <script src="js/shell.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/notes.js"></script>
+  <script src="js/coops.js"></script>
+  <script src="js/dashboard.js"></script>
+  <script src="js/undo.js"></script>
+  <script src="js/flock.js"></script>
+  <script src="js/eggs.js"></script>
+  <script src="js/finances.js"></script>
+  <script src="js/supply.js"></script>
+  <script src="js/init.js"></script>
+  <script src="js/pwa.js"></script>
+  <script src="js/main.js"></script>
 </body>
 </html>

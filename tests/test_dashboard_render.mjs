@@ -20,9 +20,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import assert from "node:assert";
+import { loadAppSource } from "./_source.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const src = readFileSync(join(here, "..", "static", "app.js"), "utf8");
+const src = loadAppSource();
 
 function extractIife(startMarker) {
   const start = src.indexOf(startMarker);

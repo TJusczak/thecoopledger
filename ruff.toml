@@ -1,0 +1,11 @@
+# Lint baseline. Kept deliberately small: real bugs (pyflakes F, syntax E9) and
+# the bugbear checks that catch them in practice, not style.
+target-version = "py311"
+line-length = 160
+extend-exclude = ["landing", "static"]
+
+[lint]
+select = ["E9", "F", "B"]
+ignore = [
+  "B008",  # FastAPI's Body(...)/File(...) defaults are the framework's idiom
+]

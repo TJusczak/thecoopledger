@@ -1,8 +1,33 @@
-const CACHE_NAME = "coop-ledger-shell-v7";
+// Shared, DOM-free sync rules (classifyOutboxResponse, REJECTED_KEY, ...) -- the
+// background drain below must make exactly the same decisions as the app does.
+importScripts("js/sync-core.js");
+
+const CACHE_NAME = "coop-ledger-shell-v8";
 const SHELL_ASSETS = [
   "./",
   "style.css",
   "app.js",
+  "js/state.js",
+  "js/helpers.js",
+  "js/connection-auth.js",
+  "js/local-db.js",
+  "js/sync-core.js",
+  "js/sync.js",
+  "js/local-crud.js",
+  "js/export-import.js",
+  "js/shell.js",
+  "js/settings.js",
+  "js/notes.js",
+  "js/coops.js",
+  "js/dashboard.js",
+  "js/undo.js",
+  "js/flock.js",
+  "js/eggs.js",
+  "js/finances.js",
+  "js/supply.js",
+  "js/init.js",
+  "js/pwa.js",
+  "js/main.js",
   "vendor/chart.umd.js",
   "vendor/jszip.min.js",
   "manifest.json",
@@ -133,6 +158,17 @@ function outboxRequestFor(entry) {
   }
 }
 
+/** Same record the app keeps (see addRejectedChange in js/sync.js), so a change refused
+ * while the app was closed still shows up in Settings -> Connection on next open. */
+async function swRecordRejected(db, entry, status, detail) {
+  if (!db.objectStoreNames.contains("_meta")) return;
+  const store = (mode) => db.transaction("_meta", mode).objectStore("_meta");
+  const existing = await idbReq(store("readonly").get(REJECTED_KEY));
+  const list = existing && Array.isArray(existing.value) ? existing.value : [];
+  list.push({ resource: entry.resource, op: entry.op, id: entry.id || null, status, detail, queuedAt: entry.queuedAt || null, at: new Date().toISOString(), payload: entry.payload ?? null });
+  await idbReq(store("readwrite").put({ key: REJECTED_KEY, value: list.slice(-MAX_REJECTED_KEPT) }));
+}
+
 async function drainOutboxInBackground() {
   const token = await swReadAuthToken();
   if (!token) return; // not signed in on this device -- nothing we may send
@@ -151,13 +187,19 @@ async function drainOutboxInBackground() {
       headers: { ...(spec.headers || {}), "Authorization": `Bearer ${token}` },
       body: spec.body,
     });
-    // 4xx means the server rejected it outright; retrying forever won't help,
-    // so drop it and let the app surface the conflict on next open. 5xx and
-    // network errors are worth another attempt.
-    if (!res.ok && res.status >= 500) throw new Error(`server ${res.status}`);
+    // Same verdicts as the app (js/sync-core.js). This used to delete the entry
+    // on ANY non-5xx answer -- including a 401 from an expired token and a 403 --
+    // silently throwing the user's change away.
+    const verdict = classifyOutboxResponse(entry, res.status);
+    if (verdict === "auth" || verdict === "retry") throw new Error(`server ${res.status}`); // keep it queued; the browser retries later
+    if (verdict === "reject") {
+      let detail = "";
+      try { const body = await res.clone().json(); detail = typeof body.detail === "string" ? body.detail : ""; } catch (_) { /* non-JSON error body */ }
+      await swRecordRejected(db, entry, res.status, detail);
+    }
     const tx = db.transaction("_outbox", "readwrite");
     tx.objectStore("_outbox").delete(entry.outboxId);
-    await idbReq(tx.objectStore("_outbox").count()).catch(() => {});
+    await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error); });
   }
 
   const clientList = await self.clients.matchAll({ type: "window" });
