@@ -225,15 +225,13 @@ function switchTab(tab) {
 }
 
 /** The wide layout's page header: the active section's icon and name, with the
- * current coop beside it. (Hidden by CSS in the narrow layout, where the bottom tab
- * bar already shows which section you are on.) */
+ * (The coop's name is not repeated here: the sidebar's coop card already shows it. Hidden by CSS in the
+ * narrow layout, where the bottom tab bar already shows which section you are on.) */
 function updatePageHeader() {
   const active = document.querySelector(".tab.active");
   if (!active) return;
   document.getElementById("pageIcon").textContent = active.querySelector(".tab-icon").textContent;
   document.getElementById("pageTitle").textContent = active.querySelector(".tab-label").textContent;
-  const coop = STATE.coops.find(c => c.id === currentCoopId);
-  document.getElementById("pageSub").textContent = coop ? coop.name : "";
 }
 
 // ---------- Coop switcher ----------
