@@ -52,6 +52,13 @@ function setBackupReminderDays(d) { localStorage.setItem(BACKUP_REMINDER_DAYS_KE
 function backupReminderOverdue() {
   return getBackupReminderEnabled() && daysSinceLastBackup() > getBackupReminderDays();
 }
+// "Hide the Local only tag": the calm gold tag can be hidden, but the overdue (red) state always
+// shows while backup reminders are on -- hiding a reminder must not hide the warning it exists for.
+// Turning reminders off (Settings -> App) silences that too.
+const LOCAL_TAG_HIDDEN_KEY = "coop_local_tag_hidden";
+function getLocalTagHidden() { return localStorage.getItem(LOCAL_TAG_HIDDEN_KEY) === "1"; }
+function setLocalTagHidden(hidden) { localStorage.setItem(LOCAL_TAG_HIDDEN_KEY, hidden ? "1" : "0"); }
+
 function renderLocalOnlyBadge() {
   let badge = document.getElementById("localOnlyBadge");
   if (!localOnlyMode) {
@@ -59,6 +66,10 @@ function renderLocalOnlyBadge() {
     return;
   }
   const overdue = backupReminderOverdue();
+  if (getLocalTagHidden() && !overdue) {
+    if (badge) badge.remove();
+    return;
+  }
   if (!badge) {
     badge = document.createElement("div");
     badge.id = "localOnlyBadge";
@@ -76,7 +87,7 @@ function renderLocalOnlyBadge() {
   inner.className = overdue ? "local-only-badge local-only-badge-overdue" : "local-only-badge";
   inner.innerHTML = overdue
     ? `⚠️ Local only <span class="local-only-badge-sub">back up now</span>`
-    : `📱 Local only <span class="local-only-badge-sub">not backed up</span>`;
+    : `📱 Local only <span class="local-only-badge-sub">${backupAgeShort() ? `backed up ${backupAgeShort()}` : "not backed up"}</span>`;
   inner.title = overdue
     ? "It's been a while since your last backup, and this coop's data lives only in this browser. Clearing this browser's site data, or uninstalling/removing the browser, will permanently delete it -- tap to back it up now."
     : "This coop's data lives only in this browser. Clearing this browser's site data, or uninstalling/removing the browser, will permanently delete it -- tap to export a backup or switch to a synced server.";
