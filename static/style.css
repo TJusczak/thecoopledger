@@ -38,6 +38,10 @@ body {
   font-family: 'Inter', sans-serif;
 }
 
+/* Always reserve room for the page scrollbar: without it, a page tall enough to scroll is narrower than one that
+   isn't, and the whole layout (sub-tabs, title, content) jumps sideways when you switch between them. */
+html { scrollbar-gutter: stable; }
+
 .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 60px; }
 
 .sticky-header-group { position: sticky; top: 0; z-index: 500; }
@@ -1271,7 +1275,7 @@ tr:hover td { background: var(--surface-raised); }
   background: var(--gold); color: #1E1712; padding: 10px 16px; font-weight: 700; border-radius: 0 0 8px 0;
 }
 .skip-link:focus { left: 0; }
-.sidebar-only, .page-header { display: none; }
+.desktop-only, .page-header { display: none; }
 .sidebar { display: contents; }
 .content { display: block; }
 
@@ -1310,42 +1314,68 @@ tr:hover td { background: var(--surface-raised); }
 body.onboarding .tabs, body.onboarding .coop-switcher, body.onboarding .page-header { display: none; }
 
 @media (min-width: 900px) {
-  :root { --sidebar-w: 248px; }
-  body { background: var(--bg); }
-  .app-shell { display: flex; align-items: flex-start; min-height: 100vh; }
+  :root { --sidebar-w: 232px; --topbar-h: 48px; }
+  .app-shell { display: flex; align-items: flex-start; min-height: calc(100vh - var(--topbar-h)); }
 
-  /* ---- sidebar ---- */
+  /* ---- top bar: brand | page title | search ........ status ---- */
+  .topbar { position: sticky; top: 0; z-index: 500; }
+  .sticky-header-bar { background: var(--surface); border-bottom: 1px solid var(--border); }
+  .sticky-header-inner {
+    max-width: none; margin: 0; padding: 0; height: calc(var(--topbar-h) - 1px); /* + the bar's 1px border = exactly --topbar-h, so the page never overflows the window by a pixel */
+    display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-start; gap: 0;
+  }
+  .sticky-header-title {
+    width: var(--sidebar-w); flex: none; height: 100%; margin: 0; padding: 0 16px;
+    display: flex; align-items: center; gap: 8px; font-size: 16px;
+    border-right: 1px solid var(--border);
+  }
+  .sticky-header-title img { width: 22px; height: 22px; margin: 0; vertical-align: 0; }
+  .page-header { display: flex; align-items: baseline; gap: 10px; padding: 0 20px; min-width: 0; flex: 0 1 auto; white-space: nowrap; }
+  .page-header-icon { font-size: 17px; line-height: 1; transform: translateY(1px); }
+  .page-header-title { font-family: 'Roboto Slab', serif; font-size: 17px; font-weight: 700; margin: 0; }
+  .page-header-sub { color: var(--text-dim); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+  .sticky-header-right { flex: 1; min-width: 0; display: flex; align-items: center; flex-wrap: nowrap; gap: 14px; padding: 0 16px 0 4px; }
+  .desktop-only { display: inline; }
+
+  /* search: an input-shaped button; opens the same search dialog */
+  #globalSearchBtn {
+    flex: 1 1 320px; max-width: 460px; height: 32px; padding: 0 10px; gap: 8px;
+    justify-content: flex-start; font-size: 13px; font-weight: 400; color: var(--text-dim);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  }
+  #globalSearchBtn:hover, #globalSearchBtn:focus-visible { border-color: var(--gold); color: var(--text); background: var(--bg); outline: none; }
+  #globalSearchBtn kbd {
+    margin-left: auto; font: 600 10px 'JetBrains Mono', monospace; color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+  }
+  .today { margin-left: auto; white-space: nowrap; }
+  .conn-indicator { white-space: nowrap; font-size: 12px; }
+  .sync-indicator { white-space: nowrap; }
+
+  /* ---- sidebar: coop switcher, section nav, banners ---- */
   .sidebar {
     display: flex; flex-direction: column; gap: 4px;
-    position: sticky; top: 0; height: 100vh; width: var(--sidebar-w); flex: none;
+    position: sticky; top: var(--topbar-h); height: calc(100vh - var(--topbar-h)); width: var(--sidebar-w); flex: none;
     background: var(--surface); border-right: 1px solid var(--border);
-    padding: 18px 12px 14px; overflow-y: auto; overscroll-behavior: contain;
+    padding: 12px 10px 12px; overflow-y: auto; overscroll-behavior: contain;
   }
-  /* Flatten the old header wrappers so brand / status / banners become direct flex
-     items of the sidebar and can be ordered freely. */
-  .sticky-header-group, .sticky-header-bar, .sticky-header-inner, .sticky-header-right { display: contents; }
-  .sticky-header-title { order: 0; font-size: 18px; padding: 2px 8px 14px; display: flex; align-items: center; gap: 8px; }
-  .sticky-header-title img { width: 26px; height: 26px; margin: 0; vertical-align: 0; }
   .coop-switcher { order: 1; }
   .tabs { order: 2; }
-  #statusBannerSlot { order: 3; }
-  .sticky-header-right > * { order: 4; }
+  #statusBannerSlot { order: 3; margin-top: auto; }
 
-  /* coop card */
   .coop-switcher {
-    max-width: none; margin: 0 0 14px; padding: 12px 12px;
+    max-width: none; margin: 0 0 10px; padding: 10px 12px;
     background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
     transition: border-color .15s;
   }
   .coop-switcher:hover, .coop-switcher[aria-expanded="true"] { border-color: var(--gold); }
   .coop-switcher-text { flex-direction: column-reverse; align-items: flex-start; gap: 2px; }
-  .coop-banner-name { font-size: 17px; line-height: 1.25; overflow-wrap: anywhere; }
+  .coop-banner-name { font-size: 16px; line-height: 1.25; overflow-wrap: anywhere; }
   .coop-switcher + .tabs { margin-top: 0; }
 
-  /* section nav */
   .tabs { flex-direction: column; flex-wrap: nowrap; gap: 2px; margin: 0; border-bottom: none; }
   .tab {
-    width: 100%; justify-content: flex-start; gap: 12px; padding: 10px 12px; border-radius: 8px;
+    width: 100%; justify-content: flex-start; gap: 12px; padding: 9px 12px; border-radius: 8px;
     border-bottom: none; font-size: 14px; position: relative;
   }
   .tab-icon { width: 22px; text-align: center; font-size: 16px; }
@@ -1354,19 +1384,9 @@ body.onboarding .tabs, body.onboarding .coop-switcher, body.onboarding .page-hea
   .tab[data-tab="settings"] { margin-top: 10px; }
   .tab[data-tab="settings"]::before { content: ""; position: absolute; top: -6px; left: 8px; right: 8px; height: 1px; background: var(--border); }
 
-  /* status cluster: pinned to the bottom of the sidebar */
-  .sticky-header-right > :first-child { margin-top: auto; }
-  .sidebar-only { display: inline; }
-  .header-icon-btn { width: 100%; justify-content: flex-start; gap: 10px; font-size: 14px; padding: 9px 12px; color: var(--text-dim); }
-  .header-icon-btn .sidebar-only { font-size: 13px; font-weight: 600; }
-  .today { padding: 6px 12px 2px; }
-  .conn-indicator { padding: 4px 12px; font-size: 12px; }
-  .sync-indicator { padding: 2px 12px; }
-  #undoRedoSlot { padding: 4px 4px 0; }
-
-  /* status banners (local-only / read-only / outdated server / beta): stacked, full width */
+  /* status banners (local-only / read-only / outdated server / beta): stacked at the foot of the sidebar */
   #statusBannerSlot:not(:empty) {
-    display: flex; flex-direction: column; gap: 6px; padding: 8px 0 6px; max-width: none; margin: 8px 0 4px;
+    display: flex; flex-direction: column; gap: 6px; padding: 8px 0 0; max-width: none; margin: 8px 0 0;
     border-bottom: none; border-top: 1px solid var(--border);
   }
   #statusBannerSlot .local-only-badge, #statusBannerSlot .server-version-badge, #statusBannerSlot .beta-status-badge {
@@ -1376,26 +1396,25 @@ body.onboarding .tabs, body.onboarding .coop-switcher, body.onboarding .page-hea
   #statusBannerSlot .beta-tab-panel { position: static; transform: none; width: auto; border: none; border-radius: 0; box-shadow: none; background: none; }
   #statusBannerSlot .beta-tab-panel-inner { padding: 8px 4px 2px; font-size: 12px; }
 
-  /* ---- content pane ---- */
+  /* ---- content: as much room as possible ---- */
   .content { flex: 1; min-width: 0; }
-  .page-header {
-    display: flex; align-items: baseline; gap: 12px; padding: 26px 40px 14px; max-width: 1240px; margin: 0 auto;
-  }
-  .page-header-icon { font-size: 22px; line-height: 1; transform: translateY(2px); }
-  .page-header-title { font-family: 'Roboto Slab', serif; font-size: 26px; font-weight: 700; margin: 0; }
-  .page-header-sub { color: var(--text-dim); font-size: 14px; }
-  .content .wrap { max-width: 1240px; padding: 0 40px 60px; }
+  .content .wrap { max-width: 1760px; margin: 0; padding: 0 24px 48px; }
+  .panel { padding-top: 16px; }
+  .panel > .sub-nav-fixed:first-child { margin-top: -16px; }   /* flush under the top bar */
 
-  /* ---- sub-tabs: a sticky strip along the top of the content ---- */
+  /* ---- sub-tabs: a strip pinned directly under the top bar ---- */
   .range-select.sub-nav-fixed, .settings-subnav.visible {
-    position: sticky; top: 0; z-index: 40;
-    display: flex; flex-wrap: nowrap; gap: 2px; overflow-x: auto;
+    position: sticky; top: var(--topbar-h); z-index: 40;
+    display: flex; flex-wrap: nowrap; gap: 2px; overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none;
     background: var(--bg); border-bottom: 1px solid var(--border);
-    margin: 0 -40px 22px; padding: 0 40px;
+    margin: 0 -24px 16px; padding: 0 24px;
   }
+  .range-select.sub-nav-fixed::-webkit-scrollbar, .settings-subnav.visible::-webkit-scrollbar { display: none; }
+  .settings-subnav.visible { margin-bottom: 0; }
   .sub-nav-fixed .range-btn, .settings-subnav .range-btn {
     background: none; border: none; border-bottom: 3px solid transparent; border-radius: 0;
-    padding: 12px 16px; margin-bottom: -1px; font-size: 14px; font-weight: 600; color: var(--text-dim); white-space: nowrap;
+    padding: 10px 14px; margin-bottom: 0; font-size: 13px; font-weight: 600; color: var(--text-dim); white-space: nowrap;
   }
   .sub-nav-fixed .range-btn:hover, .settings-subnav .range-btn:hover { color: var(--text); background: var(--surface); }
   .sub-nav-fixed .range-btn.active, .settings-subnav .range-btn.active {
@@ -1403,12 +1422,12 @@ body.onboarding .tabs, body.onboarding .coop-switcher, body.onboarding .page-hea
   }
   .sub-nav-fixed .range-btn:focus-visible, .settings-subnav .range-btn:focus-visible, .tab:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
 
-  /* onboarding: keep the sidebar's brand + status, centre the card in the pane */
+  /* first-run / login: nothing to navigate, so the sidebar keeps only its banners */
   body.onboarding .sidebar { width: var(--sidebar-w); }
 }
 
 @media (min-width: 1500px) {
-  :root { --sidebar-w: 268px; }
+  :root { --sidebar-w: 248px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

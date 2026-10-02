@@ -94,7 +94,9 @@ def server():
 @pytest.fixture(scope="session")
 def browser():
     with sync_playwright() as p:
-        b = p.chromium.launch(executable_path=_chromium_path(), args=["--no-sandbox"])
+        # Headless Chromium hides scrollbars by default, which hides a whole class of layout bugs
+        # (content shifting when a scrollbar appears). Show them, as a real desktop browser does.
+        b = p.chromium.launch(executable_path=_chromium_path(), args=["--no-sandbox"], ignore_default_args=["--hide-scrollbars"])
         yield b
         b.close()
 

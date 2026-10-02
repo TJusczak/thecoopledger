@@ -32,11 +32,13 @@ def wide(make_device):
 
 # ------------------------------------------------------------------ wide layout
 
-def test_sidebar_is_on_the_left_and_content_to_its_right(wide):
-    sb, content = box(wide, "#sidebar"), box(wide, ".content")
-    assert sb["x"] == 0 and 230 <= sb["w"] <= 280
-    assert sb["h"] >= 795, "sidebar spans the full viewport height"
-    assert content["x"] >= sb["w"] - 1
+def test_thin_top_bar_spans_the_window_with_sidebar_and_content_below(wide):
+    top, sb, content = box(wide, ".topbar"), box(wide, "#sidebar"), box(wide, ".content")
+    assert top["x"] == 0 and top["y"] == 0 and top["w"] >= 1280 - 20, "the bar spans the window (less the reserved scrollbar gutter)"
+    assert 40 <= top["h"] <= 56, f"thin bar, got {top['h']}px"
+    assert sb["x"] == 0 and 220 <= sb["w"] <= 270
+    assert abs(sb["y"] - top["b"]) <= 1, "sidebar starts right under the bar"
+    assert content["x"] >= sb["w"] - 1 and abs(content["y"] - top["b"]) <= 1
 
 
 def test_nav_is_a_vertical_list_inside_the_sidebar(wide):
@@ -47,9 +49,43 @@ def test_nav_is_a_vertical_list_inside_the_sidebar(wide):
     assert ys == sorted(ys) and len(set(ys)) == 6
 
 
-def test_status_lives_in_the_sidebar(wide):
-    for sel in ("#connIndicator", "#globalSearchBtn", "#statusBannerSlot", "#coopSwitcher", "#syncIndicator", "#undoRedoSlot"):
-        assert wide.eval("(s) => !!document.querySelector('#sidebar ' + s)", sel), f"{sel} should be inside the sidebar"
+def test_brand_title_search_and_status_live_in_the_top_bar(wide):
+    for sel in ("#pageHeader", "#globalSearchBtn", "#connIndicator", "#syncIndicator", "#undoRedoSlot", ".sticky-header-title"):
+        assert wide.eval("(s) => !!document.querySelector('.topbar ' + s)", sel), f"{sel} should be in the top bar"
+    for sel in ("#coopSwitcher", "#statusBannerSlot", "#tabs"):
+        assert wide.eval("(s) => !!document.querySelector('#sidebar ' + s)", sel), f"{sel} should be in the sidebar"
+    top = box(wide, ".topbar")
+    for sel in ("#pageHeader", "#globalSearchBtn", "#connIndicator"):
+        b = box(wide, sel)
+        assert top["y"] <= b["y"] and b["b"] <= top["b"] + 1, f"{sel} sits inside the bar's height"
+    # left to right: brand, page title, search, status
+    xs = [box(wide, s)["x"] for s in (".sticky-header-title", "#pageHeader", "#globalSearchBtn", "#connIndicator")]
+    assert xs == sorted(xs)
+
+
+def test_search_box_opens_the_search_dialog_by_click_and_by_ctrl_k(wide):
+    assert "Search" in wide.page.inner_text("#globalSearchBtn")
+    open_ = "document.getElementById('modalOverlay').classList.contains('open')"
+    wide.page.click("#globalSearchBtn")
+    wide.page.wait_for_function(open_)
+    assert wide.page.locator("#globalSearchInput").is_visible()
+    wide.page.keyboard.press("Escape")
+    wide.page.wait_for_function(f"!({open_})")
+    wide.page.keyboard.press("Control+k")             # works again after the dialog has been used once
+    wide.page.wait_for_function(open_)
+    assert wide.page.locator("#globalSearchInput").is_visible()
+    wide.assert_no_js_errors()
+
+
+def test_content_uses_the_width_instead_of_a_padded_centre_column(wide):
+    for tab in ("dashboard", "flock", "bedding"):
+        wide.eval("(t) => switchTab(t)", tab)
+        sb = box(wide, "#sidebar")
+        first = wide.eval("""() => { const p = document.querySelector('.panel:not([style*="none"])');
+            const kids = [...p.querySelectorAll(':scope > *:not(.sub-nav-fixed), :scope #coopSubContent > *, :scope #flockSubContent > *, :scope #supplySubContent > *')];
+            const r = (kids.find(k => k.getBoundingClientRect().width > 100) || p).getBoundingClientRect(); return [r.x, r.right]; }""")
+        assert first[0] - sb["r"] <= 32, f"{tab}: content starts {first[0] - sb['r']:.0f}px from the sidebar"
+        assert 1280 - first[1] <= 40, f"{tab}: content stops {1280 - first[1]:.0f}px short of the right edge"
 
 
 def test_page_header_names_the_section_and_the_coop(wide):
@@ -72,9 +108,9 @@ def test_subtabs_run_along_the_top_of_the_content_pane(wide, tab, subnav, expect
     wide.eval("(t) => switchTab(t)", tab)
     labels = wide.eval("(s) => [...document.querySelectorAll(s + ' .range-btn')].map(b => b.textContent.trim())", subnav)
     assert labels[:len(expected)] == expected
-    nav, header, content = box(wide, subnav), box(wide, "#pageHeader"), box(wide, ".content")
+    nav, top, content = box(wide, subnav), box(wide, ".topbar"), box(wide, ".content")
     assert nav["x"] >= content["x"] - 1, "sub-tabs sit in the content pane, not the sidebar"
-    assert nav["y"] >= header["b"] - 1, "directly under the page header"
+    assert abs(nav["y"] - top["b"]) <= 2, f"sub-tabs sit flush under the top bar (gap {nav['y'] - top['b']:.0f}px)"
     xs = wide.eval("(s) => [...document.querySelectorAll(s + ' .range-btn')].map(b => b.getBoundingClientRect().y)", subnav)
     assert max(xs) - min(xs) < 2, "one horizontal row"
 
@@ -85,11 +121,12 @@ def test_subtabs_stay_pinned_while_a_long_page_scrolls(wide):
     wide.page.mouse.wheel(0, 900)
     wide.page.wait_for_timeout(250)
     assert wide.eval("window.scrollY") > 300, "the page really did scroll"
-    nav = box(wide, "#flockSubNav")
-    assert -1 <= nav["y"] <= 2, f"sub-tabs should pin to the top, got y={nav['y']}"
+    nav, top = box(wide, "#flockSubNav"), box(wide, ".topbar")
+    assert top["y"] == 0, "the top bar stays put"
+    assert abs(nav["y"] - top["b"]) <= 2, f"sub-tabs should pin under the bar, got y={nav['y']}"
     assert wide.page.locator("#flockSubNav").is_visible()
     # the sidebar doesn't scroll away with the page
-    assert box(wide, "#sidebar")["y"] == 0
+    assert abs(box(wide, "#sidebar")["y"] - top["b"]) <= 1
 
 
 def test_clicking_a_subtab_switches_the_content(wide):
@@ -191,3 +228,60 @@ def test_first_run_hides_navigation_there_is_nothing_to_navigate_yet(make_device
     assert d.page.locator("#coopSwitcher").is_hidden()
     assert d.page.locator("#pageHeader").is_hidden()
     d.assert_no_js_errors()
+
+
+# ------------------------------------------------- scrollbars and sideways jumps
+
+def seed_long_history(d):
+    d.eval("""async () => {
+        for (let i = 0; i < 30; i++) await localEggCreate({ coop_id: currentCoopId, date: new Date(Date.now() - i * 864e5 * 9).toISOString().slice(0, 10), count: 2 + (i % 4) }, { suppressUndo: true });
+        await refreshAndRender();
+    }""")
+
+
+@pytest.mark.parametrize("tab,subnav", [("dashboard", "#coopSubNav"), ("flock", "#flockSubNav"), ("eggs", "#eggsSubNav"),
+                                        ("bedding", "#supplySubNav"), ("settings", "#settingsSubNav")])
+def test_subtab_strip_has_no_scrollbar_of_its_own(wide, tab, subnav):
+    wide.eval("(t) => switchTab(t)", tab)
+    m = wide.eval("""(s) => { const e = document.querySelector(s); return { sh: e.scrollHeight, ch: e.clientHeight, sw: e.scrollWidth, cw: e.clientWidth }; }""", subnav)
+    assert m["sh"] <= m["ch"], f"{tab}: the strip overflows vertically by {m['sh'] - m['ch']}px, which draws a tiny scrollbar"
+    assert m["sw"] <= m["cw"], f"{tab}: the strip overflows horizontally at 1280px"
+
+
+def test_switching_subtabs_never_shifts_the_layout_sideways(make_device):
+    """Overview and Year Review are tall (page scrollbar); All-Time Stats can be short (none). The
+    sub-tab strip, title and content must sit at the same x on all three."""
+    d = make_device(1280, 1300)           # tall window so the shortest sub-tab fits without scrolling
+    d.local_only()
+    seed_two_coops(d)
+    seed_long_history(d)
+    d.eval("() => switchTab('dashboard')")
+    seen = {}
+    for sub in ("overview", "review", "alltime"):
+        d.eval("(s) => { coopSubTab = s; renderCoopHub(); }", sub)
+        d.page.wait_for_timeout(300)
+        seen[sub] = d.eval("""() => ({
+            firstTab: document.querySelector('#coopSubNav .range-btn').getBoundingClientRect().x,
+            strip: document.querySelector('#coopSubNav').getBoundingClientRect().right,
+            title: document.querySelector('#pageTitle').getBoundingClientRect().x,
+            search: document.querySelector('#globalSearchBtn').getBoundingClientRect().x,
+            status: document.querySelector('#connIndicator').getBoundingClientRect().right,
+            content: document.querySelector('#coopSubContent').getBoundingClientRect().x,
+            scrolls: document.documentElement.scrollHeight > innerHeight,
+        })""")
+    # the scenario this guards: some sub-tabs scroll and one does not
+    assert any(v["scrolls"] for v in seen.values()) and not all(v["scrolls"] for v in seen.values()), f"test needs a mix of tall and short pages: {seen}"
+    for key in ("firstTab", "strip", "title", "search", "status", "content"):
+        assert len({round(v[key], 1) for v in seen.values()}) == 1, f"{key} shifts between sub-tabs: {seen}"
+
+
+def test_a_short_page_does_not_scroll_for_a_single_pixel(make_device):
+    """The top bar used to be 48px plus a 1px border inside a layout that assumed 48px, so every page was 1px
+    taller than the window and showed a scrollbar even when there was nothing to scroll."""
+    d = make_device(1280, 900)
+    d.local_only()
+    d.eval("""async () => { const c = await localCoopCreate({ name: 'Tiny', created_date: '2024-01-01' }); await loadCoops(); await switchCoop(c.id); }""")
+    d.eval("() => switchTab('eggs')")
+    d.page.wait_for_timeout(300)
+    m = d.eval("() => ({ sh: document.documentElement.scrollHeight, ih: innerHeight })")
+    assert m["sh"] <= m["ih"], f"an almost-empty page overflows the window by {m['sh'] - m['ih']}px"

@@ -18,28 +18,34 @@
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to content</a>
-  <!-- App shell. Wide screens (>= 900px): a left sidebar -- brand, current coop, section nav, status --
-       beside a content pane with a page header and the section's sub-tabs along its top.
-       Narrower screens: the same elements collapse into the original top bar + bottom tab bar
-       (the sidebar wrapper simply disappears via display: contents). One DOM, two layouts, so
-       every id below that app code looks up keeps working in both. -->
+  <!-- App shell. Wide screens (>= 900px): a thin top bar across the whole window (brand, page title,
+       search, status), a left sidebar (coop switcher + section nav) under it, and the content pane with the
+       section's sub-tabs pinned directly beneath the bar. Narrower screens: the same elements collapse into
+       the original top bar + bottom tab bar (the sidebar wrapper simply disappears via display: contents).
+       One DOM, two layouts, so every id below that app code looks up keeps working in both. -->
+  <header class="sticky-header-group topbar">
+    <div class="sticky-header-bar">
+      <div class="sticky-header-inner">
+        <h1 class="sticky-header-title"><img src="logo-inline.png" alt="" width="20" height="20" style="border-radius:4px;vertical-align:-4px;margin-right:2px"> <span class="brand-text">The Coop Ledger</span></h1>
+        <div class="page-header" id="pageHeader">
+          <span class="page-header-icon" id="pageIcon" aria-hidden="true"></span>
+          <h2 class="page-header-title" id="pageTitle"></h2>
+          <span class="page-header-sub" id="pageSub"></span>
+        </div>
+        <div class="sticky-header-right">
+          <button id="globalSearchBtn" class="header-icon-btn" aria-label="Search" title="Search (Ctrl+K)"><span aria-hidden="true">🔍</span><span class="search-label desktop-only">Search your coop…</span><kbd class="desktop-only">Ctrl K</kbd></button>
+          <div id="todayDate" class="today"></div>
+          <div id="connIndicator" class="conn-indicator" role="status"><span class="conn-dot"></span><span id="connLabel">Checking...</span></div>
+          <div id="syncIndicator" class="sync-indicator" style="display:none"></div>
+          <div id="undoRedoSlot"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
-      <div class="sticky-header-group">
-        <div class="sticky-header-bar">
-          <div class="sticky-header-inner">
-            <h1 class="sticky-header-title"><img src="logo-inline.png" alt="" width="20" height="20" style="border-radius:4px;vertical-align:-4px;margin-right:2px"> <span class="brand-text">The Coop Ledger</span></h1>
-            <div class="sticky-header-right">
-              <button id="globalSearchBtn" class="header-icon-btn" aria-label="Search" title="Search"><span aria-hidden="true">🔍</span><span class="sidebar-only">Search</span></button>
-              <div id="todayDate" class="today"></div>
-              <div id="connIndicator" class="conn-indicator" role="status"><span class="conn-dot"></span><span id="connLabel">Checking...</span></div>
-              <div id="syncIndicator" class="sync-indicator" style="display:none"></div>
-              <div id="undoRedoSlot"></div>
-            </div>
-          </div>
-        </div>
-        <div id="statusBannerSlot"></div>
-      </div>
+      <div id="statusBannerSlot"></div>
 
       <button class="coop-banner coop-switcher" id="coopSwitcher" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="coopMenu" title="Switch coop">
         <span class="coop-switcher-text">
@@ -60,11 +66,6 @@
     </aside>
 
     <div class="content">
-      <header class="page-header" id="pageHeader">
-        <span class="page-header-icon" id="pageIcon" aria-hidden="true"></span>
-        <h2 class="page-header-title" id="pageTitle"></h2>
-        <span class="page-header-sub" id="pageSub"></span>
-      </header>
       <div class="wrap" id="main-content" tabindex="-1">
         <nav class="settings-subnav" id="settingsSubNav" aria-label="Settings sections"></nav>
 

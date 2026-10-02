@@ -346,7 +346,19 @@ function renderConnectionSection() {
     <div class="card" style="margin-top:16px;border-color:var(--gold)">
       <div class="card-title">Running local-only</div>
       <div class="dim" style="font-size:12px;margin-bottom:8px">This coop's data lives only in this browser's storage on this device -- it is not sent anywhere, and nothing is backed up automatically. <strong style="color:var(--text)">Clearing this browser's site data or cache, uninstalling/removing the browser, or losing this device will permanently delete it, with no way to recover it.</strong></div>
-      <div class="dim" style="font-size:12px">The safest way to protect it is exporting a backup from Settings → Coops -- do this periodically, and especially before clearing any browser data. Switching to "Sync with a server" above (anytime, without losing anything already entered) also keeps a live copy safe on the server automatically.</div>
+      <div class="dim" style="font-size:12px">The safest way to protect it is a backup -- do this periodically, and especially before clearing any browser data. Switching to "Sync with a server" above (anytime, without losing anything already entered) also keeps a live copy safe on the server automatically.</div>
+
+      <div style="margin:14px 0 4px;font-size:13px"><strong style="color:var(--text)">Last backup:</strong> <span id="lastBackupLine">${esc(lastBackupLabel())}</span></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 6px">
+        <button class="btn btn-confirm" id="backUpNowBtn">📦 Back up now${STATE.coops.length > 1 ? ` (all ${STATE.coops.length} coops)` : ""}</button>
+        <button class="btn ghost" id="moreExportOptionsBtn">More export options</button>
+      </div>
+      <div id="backUpNowStatus" class="dim" style="font-size:12px;min-height:16px"></div>
+
+      <label class="field" style="display:flex;flex-direction:row;align-items:flex-start;gap:10px;cursor:pointer;margin:14px 0 0">
+        <input type="checkbox" id="hideLocalTag" ${getLocalTagHidden() ? "checked" : ""} style="width:auto;margin-top:2px">
+        <span style="color:var(--text)">Hide the "Local only" tag in the sidebar<br><span class="dim" style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:0">It still appears in red when a backup is overdue. Set how often in Settings → App, or turn the reminder off there.</span></span>
+      </label>
     </div>
     ` : `
     <div class="card" style="margin-top:16px">
@@ -442,6 +454,31 @@ function renderConnectionSection() {
     setUserName(document.getElementById("userNameInput").value);
     showToast(getUserName() ? `Set as ${getUserName()}` : "Name cleared", "update");
   });
+  const backUpNowBtn = document.getElementById("backUpNowBtn");
+  if (backUpNowBtn) {
+    backUpNowBtn.addEventListener("click", async () => {
+      const status = document.getElementById("backUpNowStatus");
+      backUpNowBtn.disabled = true;
+      status.textContent = "Backing up…";
+      try {
+        const { count, where } = await backUpAllCoopsNow((percent, label) => { status.textContent = `${label} (${percent}%)`; });
+        status.textContent = `Backed up ${count} coop${count !== 1 ? "s" : ""} to ${where}.`;
+        showToast("Backup complete", "create");
+      } catch (err) {
+        status.textContent = "";
+        alert("Backup failed: " + err.message);
+      } finally {
+        backUpNowBtn.disabled = false;
+        const line = document.getElementById("lastBackupLine");
+        if (line) line.textContent = lastBackupLabel();
+      }
+    });
+    document.getElementById("moreExportOptionsBtn").addEventListener("click", () => { settingsSubTab = "coops"; renderSettingsHub(); });
+    document.getElementById("hideLocalTag").addEventListener("change", (e) => {
+      setLocalTagHidden(e.target.checked);
+      renderLocalOnlyBadge();
+    });
+  }
   document.getElementById("modeLocalBtn").addEventListener("click", () => {
     if (localOnlyMode) return;
     setLocalOnlyMode(true);

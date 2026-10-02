@@ -248,6 +248,13 @@ async function doLogin() {
 async function init() {
   document.getElementById("todayDate").textContent = fmtDate(todayStr());
   document.getElementById("globalSearchBtn").addEventListener("click", openGlobalSearchModal);
+  document.addEventListener("keydown", (e) => {
+    const modalOpen = document.getElementById("modalOverlay")?.classList.contains("open");
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k" && !modalOpen) {
+      e.preventDefault();
+      openGlobalSearchModal();
+    }
+  });
   // Enter in any text/number/date input saves the entry it belongs to --
   // "type 8, hit Enter, egg entry saved" instead of reaching for the button.
   // Scoped to a containing modal or inline form block, and targeting only

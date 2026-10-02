@@ -88,6 +88,13 @@ function daysSinceLastBackup() {
   if (!raw) return Infinity;
   return (Date.now() - Number(raw)) / (24 * 60 * 60 * 1000);
 }
+/** Compact age for the sidebar tag: "today", "1d ago", "12d ago" -- or "" if there has never been a backup. */
+function backupAgeShort() {
+  const d = daysSinceLastBackup();
+  if (!Number.isFinite(d)) return "";
+  if (d < 1) return "today";
+  return `${Math.floor(d)}d ago`;
+}
 /** Human-readable "when did I last export" for the App settings card. */
 function lastBackupLabel() {
   const raw = localStorage.getItem(LAST_BACKUP_KEY);
@@ -160,6 +167,26 @@ async function writeBackupToSyncFolder(coopId) {
   await writable.close();
   recordLocalBackup();
   return filename;
+}
+
+/** Backs up EVERY coop in one go: into the synced folder when one is set up and writable, otherwise
+ * as one .zip download per coop (the browser may ask once to allow multiple downloads).
+ * Returns { count, where } for the confirmation message. */
+async function backUpAllCoopsNow(onProgress) {
+  const coops = [...STATE.coops];
+  if (!coops.length) throw new Error("There are no coops to back up yet.");
+  const handle = SYNC_FOLDER_SUPPORTED ? await getSyncFolderHandle() : null;
+  const toFolder = !!handle && (await syncFolderHasWriteAccess(handle));
+  for (let i = 0; i < coops.length; i++) {
+    const c = coops[i];
+    if (toFolder) {
+      if (onProgress) onProgress(Math.round((i / coops.length) * 100), `Saving ${c.name}`);
+      await writeBackupToSyncFolder(c.id);
+    } else {
+      await exportLocalZip(c.id, (pct, label) => { if (onProgress) onProgress(Math.round(((i + pct / 100) / coops.length) * 100), `${c.name}: ${label || "exporting"}`); });
+    }
+  }
+  return { count: coops.length, where: toFolder ? "your synced folder" : "your downloads" };
 }
 
 /** Populates the Synced Folder card's status text and buttons -- separate

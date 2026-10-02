@@ -59,7 +59,7 @@ def test_offline_changes_survive_a_reload_even_with_no_connection(make_device, s
     # wait until the service worker controls the page and has cached the shell
     d.page.evaluate("navigator.serviceWorker.ready.then(() => true)")
     d.page.reload(); d.ready()
-    d.page.wait_for_function("!!navigator.serviceWorker.controller", timeout=10000)
+    d.page.wait_for_function("!!navigator.serviceWorker.controller && !!currentCoopId", timeout=10000)  # init() is async: wait for the coop to load
 
     d.offline(True)
     b = bird(d, name="Survives reload")
