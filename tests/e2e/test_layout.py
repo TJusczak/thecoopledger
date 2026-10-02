@@ -34,7 +34,7 @@ def wide(make_device):
 
 def test_thin_top_bar_spans_the_window_with_sidebar_and_content_below(wide):
     top, sb, content = box(wide, ".topbar"), box(wide, "#sidebar"), box(wide, ".content")
-    assert top["x"] == 0 and top["y"] == 0 and top["w"] >= 1279, "the bar spans the whole window"
+    assert top["x"] == 0 and top["y"] == 0 and top["w"] >= 1280 - 20, "the bar spans the window (less the reserved scrollbar gutter)"
     assert 40 <= top["h"] <= 56, f"thin bar, got {top['h']}px"
     assert sb["x"] == 0 and 220 <= sb["w"] <= 270
     assert abs(sb["y"] - top["b"]) <= 1, "sidebar starts right under the bar"
@@ -228,3 +228,60 @@ def test_first_run_hides_navigation_there_is_nothing_to_navigate_yet(make_device
     assert d.page.locator("#coopSwitcher").is_hidden()
     assert d.page.locator("#pageHeader").is_hidden()
     d.assert_no_js_errors()
+
+
+# ------------------------------------------------- scrollbars and sideways jumps
+
+def seed_long_history(d):
+    d.eval("""async () => {
+        for (let i = 0; i < 30; i++) await localEggCreate({ coop_id: currentCoopId, date: new Date(Date.now() - i * 864e5 * 9).toISOString().slice(0, 10), count: 2 + (i % 4) }, { suppressUndo: true });
+        await refreshAndRender();
+    }""")
+
+
+@pytest.mark.parametrize("tab,subnav", [("dashboard", "#coopSubNav"), ("flock", "#flockSubNav"), ("eggs", "#eggsSubNav"),
+                                        ("bedding", "#supplySubNav"), ("settings", "#settingsSubNav")])
+def test_subtab_strip_has_no_scrollbar_of_its_own(wide, tab, subnav):
+    wide.eval("(t) => switchTab(t)", tab)
+    m = wide.eval("""(s) => { const e = document.querySelector(s); return { sh: e.scrollHeight, ch: e.clientHeight, sw: e.scrollWidth, cw: e.clientWidth }; }""", subnav)
+    assert m["sh"] <= m["ch"], f"{tab}: the strip overflows vertically by {m['sh'] - m['ch']}px, which draws a tiny scrollbar"
+    assert m["sw"] <= m["cw"], f"{tab}: the strip overflows horizontally at 1280px"
+
+
+def test_switching_subtabs_never_shifts_the_layout_sideways(make_device):
+    """Overview and Year Review are tall (page scrollbar); All-Time Stats can be short (none). The
+    sub-tab strip, title and content must sit at the same x on all three."""
+    d = make_device(1280, 1300)           # tall window so the shortest sub-tab fits without scrolling
+    d.local_only()
+    seed_two_coops(d)
+    seed_long_history(d)
+    d.eval("() => switchTab('dashboard')")
+    seen = {}
+    for sub in ("overview", "review", "alltime"):
+        d.eval("(s) => { coopSubTab = s; renderCoopHub(); }", sub)
+        d.page.wait_for_timeout(300)
+        seen[sub] = d.eval("""() => ({
+            firstTab: document.querySelector('#coopSubNav .range-btn').getBoundingClientRect().x,
+            strip: document.querySelector('#coopSubNav').getBoundingClientRect().right,
+            title: document.querySelector('#pageTitle').getBoundingClientRect().x,
+            search: document.querySelector('#globalSearchBtn').getBoundingClientRect().x,
+            status: document.querySelector('#connIndicator').getBoundingClientRect().right,
+            content: document.querySelector('#coopSubContent').getBoundingClientRect().x,
+            scrolls: document.documentElement.scrollHeight > innerHeight,
+        })""")
+    # the scenario this guards: some sub-tabs scroll and one does not
+    assert any(v["scrolls"] for v in seen.values()) and not all(v["scrolls"] for v in seen.values()), f"test needs a mix of tall and short pages: {seen}"
+    for key in ("firstTab", "strip", "title", "search", "status", "content"):
+        assert len({round(v[key], 1) for v in seen.values()}) == 1, f"{key} shifts between sub-tabs: {seen}"
+
+
+def test_a_short_page_does_not_scroll_for_a_single_pixel(make_device):
+    """The top bar used to be 48px plus a 1px border inside a layout that assumed 48px, so every page was 1px
+    taller than the window and showed a scrollbar even when there was nothing to scroll."""
+    d = make_device(1280, 900)
+    d.local_only()
+    d.eval("""async () => { const c = await localCoopCreate({ name: 'Tiny', created_date: '2024-01-01' }); await loadCoops(); await switchCoop(c.id); }""")
+    d.eval("() => switchTab('eggs')")
+    d.page.wait_for_timeout(300)
+    m = d.eval("() => ({ sh: document.documentElement.scrollHeight, ih: innerHeight })")
+    assert m["sh"] <= m["ih"], f"an almost-empty page overflows the window by {m['sh'] - m['ih']}px"

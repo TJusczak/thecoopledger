@@ -38,6 +38,10 @@ body {
   font-family: 'Inter', sans-serif;
 }
 
+/* Always reserve room for the page scrollbar: without it, a page tall enough to scroll is narrower than one that
+   isn't, and the whole layout (sub-tabs, title, content) jumps sideways when you switch between them. */
+html { scrollbar-gutter: stable; }
+
 .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 60px; }
 
 .sticky-header-group { position: sticky; top: 0; z-index: 500; }
@@ -1317,7 +1321,7 @@ body.onboarding .tabs, body.onboarding .coop-switcher, body.onboarding .page-hea
   .topbar { position: sticky; top: 0; z-index: 500; }
   .sticky-header-bar { background: var(--surface); border-bottom: 1px solid var(--border); }
   .sticky-header-inner {
-    max-width: none; margin: 0; padding: 0; height: var(--topbar-h);
+    max-width: none; margin: 0; padding: 0; height: calc(var(--topbar-h) - 1px); /* + the bar's 1px border = exactly --topbar-h, so the page never overflows the window by a pixel */
     display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-start; gap: 0;
   }
   .sticky-header-title {
@@ -1401,14 +1405,16 @@ body.onboarding .tabs, body.onboarding .coop-switcher, body.onboarding .page-hea
   /* ---- sub-tabs: a strip pinned directly under the top bar ---- */
   .range-select.sub-nav-fixed, .settings-subnav.visible {
     position: sticky; top: var(--topbar-h); z-index: 40;
-    display: flex; flex-wrap: nowrap; gap: 2px; overflow-x: auto;
+    display: flex; flex-wrap: nowrap; gap: 2px; overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none;
     background: var(--bg); border-bottom: 1px solid var(--border);
     margin: 0 -24px 16px; padding: 0 24px;
   }
+  .range-select.sub-nav-fixed::-webkit-scrollbar, .settings-subnav.visible::-webkit-scrollbar { display: none; }
   .settings-subnav.visible { margin-bottom: 0; }
   .sub-nav-fixed .range-btn, .settings-subnav .range-btn {
     background: none; border: none; border-bottom: 3px solid transparent; border-radius: 0;
-    padding: 10px 14px; margin-bottom: -1px; font-size: 13px; font-weight: 600; color: var(--text-dim); white-space: nowrap;
+    padding: 10px 14px; margin-bottom: 0; font-size: 13px; font-weight: 600; color: var(--text-dim); white-space: nowrap;
   }
   .sub-nav-fixed .range-btn:hover, .settings-subnav .range-btn:hover { color: var(--text); background: var(--surface); }
   .sub-nav-fixed .range-btn.active, .settings-subnav .range-btn.active {
