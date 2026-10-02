@@ -52,6 +52,7 @@ setInterval(checkConnection, 30000);
  * nothing here is a one-way door. */
 function showOnboardingIfNeeded() {
   if (localStorage.getItem(MODE_CHOSEN_KEY)) return false;
+  document.body.classList.add("onboarding"); // hides the section nav / coop switcher: there's no coop to navigate yet
   document.querySelector(".wrap").innerHTML = `
     <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px">
       <div class="card" style="max-width:420px;width:100%;border:2px solid var(--rust);box-shadow:0 0 0 1px rgba(193,80,46,0.15), 0 12px 32px rgba(0,0,0,0.35)">
@@ -172,6 +173,7 @@ async function checkAuthAndShowLoginIfNeeded() {
 }
 
 function showLoginScreen() {
+  document.body.classList.add("onboarding");
   document.querySelector(".wrap").innerHTML = `
     <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px">
       <div class="card" style="max-width:380px;width:100%;border:2px solid var(--rust);box-shadow:0 0 0 1px rgba(193,80,46,0.15), 0 12px 32px rgba(0,0,0,0.35)">

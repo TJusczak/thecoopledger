@@ -184,7 +184,7 @@ def make_device(browser, server):
         # for the LAST script's functions (pwa.js) before touching any app global.
         d = Device(ctx, page, errors)
         d.ready()
-        page.wait_for_selector("#gs_local, #tabs", timeout=10000)
+        page.wait_for_selector("#gs_local, #tabs", state="attached", timeout=10000)
         made.append(d)
         return d
 

@@ -5,6 +5,7 @@
 async function switchCoop(id) {
   currentCoopId = id;
   localStorage.setItem(COOP_KEY, id);
+  updateHeader(); // show the new coop's name straight away -- loading its data can take a while on a slow connection
   await loadCoopData();
   updateHeader();
   updateTabVisibility();
@@ -20,6 +21,8 @@ function updateHeader() {
   const coop = STATE.coops.find(c => c.id === currentCoopId);
   document.getElementById("coopHeaderName").textContent = coop ? `${coopIcon(coop)} ${coop.name}` : "🐔 No coop selected";
   document.getElementById("eyebrowText").textContent = (coop && coop.created_date) ? `Est. ${fmtDate(coop.created_date)}` : "";
+  document.getElementById("coopSwitcher").title = coop ? `${coop.name} -- switch coop` : "Switch coop";
+  updatePageHeader();
   renderLocalOnlyBadge();
   renderBetaBadge();
   renderRoleBadge();
@@ -178,7 +181,11 @@ document.getElementById("tabs").addEventListener("click", (e) => {
 function switchTab(tab) {
   if (activeTab === "flock" && tab !== "flock") { selectedBirdIds.clear(); expandedBatches.clear(); }
   activeTab = tab;
-  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === tab));
+  document.querySelectorAll(".tab").forEach(t => {
+    const on = t.dataset.tab === tab;
+    t.classList.toggle("active", on);
+    if (on) t.setAttribute("aria-current", "page"); else t.removeAttribute("aria-current");
+  });
   document.querySelectorAll(".panel").forEach(p => p.style.display = "none");
   document.getElementById(`panel-${tab}`).style.display = "block";
   document.getElementById("settingsSubNav").classList.toggle("visible", tab === "settings");
@@ -190,8 +197,94 @@ function switchTab(tab) {
   else if (tab === "eggs") eggsSubTab = "eggs";
   else if (tab === "bedding") supplySubTab = "inventory";
   document.querySelector(".wrap").classList.toggle("subnav-open", ["settings", "dashboard", "flock", "eggs", "bedding"].includes(tab));
+  updatePageHeader();
   renderActiveTab();
 }
+
+/** The wide layout's page header: the active section's icon and name, with the
+ * current coop beside it. (Hidden by CSS in the narrow layout, where the bottom tab
+ * bar already shows which section you are on.) */
+function updatePageHeader() {
+  const active = document.querySelector(".tab.active");
+  if (!active) return;
+  document.getElementById("pageIcon").textContent = active.querySelector(".tab-icon").textContent;
+  document.getElementById("pageTitle").textContent = active.querySelector(".tab-label").textContent;
+  const coop = STATE.coops.find(c => c.id === currentCoopId);
+  document.getElementById("pageSub").textContent = coop ? coop.name : "";
+}
+
+// ---------- Coop switcher ----------
+// The sidebar's coop card doubles as the switcher: tap it to jump between coops without
+// detouring through Settings. (Creating, renaming and deleting coops still lives in
+// Settings -> Coops; the menu links there.)
+function closeCoopMenu() {
+  const menu = document.getElementById("coopMenu");
+  menu.hidden = true;
+  document.getElementById("coopSwitcher").setAttribute("aria-expanded", "false");
+}
+
+function openCoopMenu() {
+  const btn = document.getElementById("coopSwitcher");
+  const menu = document.getElementById("coopMenu");
+  const coops = [...STATE.coops].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  menu.innerHTML = `
+    ${coops.map(c => `
+      <button class="coop-menu-item${c.id === currentCoopId ? " current" : ""}" role="menuitemradio" aria-checked="${c.id === currentCoopId}" data-coop-id="${esc(c.id)}">
+        <span class="coop-menu-icon" aria-hidden="true">${esc(coopIcon(c))}</span>
+        <span class="coop-menu-name">${esc(c.name)}</span>
+        ${c.id === currentCoopId ? `<span class="coop-menu-check" aria-hidden="true">✓</span>` : ""}
+      </button>`).join("")}
+    ${coops.length ? `<div class="coop-menu-sep" role="separator"></div>` : ""}
+    <button class="coop-menu-item coop-menu-manage" role="menuitem" data-manage-coops>
+      <span class="coop-menu-icon" aria-hidden="true">⚙️</span>
+      <span class="coop-menu-name">${coops.length ? "Manage coops" : "Create your first coop"}</span>
+    </button>`;
+  menu.hidden = false;
+  btn.setAttribute("aria-expanded", "true");
+  // Position against the button; fixed so the sidebar's own scrolling can't clip it.
+  const r = btn.getBoundingClientRect();
+  const narrow = window.innerWidth < 900;
+  menu.style.left = narrow ? "12px" : `${Math.round(r.left)}px`;
+  menu.style.width = narrow ? "calc(100vw - 24px)" : `${Math.round(r.width)}px`;
+  menu.style.top = `${Math.round(r.bottom + 6)}px`;
+  const current = menu.querySelector(".current") || menu.querySelector(".coop-menu-item");
+  if (current) current.focus();
+}
+
+document.getElementById("coopSwitcher").addEventListener("click", () => {
+  if (document.getElementById("coopMenu").hidden) openCoopMenu(); else closeCoopMenu();
+});
+document.getElementById("coopMenu").addEventListener("click", async (e) => {
+  const item = e.target.closest(".coop-menu-item");
+  if (!item) return;
+  closeCoopMenu();
+  if (item.hasAttribute("data-manage-coops")) {
+    settingsSubTab = "coops";
+    switchTab("settings");
+    return;
+  }
+  const id = item.dataset.coopId;
+  if (id && id !== currentCoopId) {
+    await switchCoop(id);
+    renderActiveTab();
+  }
+  document.getElementById("coopSwitcher").focus();
+});
+document.addEventListener("click", (e) => {
+  if (!document.getElementById("coopMenu").hidden && !e.target.closest("#coopMenu, #coopSwitcher")) closeCoopMenu();
+});
+document.addEventListener("keydown", (e) => {
+  const menu = document.getElementById("coopMenu");
+  if (menu.hidden) return;
+  if (e.key === "Escape") { closeCoopMenu(); document.getElementById("coopSwitcher").focus(); }
+  else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    const items = [...menu.querySelectorAll(".coop-menu-item")];
+    const i = items.indexOf(document.activeElement);
+    items[(i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length].focus();
+    e.preventDefault();
+  }
+});
+window.addEventListener("resize", closeCoopMenu);
 
 function renderActiveTab() {
   if (activeTab === "dashboard") renderCoopHub();

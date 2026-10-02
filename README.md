@@ -161,17 +161,25 @@ just "running".
 
 ## Running the tests
 
-The server has a test suite covering auth and roles, the admin-only
-boundary, CRUD + sync tombstones, photo upload validation, backups, and
-invite-code lifecycle:
-
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
-pytest
+pytest                                  # server: ~100 tests, a few seconds
+for t in tests/test_*.mjs; do node "$t"; done   # client logic (no dependencies)
+ruff check .                            # lint
+
+playwright install chromium             # once
+pytest -m e2e                           # real browser + real server (about a minute)
 ```
 
-The tests run against a temporary data directory — they can't touch a real
-deployment's database.
+The server tests run against a temporary data directory -- they can't touch a real
+deployment's database -- and cover auth and roles, the admin-only boundary, CRUD and the
+sync guarantees (including a concurrent writer-vs-puller race), photo validation, backups,
+invite codes, migrations, and a regression test for each bug found in the server audit. The
+browser tests drive the real app: offline queueing and draining, two devices converging,
+reloading with no network at all, and the layout at phone, tablet and desktop sizes.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the pieces fit together (server
+package layout, the sync clock, the frontend script order) before changing any of them.
 
 ## Publishing your own image
 
