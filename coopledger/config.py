@@ -66,6 +66,11 @@ MAX_BACKUPS_TO_KEEP = env_int("MAX_BACKUPS_TO_KEEP", 14, minimum=1)
 # haven't been used in that many days.
 SESSION_MAX_IDLE_DAYS = env_int("SESSION_MAX_IDLE_DAYS", 0, minimum=0)
 
+# Shared invite-code login is the pre-accounts way in. Servers that existed before accounts keep it on
+# (set during the upgrade) so nobody is locked out; new servers start with it off. Admins can flip it in
+# Settings -> Users, which overrides this default.
+ALLOW_INVITE_CODES = env_bool("ALLOW_INVITE_CODES", False)
+
 # Comma-separated list of allowed CORS origins, or "*" (the default) to
 # allow any -- the permissive default is what lets a TWA/wrapped app or a
 # CDN-hosted frontend talk to a separately-hosted sync server out of the
@@ -83,6 +88,7 @@ OVERRIDABLE_SETTINGS = {
     "backups_enabled": {"type": "bool", "env_default": lambda: BACKUPS_ENABLED},
     "backup_interval_hours": {"type": "int", "min": 1, "max": 24 * 30, "env_default": lambda: BACKUP_INTERVAL_HOURS},
     "max_backups_to_keep": {"type": "int", "min": 1, "max": 365, "env_default": lambda: MAX_BACKUPS_TO_KEEP},
+    "allow_invite_codes": {"type": "bool", "env_default": lambda: ALLOW_INVITE_CODES},
     "activity_log_retention_days": {"type": "int", "min": 1, "max": 3650, "env_default": lambda: ACTIVITY_LOG_RETENTION_DAYS},
 }
 

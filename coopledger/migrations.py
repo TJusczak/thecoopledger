@@ -21,11 +21,12 @@ from datetime import date
 from typing import Callable, NamedTuple
 
 from . import config
-from .auth import generate_invite_code
+from .auth import generate_invite_code, hash_token
 from .config import DATA_DIR, LB_TO_KG, PHOTOS_DIR
 from .db import get_db, now_iso
 from .photos import photo_relpath, save_photo_bytes
 from .schema import DEFAULT_SETTINGS, SCHEMA, SCOPED, SYNC_COLUMNS
+from .users import bootstrap_admin
 
 def enable_wal():
     """WAL lets readers and the single writer proceed concurrently. It is a
@@ -43,6 +44,10 @@ def init_db():
     """Idempotent: safe on a brand-new file and on every existing install."""
     enable_wal()
     with get_db() as conn:
+        # Did this database already hold an invite-code server before accounts existed? Decided first,
+        # before the tables below are created, because it determines whether the shared invite codes stay
+        # switched on (an upgrade must not lock anyone out) or start off (a brand-new server).
+        existing_install = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'invite_codes'").fetchone() is not None
         conn.execute("CREATE TABLE IF NOT EXISTS sync_clock (id INTEGER PRIMARY KEY CHECK (id = 1), last_ts TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
         for table, cols in SCHEMA.items():
@@ -111,6 +116,9 @@ def init_db():
             conn.execute('ALTER TABLE sessions ADD COLUMN "last_activity" TEXT')
         if "role" not in existing_session_cols:
             conn.execute('ALTER TABLE sessions ADD COLUMN "role" TEXT NOT NULL DEFAULT \'admin\'')
+        if "user_id" not in existing_session_cols:
+            conn.execute('ALTER TABLE sessions ADD COLUMN "user_id" TEXT')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions ("user_id")')
         if "invite_code_id" not in existing_session_cols:
             conn.execute('ALTER TABLE sessions ADD COLUMN "invite_code_id" INTEGER')
 
@@ -168,20 +176,58 @@ def init_db():
             )
         ''')
 
-        # Printed (and written to a file) on every startup, not just when
-        # first generated -- this is the deliberate bootstrap mechanism for
-        # getting the very first invite code, since /api/auth/invite-code
-        # itself requires already being logged in. An unauthenticated
-        # endpoint that reveals it would defeat the entire point of having
-        # it gate access in the first place -- server console access (or
-        # this file) is the intended way in, the same pattern used by a lot
-        # of self-hosted apps for their initial setup credential.
-        current_code = conn.execute("SELECT invite_code FROM auth_settings WHERE id = 1").fetchone()["invite_code"]
-        print("=" * 50)
-        print(f"  COOP LEDGER INVITE CODE: {current_code}")
-        print(f"  (also written to {DATA_DIR / 'invite_code.txt'})")
-        print("=" * 50)
-        (DATA_DIR / "invite_code.txt").write_text(current_code + "\n")
+        # User accounts. Server-local like sessions and invite codes: deliberately NOT in SCHEMA, so the
+        # generic sync routes can never serve them to a client. Usernames are unique ignoring case.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                display_name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'readonly')),
+                must_change_password INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                last_login_at TEXT,
+                password_changed_at TEXT,
+                disabled_at TEXT
+            )
+        ''')
+
+        # Servers from before accounts keep their shared invite codes switched on, so updating never
+        # locks anyone out; an admin turns them off in Settings -> Users once everyone has an account.
+        if existing_install and not conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+            conn.execute(
+                "INSERT OR IGNORE INTO server_settings (key, value, updated_at) VALUES ('allow_invite_codes', '1', ?)",
+                (now_iso(),),
+            )
+
+        # First run: the very first administrator. Printed (and written to a file) rather than served,
+        # because anything that hands out credentials over the network defeats having them. Server
+        # console access, or that file, is the way in -- the same pattern as Crafty Controller.
+        created = bootstrap_admin(conn)
+        if created:
+            print("=" * 60)
+            if created["from_env"]:
+                print(f"  COOP LEDGER ADMIN ACCOUNT CREATED: {created['username']}  (password from ADMIN_PASSWORD)")
+            else:
+                print("  COOP LEDGER FIRST-RUN ADMINISTRATOR")
+                print(f"    Username: {created['username']}")
+                print(f"    Password: {created['password']}")
+                print(f"  (also written to {created['path']})")
+                print("  You'll be asked to choose your own password when you sign in.")
+            if existing_install:
+                print("  Existing invite codes still work until you turn them off in Settings -> Users.")
+            print("=" * 60)
+
+        # The old shared invite code is only surfaced when invite-code login is actually on.
+        codes_row = conn.execute("SELECT value FROM server_settings WHERE key = 'allow_invite_codes'").fetchone()
+        codes_on = (codes_row["value"] == "1") if codes_row else config.ALLOW_INVITE_CODES
+        if codes_on:
+            current_code = conn.execute("SELECT invite_code FROM auth_settings WHERE id = 1").fetchone()["invite_code"]
+            print(f"  COOP LEDGER INVITE CODE (legacy shared login): {current_code}")
+            (DATA_DIR / "invite_code.txt").write_text(current_code + "\n")
+        else:
+            (DATA_DIR / "invite_code.txt").unlink(missing_ok=True)
 
         # Migrate any pre-existing (pre-multi-coop) rows into a Default Coop rather than losing them
         orphaned = any(
@@ -341,6 +387,18 @@ def migrate_repair_orphaned_hatch_eggs():
             print(f"Repair: tombstoned {cur.rowcount} orphaned hatch_eggs row(s) whose clutch was already deleted")
 
 
+def migrate_hash_session_tokens():
+    """Sessions used to store the raw token. Now only its SHA-256 is stored, so a leaked database or backup
+    can't be replayed as logins. Existing rows are converted in place (the token the user's device holds is
+    unchanged, and still works: lookups hash what they are given). Raw tokens are 43 characters; hashes are 64."""
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, token FROM sessions WHERE length(token) != 64").fetchall()
+        for r in rows:
+            conn.execute("UPDATE sessions SET token = ? WHERE id = ?", (hash_token(r["token"]), r["id"]))
+        if rows:
+            print(f"Hashed {len(rows)} stored session token(s)")
+
+
 class Migration(NamedTuple):
     id: str
     run: Callable[[], None]
@@ -354,6 +412,7 @@ MIGRATIONS = [
     Migration("003_repair_orphaned_photo_refs", migrate_repair_orphaned_photo_refs, repeatable=True),
     Migration("004_repair_orphaned_hatch_eggs", migrate_repair_orphaned_hatch_eggs, repeatable=True),
     Migration("005_normalize_supply_weight_units", migrate_normalize_supply_weight_units, repeatable=True),
+    Migration("006_hash_session_tokens", migrate_hash_session_tokens, repeatable=False),
 ]
 
 

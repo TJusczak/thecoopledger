@@ -6,10 +6,11 @@ from fastapi import APIRouter, FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from . import config, events, middleware
-from . import auth, integrations, maintenance, photos, push
+from . import auth, integrations, maintenance, photos, push, users
 from . import routes_admin, routes_birds, routes_coops, routes_resources
 from .db import get_db
 from .migrations import init_db, run_migrations
+from .settings import get_setting
 
 health_router = APIRouter()
 
@@ -20,7 +21,12 @@ def health():
     reports this server's version so the client can detect a mismatch --
     e.g. a self-hosted sync server that hasn't been restarted since the
     static frontend it's serving (or being talked to by) auto-updated."""
-    return {"status": "ok", "db": str(config.DB_PATH), "version": config.SERVER_VERSION}
+    return {
+        "status": "ok", "db": str(config.DB_PATH), "version": config.SERVER_VERSION,
+        # Lets the login page decide what to offer before anyone is signed in. Public on purpose: it
+        # reveals only which login methods exist, never anything about accounts.
+        "login": {"accounts": True, "invite_codes": bool(get_setting("allow_invite_codes"))},
+    }
 
 
 def run_startup_work():
@@ -72,6 +78,7 @@ def create_app() -> FastAPI:
         photos.router,
         routes_birds.router,
         auth.router,
+        users.router,
         events.router,
         push.router,
         integrations.router,

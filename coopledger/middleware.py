@@ -5,6 +5,7 @@ from urllib.parse import parse_qs
 from starlette.datastructures import MutableHeaders
 from fastapi.responses import JSONResponse
 
+from .auth import hash_token, lookup_session
 from .db import get_db, now_iso
 
 # The app shell files below MUST never be cached by an intermediate proxy
@@ -108,6 +109,12 @@ WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # a read-only role would trap someone in a session they can't get out of --
 # logging out is always allowed regardless of role.
 ALWAYS_ALLOWED_WRITE_PATHS = {"/api/auth/logout"}
+# Technically writes too, but they only ever touch the caller's OWN account (and need the current password),
+# so a read-only person must still be able to change their own password and name.
+ALWAYS_ALLOWED_WRITE_PATHS |= {"/api/auth/password", "/api/auth/profile"}
+# While a first-login password change is pending, the account may do only what it takes to finish it
+# (or to leave). Enforced here, not just in the UI, so a script can't skip the step.
+MUST_CHANGE_ALLOWED_PATHS = {"/api/auth/me", "/api/auth/password", "/api/auth/logout", "/api/auth/profile"}
 
 
 class AuthMiddleware:
@@ -167,11 +174,13 @@ class AuthMiddleware:
 
         role = None
         touch = False
+        must_change = False
         if token:
             with get_db(write=False) as conn:
-                row = conn.execute("SELECT role, last_activity FROM sessions WHERE token = ?", (token,)).fetchone()
+                row = lookup_session(conn, token)
             if row:
                 role = row["role"]
+                must_change = bool(row["must_change_password"])
                 # Keep last_activity current so idle-session expiry (and the
                 # Sessions list on the Server page) reflects reality -- most
                 # requests only ever pass through here, not through
@@ -181,10 +190,15 @@ class AuthMiddleware:
                 touch = not last or (now_iso()[:13] != last[:13])  # different UTC hour
         if touch:
             with get_db() as conn:
-                conn.execute("UPDATE sessions SET last_activity = ? WHERE token = ?", (now_iso(), token))
+                conn.execute("UPDATE sessions SET last_activity = ? WHERE token = ?", (now_iso(), hash_token(token)))
 
         if role is None:
             response = JSONResponse({"detail": "Not logged in"}, status_code=401)
+            await response(scope, receive, send)
+            return
+
+        if must_change and path not in MUST_CHANGE_ALLOWED_PATHS:
+            response = JSONResponse({"detail": "Choose a new password before continuing.", "code": "password_change_required"}, status_code=403)
             await response(scope, receive, send)
             return
 

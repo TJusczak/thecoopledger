@@ -1,7 +1,7 @@
 """Admin-editable server settings and their effect."""
 import sqlite3
 
-from coopledger import config, maintenance, settings
+from coopledger import auth, config, maintenance, settings
 
 
 # ------------------------------------------------- editable server settings
@@ -53,7 +53,7 @@ def test_shortened_session_window_prunes_on_save(client, admin, admin_code):
     r = client.post("/api/auth/login", json={"name": "Stale", "code": admin_code})
     token = r.json()["token"]
     with sqlite3.connect(config.DB_PATH) as conn:
-        conn.execute("UPDATE sessions SET last_activity = '2020-01-01T00:00:00+00:00' WHERE token = ?", (token,))
+        conn.execute("UPDATE sessions SET last_activity = '2020-01-01T00:00:00+00:00' WHERE token = ?", (auth.hash_token(token),))
     # Saving a short idle window should log out that stale session immediately.
     client.put("/api/admin/server-settings", json={"session_max_idle_days": 30}, headers=admin)
     assert client.get("/api/coops", headers={"Authorization": f"Bearer {token}"}).status_code == 401

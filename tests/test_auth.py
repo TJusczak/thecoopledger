@@ -3,7 +3,7 @@ import sqlite3
 
 import pytest
 
-from coopledger import config, maintenance
+from coopledger import auth, config, maintenance
 
 
 # ---------------------------------------------------------------- auth basics
@@ -160,7 +160,7 @@ def test_idle_sessions_pruned_when_enabled(client, admin_code, monkeypatch):
     with sqlite3.connect(config.DB_PATH) as conn:
         conn.execute(
             "UPDATE sessions SET last_activity = '2020-01-01T00:00:00+00:00', created_at = '2020-01-01T00:00:00+00:00' WHERE token = ?",
-            (token,),
+            (auth.hash_token(token),),
         )
     monkeypatch.setattr(config, "SESSION_MAX_IDLE_DAYS", 30)
     maintenance.prune_idle_sessions()
@@ -172,7 +172,7 @@ def test_idle_pruning_off_by_default(client, admin_code):
     token = r.json()["token"]
     with sqlite3.connect(config.DB_PATH) as conn:
         conn.execute(
-            "UPDATE sessions SET last_activity = '2020-01-01T00:00:00+00:00' WHERE token = ?", (token,)
+            "UPDATE sessions SET last_activity = '2020-01-01T00:00:00+00:00' WHERE token = ?", (auth.hash_token(token),)
         )
     assert config.SESSION_MAX_IDLE_DAYS == 0
     maintenance.prune_idle_sessions()

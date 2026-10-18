@@ -20,15 +20,21 @@ import pytest
 _TMP = tempfile.mkdtemp(prefix="coop-test-")
 os.environ["DATA_DIR"] = _TMP
 os.environ["MAX_PHOTO_UPLOAD_MB"] = "1"  # small cap so the oversize test doesn't need 25MB of bytes
+# Behave like a server upgraded from before accounts, where shared invite codes still work: the older
+# tests exercise them, and test_accounts.py switches them off to test the new-install default.
+os.environ["ALLOW_INVITE_CODES"] = "1"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from coopledger import auth  # noqa: E402
+from coopledger import auth, passwords  # noqa: E402
+from helpers import ADMIN_PASSWORD, FAST_HASH  # noqa: E402
 from coopledger.app import app  # noqa: E402
 
 DATA_DIR = Path(_TMP)
+
+passwords.HASH_PARAMS.update(FAST_HASH)
 
 @pytest.fixture(scope="session")
 def client():
@@ -37,26 +43,39 @@ def client():
 
 
 @pytest.fixture(scope="session")
-def admin_code():
-    # init_db writes the bootstrap code to invite_code.txt -- the same way a
-    # real operator gets it.
+def first_run_credentials(client):
+    """What the first-run banner would have told the operator (read before anything changes it)."""
+    text = (DATA_DIR / "admin_credentials.txt").read_text()
+    return {k.lower(): v.strip() for k, v in (line.split(": ", 1) for line in text.splitlines() if line.startswith(("Username: ", "Password: ")))}
+
+
+@pytest.fixture(scope="session")
+def admin_code(client):
+    """The legacy shared invite code (switched on for the suite, see ALLOW_INVITE_CODES above)."""
     return (DATA_DIR / "invite_code.txt").read_text().strip()
 
 
 @pytest.fixture(autouse=True)
 def _reset_login_rate_limit():
-    # The limiter is in-memory per-IP; TestClient always presents the same
-    # IP, so leftover failures from one test would poison the next.
-    auth.failed_login_attempts.clear()
+    # The limiters are in-memory; TestClient always presents the same IP, so leftover failures from one
+    # test would poison the next.
+    for bucket in (auth.failed_login_attempts, auth.failed_username_attempts):
+        bucket.clear()
     yield
-    auth.failed_login_attempts.clear()
+    for bucket in (auth.failed_login_attempts, auth.failed_username_attempts):
+        bucket.clear()
 
 
 @pytest.fixture(scope="session")
-def admin(client, admin_code):
-    r = client.post("/api/auth/login", json={"name": "Test Admin", "code": admin_code})
-    assert r.status_code == 200
-    return {"Authorization": f"Bearer {r.json()['token']}"}
+def admin(client, first_run_credentials):
+    """Signed in as the bootstrap admin, the way a real operator would: with the generated password, then
+    choosing their own (the server insists before it will do anything else)."""
+    r = client.post("/api/auth/login", json={"username": first_run_credentials["username"], "password": first_run_credentials["password"]})
+    assert r.status_code == 200 and r.json()["must_change_password"] is True
+    headers = {"Authorization": f"Bearer {r.json()['token']}"}
+    r = client.post("/api/auth/password", json={"current_password": first_run_credentials["password"], "new_password": ADMIN_PASSWORD}, headers=headers)
+    assert r.status_code == 200, r.text
+    return headers
 
 
 @pytest.fixture(scope="session")
