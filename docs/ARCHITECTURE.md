@@ -32,7 +32,10 @@ the Dockerfile and existing deployments are unchanged.
 | `db.py` | connections, transactions, **the sync clock** (see below) |
 | `schema.py` | `SCHEMA` / `SCOPED`: the synced tables. Nothing server-internal may go here |
 | `migrations.py` | declarative schema creation + versioned data migrations |
-| `auth.py` | invite codes, sessions, roles, login rate limiting |
+| `auth.py` | sessions (hashed tokens), sign-in, my account, the legacy invite codes, login rate limiting |
+| `passwords.py` | scrypt hashing and the password / username rules (pure functions) |
+| `users.py` | the admin's user management, the first-run admin account, and `reset_admin` (recovery) |
+| `cli.py` | `python -m coopledger.cli reset-admin / list-users`: recovery from the server's own shell |
 | `middleware.py` | plain-ASGI middleware: auth gate, security headers, cache headers |
 | `routes_resources.py` | generic CRUD + `/api/sync/*` — registered **last** |
 | `routes_coops.py` / `routes_admin.py` / `routes_birds.py` | coop lifecycle + export/import, admin pages, bird bulk ops |
@@ -79,6 +82,29 @@ per field; an edit to a deleted row revives it (intent to keep wins).
   catch stale data an old offline client syncs in later. A safety backup is taken before a new
   one-time migration runs on an existing database.
 
+### Accounts and sessions
+
+* Users live in the `users` table -- server-local, never in `SCHEMA`, so the generic sync routes cannot
+  serve them. Passwords are scrypt hashes in a self-describing string (`scrypt$N$r$p$salt$hash`), so the
+  cost can rise without a migration; `needs_rehash` upgrades old ones at the next sign-in.
+* Session tokens are 256 random bits; only `sha256(token)` is stored (`auth.hash_token`). Lookups hash what
+  they are given. Never compare or store a raw token.
+* A session carries a copy of the role and display name. Anything that changes them on the account
+  (`users.update_user`) updates that account's sessions too, so a change is live immediately.
+* `must_change_password` is enforced in `middleware.AuthMiddleware`: such a session may only reach
+  `MUST_CHANGE_ALLOWED_PATHS`. Changing your own password/name (`ALWAYS_ALLOWED_WRITE_PATHS`) is allowed
+  for read-only roles; everything else follows the role rules.
+* First run: `users.bootstrap_admin` creates the admin (generated password -> `data/admin_credentials.txt`,
+  deleted when it is changed; or `ADMIN_USERNAME` / `ADMIN_PASSWORD`). A database that already had invite
+  codes is an *upgrade*: the `allow_invite_codes` setting is turned on so nobody is locked out.
+* Recovery has no web path on purpose (no email, no reset link): `coopledger.cli reset-admin` runs from the
+  server's shell, drops to the data directory's owner first (so a root `docker exec` can't leave root-owned
+  SQLite files the server can't open), and calls `users.reset_admin`, which never touches other accounts.
+* Usernames can change (`auth.rename_checked`): sessions join to `users` for the username, so a rename is live
+  at once. Renaming yourself needs your current password; an admin renaming someone does not.
+* Passwords and password hashes must never be logged, returned by an endpoint, or written to
+  `failed_logins` (tests check each).
+
 ## Frontend (`static/`)
 
 Vanilla JS, **no build step** — `static/` is served as-is (Docker) or copied (Cloudflare).
@@ -88,7 +114,7 @@ the order listed in `index.html`:
 
 `state` → `helpers` → `connection-auth` → `local-db` → `sync-core` → `sync` → `local-crud` →
 `export-import` → `shell` → `settings` → `notes` → `coops` → `dashboard` → `undo` → `flock` →
-`eggs` → `finances` → `supply` → `init` → `main`
+`eggs` → `finances` → `supply` → `auth-ui` → `account` → `init` → `main`
 
 Order matters only for code that runs at load time (top-level `const`s and listeners); function
 bodies run later, after everything has loaded. `main.js` is last and starts the app. A new

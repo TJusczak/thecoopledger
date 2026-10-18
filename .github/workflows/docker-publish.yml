@@ -62,12 +62,8 @@ jobs:
         run: pytest -q
       - name: Frontend syntax check
         run: for f in static/app.js static/sw.js static/js/*.js; do node --check "$f"; done
-      - name: Run frontend series test
-        run: node tests/test_feed_engine.mjs
-      - name: Run dashboard render test
-        run: node tests/test_dashboard_render.mjs
-      - name: Run sync-core test
-        run: node tests/test_sync_core.mjs
+      - name: Run frontend logic tests
+        run: for t in tests/test_*.mjs; do node "$t"; done
 
   e2e:
     # Real Chromium against a real server process: offline queueing, two-device

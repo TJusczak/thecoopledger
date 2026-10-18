@@ -23,6 +23,7 @@ function updateHeader() {
   document.getElementById("eyebrowText").textContent = (coop && coop.created_date) ? `Est. ${fmtDate(coop.created_date)}` : "";
   document.getElementById("coopSwitcher").title = coop ? `${coop.name} -- switch coop` : "Switch coop";
   updatePageHeader();
+  updateUserChip();
   renderLocalOnlyBadge();
   renderBetaBadge();
   renderRoleBadge();

@@ -24,6 +24,9 @@ services:
     # environment:
     #   PUID: "1000"                      # host user id that owns ./data (match `id -u`)
     #   PGID: "1000"                      # host group id that owns ./data (match `id -g`)
+    #   ADMIN_USERNAME: "admin"           # the first administrator (only used while the server has no users)
+    #   ADMIN_PASSWORD: "choose-something-long"  # leave out to have one generated into ./data/admin_credentials.txt
+    #   LOGIN_MAX_ATTEMPTS: "5"           # failed sign-ins per IP before a lockout
     #   TRUST_PROXY_HEADERS: "1"          # ONLY behind Cloudflare Tunnel or a reverse proxy you control
     #   MAX_PHOTO_UPLOAD_MB: "25"         # per-photo upload size cap
     #   BACKUPS_ENABLED: "true"           # automatic daily backups into ./data/backups

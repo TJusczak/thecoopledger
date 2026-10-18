@@ -46,7 +46,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.10.02-254"
+SERVER_VERSION = "2026.10.18-256"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
@@ -66,6 +66,17 @@ MAX_BACKUPS_TO_KEEP = env_int("MAX_BACKUPS_TO_KEEP", 14, minimum=1)
 # haven't been used in that many days.
 SESSION_MAX_IDLE_DAYS = env_int("SESSION_MAX_IDLE_DAYS", 0, minimum=0)
 
+# Sign-in throttling: this many failed attempts from one IP (or LOGIN_MAX_ATTEMPTS * 4 against one account, from
+# anywhere) locks further attempts out for LOGIN_LOCKOUT_MINUTES. Raise the attempts for a household that fat-fingers
+# passwords on a shared tablet; lower them if the server faces the internet.
+LOGIN_MAX_ATTEMPTS = env_int("LOGIN_MAX_ATTEMPTS", 5, minimum=1)
+LOGIN_LOCKOUT_MINUTES = env_int("LOGIN_LOCKOUT_MINUTES", 15, minimum=1)
+
+# Shared invite-code login is the pre-accounts way in. Servers that existed before accounts keep it on
+# (set during the upgrade) so nobody is locked out; new servers start with it off. Admins can flip it in
+# Settings -> Users, which overrides this default.
+ALLOW_INVITE_CODES = env_bool("ALLOW_INVITE_CODES", False)
+
 # Comma-separated list of allowed CORS origins, or "*" (the default) to
 # allow any -- the permissive default is what lets a TWA/wrapped app or a
 # CDN-hosted frontend talk to a separately-hosted sync server out of the
@@ -83,6 +94,7 @@ OVERRIDABLE_SETTINGS = {
     "backups_enabled": {"type": "bool", "env_default": lambda: BACKUPS_ENABLED},
     "backup_interval_hours": {"type": "int", "min": 1, "max": 24 * 30, "env_default": lambda: BACKUP_INTERVAL_HOURS},
     "max_backups_to_keep": {"type": "int", "min": 1, "max": 365, "env_default": lambda: MAX_BACKUPS_TO_KEEP},
+    "allow_invite_codes": {"type": "bool", "env_default": lambda: ALLOW_INVITE_CODES},
     "activity_log_retention_days": {"type": "int", "min": 1, "max": 3650, "env_default": lambda: ACTIVITY_LOG_RETENTION_DAYS},
 }
 

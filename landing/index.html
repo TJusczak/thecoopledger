@@ -154,7 +154,7 @@
         <div class="path-card">
           <span class="stamp stamp-slate">Your own server</span>
           <h3>Sync it across devices</h3>
-          <p>Run your own copy on a home server or NAS with a single Docker command, then connect any device to it with an invite code. Data lives on your server, syncs automatically in the background, and keeps working offline in between — changes push out the next time a connection's available.</p>
+          <p>Run your own copy on a home server or NAS with a single Docker command, then sign in from any device with your own username and password. Data lives on your server, syncs automatically in the background, and keeps working offline in between — changes push out the next time a connection's available.</p>
           <p class="path-note">Nobody's server but your own. Self-hosting is free, and covered below.</p>
         </div>
       </div>
@@ -186,7 +186,7 @@
         <pre><code>docker compose up -d</code></pre>
       </div>
 
-      <p class="section-lede">That's it — visit <code>http://&lt;your-server-ip&gt;:8000</code>, grab the invite code from the container's logs, and you're in. Full setup instructions, backup guidance, and the source itself are on GitHub.</p>
+      <p class="section-lede">That's it — visit <code>http://&lt;your-server-ip&gt;:8000</code>, sign in as <code>admin</code> with the password from the container's logs, and pick your own. Full setup instructions, backup guidance, and the source itself are on GitHub.</p>
       <a href="https://github.com/TJusczak/thecoopledger" class="btn btn-ghost">View on GitHub ↗</a>
     </div>
   </section>
@@ -215,7 +215,7 @@
       <div class="faq-list">
         <div class="faq-item">
           <div class="faq-q">Do I need to make an account?</div>
-          <div class="faq-a">Not for local use — open the app and start entering data right away. An account (well, an invite code) is only needed if you connect to a synced server, either your own or one someone else invited you to.</div>
+          <div class="faq-a">Not for local use — open the app and start entering data right away. An account is only needed if you connect to a synced server — your own, where you're the admin and can add everyone else, or one someone has given you a login for.</div>
         </div>
         <div class="faq-item">
           <div class="faq-q">Where does my data actually live?</div>
