@@ -1,6 +1,7 @@
 """Accounts, in a real browser: the sign-in page, first-login password change, my account, and the admin's users screen."""
 import httpx
 import pytest
+from playwright.sync_api import expect
 
 pytestmark = pytest.mark.e2e
 
@@ -278,10 +279,12 @@ def test_the_admin_cannot_disable_or_delete_themselves_from_the_screen(make_devi
     d = make_device()
     d.login(server)
     open_settings(d, "users")
-    d.page.wait_for_selector("[data-user-row]")
+    # init() finishes asynchronously and re-renders the open tab, so assert with retrying expectations
     row = d.page.locator("[data-user-row]:has(.chip:has-text('you'))")
-    assert row.locator("[data-edit]").count() == 1 and row.locator("[data-reset]").count() == 1
-    assert row.locator("[data-toggle]").count() == 0 and row.locator("[data-delete]").count() == 0
+    expect(row.locator("[data-edit]")).to_have_count(1)
+    expect(row.locator("[data-reset]")).to_have_count(1)
+    expect(row.locator("[data-toggle]")).to_have_count(0)
+    expect(row.locator("[data-delete]")).to_have_count(0)
 
 
 def test_user_form_reports_server_side_problems_in_the_dialog(make_device, server):
@@ -336,3 +339,74 @@ def test_invite_codes_appear_only_when_the_admin_allows_them(make_device, server
         d.page.wait_for_selector("#login_username")                              # ...and that device is signed out
     finally:
         server.set_invite_codes(False)
+
+
+# ------------------------------------------------------------------------------------ renaming
+
+def test_admin_renames_a_user_from_the_edit_dialog(make_device, server):
+    make_account(server, "old-name-1", password="Starting-Pass-1")
+    try:
+        admin = make_device()
+        admin.login(server)
+        open_settings(admin, "users")
+        admin.page.click("[data-user-row]:has-text('@old-name-1') [data-edit]")
+        admin.page.fill("#uf_username", "x")
+        admin.page.click("#uf_save")
+        admin.page.wait_for_function("document.getElementById('uf_error').textContent.includes('3-32')")
+        admin.page.fill("#uf_username", "admin")
+        admin.page.click("#uf_save")
+        admin.page.wait_for_function("document.getElementById('uf_error').textContent.includes('taken')")
+        admin.page.fill("#uf_username", "renamed-by-admin")
+        admin.page.click("#uf_save")
+        admin.page.wait_for_selector("[data-user-row]:has-text('@renamed-by-admin')")
+        assert httpx.post(f"{server.url}/api/auth/login", json={"username": "old-name-1", "password": "Starting-Pass-1"}).status_code == 401
+        assert httpx.post(f"{server.url}/api/auth/login", json={"username": "renamed-by-admin", "password": "Starting-Pass-1"}).status_code == 200
+        admin.assert_no_js_errors()
+    finally:
+        delete_account(server, "old-name-1")
+        delete_account(server, "renamed-by-admin")
+
+
+def test_you_cannot_edit_your_own_username_in_the_users_dialog_it_lives_in_account(make_device, server):
+    d = make_device()
+    d.login(server)
+    open_settings(d, "users")
+    d.page.click("[data-user-row]:has(.chip:has-text('you')) [data-edit]")
+    assert d.page.is_disabled("#uf_username")
+    assert "Settings → Account" in d.page.inner_text("#modalContent")
+
+
+def test_you_rename_yourself_in_account_with_your_password(make_device, server):
+    make_account(server, "self-namer", password="Starting-Pass-1")
+    try:
+        d = make_device()
+        d.fill_sign_in("self-namer", "Starting-Pass-1")
+        with d.page.expect_navigation():
+            d.page.click("#login_submit")
+        d.ready()
+        d.page.fill("#pw_current", "Starting-Pass-1"); d.page.fill("#pw_new", "Self-Namers-Pass-1"); d.page.fill("#pw_confirm", "Self-Namers-Pass-1")
+        with d.page.expect_navigation():
+            d.page.click("#pw_submit")
+        d.ready()
+        d.page.wait_for_selector("#tabs:not([hidden])")
+        open_settings(d, "account")
+
+        d.page.fill("#acct_username", "self-renamed")
+        d.page.click("#acct_un_save")
+        d.page.wait_for_function("document.getElementById('acct_un_error').textContent.length > 0")
+        assert "current password" in d.page.inner_text("#acct_un_error"), "no password, no rename"
+
+        d.page.fill("#acct_un_password", "not-the-password-1")
+        d.page.click("#acct_un_save")
+        d.page.wait_for_function("document.getElementById('acct_un_error').textContent.includes('current password')")
+
+        d.page.fill("#acct_un_password", "Self-Namers-Pass-1")
+        d.page.click("#acct_un_save")
+        d.page.wait_for_function("getAuthUsername() === 'self-renamed'")
+        assert "@self-renamed" in d.page.inner_text("#settingsContent")
+        assert httpx.post(f"{server.url}/api/auth/login", json={"username": "self-renamed", "password": "Self-Namers-Pass-1"}).status_code == 200
+        assert httpx.post(f"{server.url}/api/auth/login", json={"username": "self-namer", "password": "Self-Namers-Pass-1"}).status_code == 401
+        d.assert_no_js_errors()
+    finally:
+        delete_account(server, "self-namer")
+        delete_account(server, "self-renamed")

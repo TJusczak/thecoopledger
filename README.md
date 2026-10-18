@@ -67,9 +67,37 @@ settings), **Member** (add and edit flock data) and **Read-only** (look, don't t
 reset accounts get a temporary password, shown once, and must choose their own at first sign-in.
 Everyone can change their own display name and password under Settings → **Account**.
 
+**Renaming:** an admin can change anyone's username (Settings → Users → Edit) and they stay signed in;
+anyone can change their own under Settings → Account (it asks for your password). Display names are
+separate and change any time.
+
 **Using it without a server:** the sign-in page also has *Use on this device only*. That's local-only
 mode: no account, nothing leaves the browser. On the public website that's the main option, with
 *Sign in to your own server* underneath for people who run one.
+
+### Lost the admin password?
+
+There's no "forgot password" button and no email, on purpose: nothing to set up, and nothing for an
+attacker to abuse. Instead, like Crafty Controller, you recover from the server's own shell. If you can
+reach the machine the server runs on, you can recreate the admin credentials:
+
+```bash
+docker compose exec coop-ledger python -m coopledger.cli reset-admin
+# not using Docker:  DATA_DIR=./data python -m coopledger.cli reset-admin
+```
+
+That prints a new generated password (also written to `data/admin_credentials.txt`) for the `admin`
+account. Sign in with it and you'll be asked to choose your own. Everything else stays as it was:
+
+- it works while the server is running, and signs that account out everywhere;
+- the account is made an admin again and enabled, if it had been demoted or disabled;
+- **everyone else's accounts are left exactly as they are**;
+- `--username NAME` recovers a different admin account (or creates it); `--password '...'` sets one you
+  choose instead of generating it (no forced change, nothing written to disk);
+- `python -m coopledger.cli list-users` shows who exists.
+
+Whoever can run that command can already read the database, so it adds no new power -- shell access to
+the server *is* the trust boundary.
 
 **Upgrading a server from before accounts?** Nothing breaks: the shared invite codes keep working,
 and an `admin` account is added (its password is in the logs and `data/admin_credentials.txt`, same

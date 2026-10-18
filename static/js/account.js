@@ -65,6 +65,17 @@ function renderAccountSection() {
 
     ${hasAccount ? `
     <div class="card" style="margin-top:16px">
+      <div class="card-title">Username</div>
+      <div class="dim" style="font-size:12px;margin-bottom:12px">What you type to sign in. Changing it needs your password, and you stay signed in.</div>
+      <form id="acct_un_form" novalidate>
+        <label class="field"><span>Username</span><input id="acct_username" value="${esc(username)}" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32"></label>
+        ${passwordFieldHtml("acct_un_password", "Current password (to confirm)", "current-password")}
+        <div id="acct_un_error" class="auth-error" role="alert"></div>
+        <button class="btn btn-confirm" id="acct_un_save" type="submit">Change username</button>
+      </form>
+    </div>
+
+    <div class="card" style="margin-top:16px">
       <div class="card-title">Change password</div>
       <form id="acct_pw_form" novalidate>
         ${passwordFieldHtml("acct_pw_current", "Current password", "current-password")}
@@ -97,6 +108,26 @@ function renderAccountSection() {
     } catch (err) { showToast(err.detail || "Couldn't update your name", "delete"); }
   });
   document.getElementById("acct_name").addEventListener("keydown", (e) => { if (e.key === "Enter") document.getElementById("acct_name_save").click(); });
+
+  const unForm = document.getElementById("acct_un_form");
+  if (unForm) unForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const errEl = document.getElementById("acct_un_error");
+    errEl.textContent = "";
+    const wanted = document.getElementById("acct_username").value.trim();
+    if (wanted === getAuthUsername()) { errEl.textContent = "That's already your username."; return; }
+    const btn = document.getElementById("acct_un_save");
+    btn.disabled = true;
+    try {
+      const out = await apiPatch("/api/auth/profile", { username: wanted, current_password: document.getElementById("acct_un_password").value });
+      setAuthUsername(out.username);
+      showToast(`You now sign in as @${out.username}`, "create");
+      renderAccountSection();
+    } catch (err) {
+      errEl.textContent = err.detail || "Couldn't change the username.";
+      btn.disabled = false;
+    }
+  });
 
   const form = document.getElementById("acct_pw_form");
   if (form) form.addEventListener("submit", async (e) => {
@@ -147,8 +178,8 @@ function userFormHtml(user) {
   const editing = !!user;
   return `
     <div class="form-head">${editing ? `Edit @${esc(user.username)}` : "Add a user"}</div>
-    ${editing ? "" : `<label class="field"><span>Username</span><input id="uf_username" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="e.g. maya"></label>
-      <div class="dim" style="font-size:11px;margin:4px 0 12px">3-32 letters, numbers, dots, dashes or underscores. This is what they type to sign in.</div>`}
+    <label class="field"><span>Username</span><input id="uf_username" value="${esc(editing ? user.username : "")}" ${editing && user.isSelf ? "disabled" : ""} autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="32" ${editing ? "" : 'placeholder="e.g. maya"'}></label>
+    <div class="dim" style="font-size:11px;margin:4px 0 12px">${editing && user.isSelf ? "Change your own username under Settings → Account." : "3-32 letters, numbers, dots, dashes or underscores. This is what they type to sign in."}</div>
     <label class="field"><span>Display name</span><input id="uf_display" value="${esc(editing ? user.display_name : "")}" maxlength="60" placeholder="e.g. Maya"></label>
     <label class="field" style="margin-top:12px"><span>Role</span>
       <select id="uf_role" ${editing && user.isSelf ? "disabled" : ""}>
@@ -176,7 +207,11 @@ function openUserForm(user, onDone) {
     try {
       if (user) {
         const body = { display_name: display || user.username };
-        if (!user.isSelf) body.role = document.getElementById("uf_role").value;
+        if (!user.isSelf) {
+          body.role = document.getElementById("uf_role").value;
+          const wanted = document.getElementById("uf_username").value.trim();
+          if (wanted !== user.username) body.username = wanted;
+        }
         await apiPatch(`/api/auth/users/${user.id}`, body);
         closeModal();
         showToast("User updated", "update");
@@ -194,7 +229,7 @@ function openUserForm(user, onDone) {
       onDone();
     } catch (ex) { err.textContent = ex.detail || "Couldn't save that."; }
   });
-  setTimeout(() => { const f = document.getElementById(user ? "uf_display" : "uf_username"); if (f) f.focus(); }, 50);
+  setTimeout(() => { const f = document.getElementById(user && user.isSelf ? "uf_display" : "uf_username"); if (f) f.focus(); }, 50);
 }
 
 async function renderUsersSection() {

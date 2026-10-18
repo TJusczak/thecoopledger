@@ -293,20 +293,59 @@ def change_my_password(payload: dict = Body(...), request: Request = None):
     return {"ok": True}
 
 
+def rename_checked(conn, user_id: str, new_username: str) -> str:
+    """Validates a new username for `user_id` (format, and not taken by anyone ELSE -- changing only the capital
+    letters of your own name is fine) and returns it. Raises 400 / 409."""
+    problem = passwords.validate_username(new_username)
+    if problem:
+        raise HTTPException(400, problem)
+    if conn.execute("SELECT 1 FROM users WHERE username = ? COLLATE NOCASE AND id != ?", (new_username, user_id)).fetchone():
+        raise HTTPException(409, "That username is already taken.")
+    return new_username
+
+
 @router.patch("/api/auth/profile")
 def update_my_profile(payload: dict = Body(...), request: Request = None):
-    """Change your own display name (the name shown on activity and to other people)."""
+    """Change your own display name and/or username. A new username is the thing people sign in with, so it
+    needs your current password: a stolen, still-signed-in device must not be able to take over the account's identity."""
     me = require_session(request)
-    name = " ".join(str(payload.get("display_name") or "").split())
-    if not name or len(name) > 60 or any(ord(c) < 32 for c in name):
-        raise HTTPException(400, "Names are 1-60 characters.")
+    new_username = None
+    if "username" in payload:
+        if not me["user_id"]:
+            raise HTTPException(400, "Shared invite-code sessions have no username.")
+        wanted = str(payload.get("username") or "").strip()
+        if wanted != me["username"]:
+            ip = client_ip(request)
+            check_login_rate_limit(ip, me["username"] or "")
+            with get_db(write=False) as conn:
+                user = conn.execute("SELECT password_hash FROM users WHERE id = ?", (me["user_id"],)).fetchone()
+            current = payload.get("current_password")
+            if not isinstance(current, str) or not passwords.verify_password(current, user["password_hash"]):
+                record_failed_login(ip, me["username"] or "")
+                raise HTTPException(400, "Your current password isn't right.")
+            new_username = wanted
+    name = None
+    if "display_name" in payload:
+        name = " ".join(str(payload.get("display_name") or "").split())
+        if not name or len(name) > 60 or any(ord(c) < 32 for c in name):
+            raise HTTPException(400, "Names are 1-60 characters.")
+    if new_username is None and name is None and "username" not in payload:
+        raise HTTPException(400, "Nothing to change.")
+    out = {}
     with get_db() as conn:
-        if me["user_id"]:
-            conn.execute("UPDATE users SET display_name = ? WHERE id = ?", (name, me["user_id"]))
-            conn.execute("UPDATE sessions SET name = ? WHERE user_id = ?", (name, me["user_id"]))
-        else:
-            conn.execute("UPDATE sessions SET name = ? WHERE id = ?", (name, me["id"]))
-    return {"name": name}
+        if new_username is not None:
+            out["username"] = rename_checked(conn, me["user_id"], new_username)
+            conn.execute("UPDATE users SET username = ? WHERE id = ?", (out["username"], me["user_id"]))
+        elif "username" in payload:
+            out["username"] = me["username"]            # asked for the name it already has
+        if name is not None:
+            if me["user_id"]:
+                conn.execute("UPDATE users SET display_name = ? WHERE id = ?", (name, me["user_id"]))
+                conn.execute("UPDATE sessions SET name = ? WHERE user_id = ?", (name, me["user_id"]))
+            else:
+                conn.execute("UPDATE sessions SET name = ? WHERE id = ?", (name, me["id"]))
+            out["name"] = name
+    return out
 
 
 @router.get("/api/auth/invite-code")

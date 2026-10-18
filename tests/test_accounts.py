@@ -410,3 +410,74 @@ def test_sessions_list_shows_who_is_signed_in(client, admin):
     rows = client.get("/api/auth/sessions", headers=admin).json()
     assert any(r["username"] == "admin" for r in rows)
     assert all("token" not in r for r in rows)
+
+
+# ----------------------------------------------------------------------------- renaming (username)
+
+def test_admin_renames_a_user_who_keeps_their_session_and_signs_in_with_the_new_name(client, admin, make_user):
+    u = make_user("old-handle")
+    r = client.patch(f"/api/auth/users/{u['id']}", json={"username": "new-handle"}, headers=admin)
+    assert r.status_code == 200 and r.json()["user"]["username"] == "new-handle"
+    assert client.get("/api/auth/me", headers=u["headers"]).json()["username"] == "new-handle", "live sessions follow the rename"
+    assert login(client, "old-handle", GOOD).status_code == 401
+    assert login(client, "new-handle", GOOD).status_code == 200
+
+
+def test_renaming_only_the_capital_letters_is_allowed(client, admin, make_user):
+    u = make_user("lowercase-me")
+    assert client.patch(f"/api/auth/users/{u['id']}", json={"username": "Lowercase-Me"}, headers=admin).status_code == 200
+    assert login(client, "lowercase-me", GOOD).json()["username"] == "Lowercase-Me"
+
+
+@pytest.mark.parametrize("name,status", [("admin", 409), ("ADMIN", 409), ("ab", 400), ("has space", 400), ("", 400), ("x" * 33, 400)])
+def test_renames_are_validated(client, admin, make_user, name, status):
+    u = make_user("renamee")
+    assert client.patch(f"/api/auth/users/{u['id']}", json={"username": name}, headers=admin).status_code == status
+    assert login(client, "renamee", GOOD).status_code == 200, "a refused rename changes nothing"
+
+
+def test_only_admins_rename_other_people(client, make_user):
+    a, b = make_user("rename-a"), make_user("rename-b")
+    assert client.patch(f"/api/auth/users/{b['id']}", json={"username": "stolen-name"}, headers=a["headers"]).status_code == 403
+
+
+def test_renaming_yourself_needs_your_password(client, make_user):
+    u = make_user("self-rename")
+    h = u["headers"]
+    assert client.patch("/api/auth/profile", json={"username": "fresh-name"}, headers=h).status_code == 400
+    assert client.patch("/api/auth/profile", json={"username": "fresh-name", "current_password": "wrong-wrong-1"}, headers=h).status_code == 400
+    assert login(client, "self-rename", GOOD).status_code == 200, "nothing changed yet"
+    r = client.patch("/api/auth/profile", json={"username": "fresh-name", "current_password": GOOD}, headers=h)
+    assert r.status_code == 200 and r.json()["username"] == "fresh-name"
+    assert client.get("/api/auth/me", headers=h).json()["username"] == "fresh-name"
+    assert login(client, "fresh-name", GOOD).status_code == 200 and login(client, "self-rename", GOOD).status_code == 401
+
+
+def test_renaming_yourself_to_a_taken_or_bad_name_fails(client, make_user):
+    u = make_user("taken-check")
+    h = u["headers"]
+    assert client.patch("/api/auth/profile", json={"username": "admin", "current_password": GOOD}, headers=h).status_code == 409
+    assert client.patch("/api/auth/profile", json={"username": "no spaces", "current_password": GOOD}, headers=h).status_code == 400
+
+
+def test_wrong_passwords_when_renaming_count_toward_the_throttle(client, make_user):
+    u = make_user("throttled-rename")
+    for _ in range(auth.MAX_LOGIN_ATTEMPTS):
+        client.patch("/api/auth/profile", json={"username": "whatever-name", "current_password": "wrong-wrong-1"}, headers=u["headers"])
+    assert client.patch("/api/auth/profile", json={"username": "whatever-name", "current_password": GOOD}, headers=u["headers"]).status_code == 429
+
+
+def test_read_only_people_can_rename_themselves_too(client, make_user):
+    u = make_user("viewer-rename", role="readonly")
+    assert client.patch("/api/auth/profile", json={"username": "viewer-renamed", "current_password": GOOD}, headers=u["headers"]).status_code == 200
+
+
+def test_name_and_username_can_change_in_one_request(client, make_user):
+    u = make_user("both-at-once")
+    r = client.patch("/api/auth/profile", json={"display_name": "Both", "username": "both-renamed", "current_password": GOOD}, headers=u["headers"])
+    assert r.json() == {"username": "both-renamed", "name": "Both"}
+
+
+def test_invite_code_sessions_have_no_username_to_change(client, admin_code):
+    r = client.post("/api/auth/login", json={"name": "Guest", "code": admin_code})
+    assert client.patch("/api/auth/profile", json={"username": "guest-name", "current_password": "x"}, headers=bearer(r)).status_code == 400

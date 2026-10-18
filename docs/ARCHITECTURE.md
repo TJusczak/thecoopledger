@@ -34,7 +34,8 @@ the Dockerfile and existing deployments are unchanged.
 | `migrations.py` | declarative schema creation + versioned data migrations |
 | `auth.py` | sessions (hashed tokens), sign-in, my account, the legacy invite codes, login rate limiting |
 | `passwords.py` | scrypt hashing and the password / username rules (pure functions) |
-| `users.py` | the admin's user management, and the first-run admin account |
+| `users.py` | the admin's user management, the first-run admin account, and `reset_admin` (recovery) |
+| `cli.py` | `python -m coopledger.cli reset-admin / list-users`: recovery from the server's own shell |
 | `middleware.py` | plain-ASGI middleware: auth gate, security headers, cache headers |
 | `routes_resources.py` | generic CRUD + `/api/sync/*` — registered **last** |
 | `routes_coops.py` / `routes_admin.py` / `routes_birds.py` | coop lifecycle + export/import, admin pages, bird bulk ops |
@@ -96,6 +97,11 @@ per field; an edit to a deleted row revives it (intent to keep wins).
 * First run: `users.bootstrap_admin` creates the admin (generated password -> `data/admin_credentials.txt`,
   deleted when it is changed; or `ADMIN_USERNAME` / `ADMIN_PASSWORD`). A database that already had invite
   codes is an *upgrade*: the `allow_invite_codes` setting is turned on so nobody is locked out.
+* Recovery has no web path on purpose (no email, no reset link): `coopledger.cli reset-admin` runs from the
+  server's shell, drops to the data directory's owner first (so a root `docker exec` can't leave root-owned
+  SQLite files the server can't open), and calls `users.reset_admin`, which never touches other accounts.
+* Usernames can change (`auth.rename_checked`): sessions join to `users` for the username, so a rename is live
+  at once. Renaming yourself needs your current password; an admin renaming someone does not.
 * Passwords and password hashes must never be logged, returned by an endpoint, or written to
   `failed_logins` (tests check each).
 
