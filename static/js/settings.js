@@ -7,16 +7,28 @@ let settingsSubTab = "coops";
 function renderSettingsHub() {
   const el = document.getElementById("panel-settings");
   const subNav = document.getElementById("settingsSubNav");
-  if (!currentCoopId) settingsSubTab = (settingsSubTab === "connection" || settingsSubTab === "server" || settingsSubTab === "app") ? settingsSubTab : "coops"; // activity needs an active coop to mean anything
-  const showServerTab = !localOnlyMode && getUserRole() === "admin";
-  const subs = currentCoopId
-    ? [{ id: "coops", label: "Coops" }, { id: "connection", label: "Connection" }, { id: "activity", label: "Activity" }, { id: "app", label: "App" }, ...(showServerTab ? [{ id: "server", label: "Server" }] : [])]
-    : [{ id: "coops", label: "Coops" }, { id: "connection", label: "Connection" }, { id: "app", label: "App" }, ...(showServerTab ? [{ id: "server", label: "Server" }] : [])];
+  const signedInToServer = !localOnlyMode;
+  const showServerTab = signedInToServer && getUserRole() === "admin";
+  const showUsersTab = showServerTab;
+  // Tabs that mean nothing right now fall back to Coops: Activity needs an active coop; Account and Users need a server.
+  const available = ["coops", "connection", "app", ...(currentCoopId ? ["activity"] : []), ...(signedInToServer ? ["account"] : []), ...(showUsersTab ? ["users"] : []), ...(showServerTab ? ["server"] : [])];
+  if (settingsSubTab === "defaults") settingsSubTab = "app";   // this tab used to carry that name
+  if (!available.includes(settingsSubTab)) settingsSubTab = "coops";
+  const subs = [
+    { id: "coops", label: "Coops" }, { id: "connection", label: "Connection" },
+    ...(signedInToServer ? [{ id: "account", label: "Account" }] : []),
+    ...(showUsersTab ? [{ id: "users", label: "Users" }] : []),
+    ...(currentCoopId ? [{ id: "activity", label: "Activity" }] : []),
+    { id: "app", label: "App" },
+    ...(showServerTab ? [{ id: "server", label: "Server" }] : []),
+  ];
   subNav.innerHTML = subs.map(s => `<button class="range-btn ${settingsSubTab === s.id ? "active" : ""}" data-sub="${s.id}">${s.label}</button>`).join("");
   el.innerHTML = `<div id="settingsContent"></div>`;
   subNav.querySelectorAll("[data-sub]").forEach(b => b.addEventListener("click", () => { settingsSubTab = b.dataset.sub; renderSettingsHub(); }));
   if (settingsSubTab === "coops") renderCoopsSection();
   else if (settingsSubTab === "connection") renderConnectionSection();
+  else if (settingsSubTab === "account") renderAccountSection();
+  else if (settingsSubTab === "users") renderUsersSection();
   else if (settingsSubTab === "activity") renderActivityLogSection();
   else if (settingsSubTab === "app" || settingsSubTab === "defaults") renderAppSection(); // "defaults" kept as an alias -- this tab used to carry that name
   else if (settingsSubTab === "server" && showServerTab) renderServerSection();
@@ -667,7 +679,7 @@ function renderConnectionSection() {
             <button class="btn ghost small" data-revoke="${s.id}">Revoke</button>
           </div>`).join("");
         sessionsEl.querySelectorAll("[data-revoke]").forEach(b => b.addEventListener("click", async () => {
-          if (!(await showConfirmDialog("Revoke this session? That device will need the invite code again to reconnect."))) return;
+          if (!(await showConfirmDialog("Revoke this session? That device will need to sign in again to reconnect."))) return;
           try {
             await apiDelete(`/api/auth/sessions/${b.dataset.revoke}`);
             showToast("Session revoked", "delete");
@@ -683,7 +695,7 @@ function renderConnectionSection() {
 
   const logoutBtn = document.getElementById("logoutBtn");
   if (logoutBtn) logoutBtn.addEventListener("click", async () => {
-    if (!(await showConfirmDialog("Log out of this device? You'll need the invite code again to log back in."))) return;
+    if (!(await showConfirmDialog("Log out of this device? You'll need to sign in again to get back in."))) return;
     try { await apiPost("/api/auth/logout", {}); } catch (err) { /* best effort -- clearing the local token below is what actually matters */ }
     clearAuthToken();
     location.reload();

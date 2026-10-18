@@ -18,9 +18,10 @@ def seed(d):
     }""")
 
 
-def test_first_run_screen_renders(make_device):
+def test_first_run_shows_the_sign_in_page(make_device):
     d = make_device()
-    assert d.page.locator("#gs_local").is_visible()
+    assert d.page.locator("#login_username").is_visible() and d.page.locator("#login_password").is_visible()
+    assert d.page.locator("#gs_local_toggle").is_visible(), "local-only is the quiet alternative"
     d.assert_no_js_errors()
 
 

@@ -13,7 +13,7 @@ RUN chmod +x /entrypoint.sh
 
 ENV DATA_DIR=/data \
     PYTHONUNBUFFERED=1
-# PYTHONUNBUFFERED matters more than it looks: the invite code is printed to
+# PYTHONUNBUFFERED matters more than it looks: the first-run admin password is printed to
 # stdout on startup, and without it that line can sit in a buffer instead of
 # appearing in `docker logs` when a new user goes looking for it.
 

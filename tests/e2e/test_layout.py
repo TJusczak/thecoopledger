@@ -225,7 +225,7 @@ def test_the_coop_switcher_works_on_narrow_screens_too(make_device):
 @pytest.mark.parametrize("size", [(1280, 800), (390, 800)])
 def test_first_run_hides_navigation_there_is_nothing_to_navigate_yet(make_device, size):
     d = make_device(*size)
-    assert d.page.locator("#gs_local").is_visible()
+    assert d.page.locator("#login_submit").is_visible()
     assert d.page.locator("#tabs").is_hidden()
     assert d.page.locator("#coopSwitcher").is_hidden()
     assert d.page.locator("#pageHeader").is_hidden()

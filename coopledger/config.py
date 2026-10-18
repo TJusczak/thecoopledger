@@ -46,7 +46,7 @@ DB_PATH = DATA_DIR / "coop.db"
 # changes -- lets the client detect a sync server that's running older code
 # than what it's talking to it with (e.g. the static frontend auto-updated
 # from a CDN, but this self-hosted server hasn't been restarted since).
-SERVER_VERSION = "2026.10.02-254"
+SERVER_VERSION = "2026.10.18-255"
 PHOTOS_DIR = DATA_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 # The frontend already resizes images before upload, so a normal photo is
@@ -65,6 +65,12 @@ MAX_BACKUPS_TO_KEEP = env_int("MAX_BACKUPS_TO_KEEP", 14, minimum=1)
 # was meant to stick. Set to e.g. 90 to automatically drop sessions that
 # haven't been used in that many days.
 SESSION_MAX_IDLE_DAYS = env_int("SESSION_MAX_IDLE_DAYS", 0, minimum=0)
+
+# Sign-in throttling: this many failed attempts from one IP (or LOGIN_MAX_ATTEMPTS * 4 against one account, from
+# anywhere) locks further attempts out for LOGIN_LOCKOUT_MINUTES. Raise the attempts for a household that fat-fingers
+# passwords on a shared tablet; lower them if the server faces the internet.
+LOGIN_MAX_ATTEMPTS = env_int("LOGIN_MAX_ATTEMPTS", 5, minimum=1)
+LOGIN_LOCKOUT_MINUTES = env_int("LOGIN_LOCKOUT_MINUTES", 15, minimum=1)
 
 # Shared invite-code login is the pre-accounts way in. Servers that existed before accounts keep it on
 # (set during the upgrade) so nobody is locked out; new servers start with it off. Admins can flip it in

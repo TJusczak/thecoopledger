@@ -110,10 +110,10 @@ def require_admin(request: Request) -> str:
 
 failed_login_attempts: dict[str, list[float]] = {}      # by client IP
 failed_username_attempts: dict[str, list[float]] = {}   # by username, whoever is asking
-MAX_LOGIN_ATTEMPTS = 5
-MAX_USERNAME_ATTEMPTS = 20   # a backstop against many IPs hammering one account; high enough that
-                             # one attacker can't trivially lock the real owner out
-LOGIN_LOCKOUT_SECONDS = 15 * 60
+MAX_LOGIN_ATTEMPTS = config.LOGIN_MAX_ATTEMPTS
+MAX_USERNAME_ATTEMPTS = config.LOGIN_MAX_ATTEMPTS * 4   # a backstop against many IPs hammering one account;
+                                                        # high enough that one attacker can't trivially lock the owner out
+LOGIN_LOCKOUT_SECONDS = config.LOGIN_LOCKOUT_MINUTES * 60
 
 
 def client_ip(request: Request) -> str:

@@ -26,6 +26,9 @@ function mediaUrl(path) {
 const AUTH_TOKEN_KEY = "coopLedgerAuthToken";
 const AUTH_NAME_KEY = "coopLedgerAuthName";
 const AUTH_ROLE_KEY = "coopLedgerAuthRole";
+const AUTH_USERNAME_KEY = "coopLedgerAuthUsername";
+function getAuthUsername() { return localStorage.getItem(AUTH_USERNAME_KEY) || ""; }
+function setAuthUsername(name) { localStorage.setItem(AUTH_USERNAME_KEY, name || ""); }
 function getAuthToken() { return localStorage.getItem(AUTH_TOKEN_KEY) || ""; }
 function setAuthToken(token) { localStorage.setItem(AUTH_TOKEN_KEY, token || ""); mirrorTokenForServiceWorker(token || ""); }
 
@@ -70,7 +73,7 @@ async function requestBackgroundOutboxSync() {
 function getUserRole() { return localStorage.getItem(AUTH_ROLE_KEY) || "admin"; } // existing sessions from before roles existed are implicitly admin
 function setUserRole(role) { localStorage.setItem(AUTH_ROLE_KEY, role || "admin"); }
 function isReadOnlyRole() { return getUserRole() === "readonly"; }
-function clearAuthToken() { localStorage.removeItem(AUTH_TOKEN_KEY); localStorage.removeItem(AUTH_NAME_KEY); localStorage.removeItem(AUTH_ROLE_KEY); }
+function clearAuthToken() { localStorage.removeItem(AUTH_TOKEN_KEY); localStorage.removeItem(AUTH_NAME_KEY); localStorage.removeItem(AUTH_ROLE_KEY); localStorage.removeItem(AUTH_USERNAME_KEY); mirrorTokenForServiceWorker(""); }
 
 let _handlingAuthFailure = false;
 /** A 401 from anywhere in the sync engine means the same thing no matter
@@ -85,7 +88,7 @@ function handleSyncAuthFailure() {
   _handlingAuthFailure = true;
   clearAuthToken();
   stopEventStream();
-  showLoginScreen();
+  showLoginScreen({ message: "You've been signed out. Sign in again to continue." });
 }
 function authHeaders() {
   const token = getAuthToken();

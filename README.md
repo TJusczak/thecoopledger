@@ -47,13 +47,39 @@ Visit `http://<server-ip>:8000` from any machine on your network.
 
 ### First login
 
-On first startup, the server generates an invite code and:
-- prints it to the container logs (`docker compose logs coop-ledger`)
-- writes it to `data/invite_code.txt` on the host
+On first startup the server creates an **administrator account** with a generated
+password, and tells you where to find it:
 
-Enter that code (plus a name for yourself) on the app's login screen to get
-in. You can rotate it anytime from Settings → Connection once logged in —
-share the current code with anyone else you want to have access.
+- it's printed to the container logs (`docker compose logs coop-ledger`)
+- it's written to `data/admin_credentials.txt` on the host (readable only by its owner)
+
+Open `http://<server-ip>:8000`, sign in as `admin` with that password, and you'll be asked to
+choose your own straight away. Once you do, `admin_credentials.txt` is deleted. From then on
+you sign in with a username and password you can actually remember.
+
+Prefer to choose it yourself up front? Set `ADMIN_USERNAME` and `ADMIN_PASSWORD` in
+`docker-compose.yml` (see **Configuration**). They only create the *first* account, on an empty
+server, so changing them later doesn't touch an existing one.
+
+**Adding people:** Settings → **Users** lets an admin add accounts, give each a role, reset
+passwords, disable or delete them. Roles are **Admin** (everything, including users and server
+settings), **Member** (add and edit flock data) and **Read-only** (look, don't touch). New and
+reset accounts get a temporary password, shown once, and must choose their own at first sign-in.
+Everyone can change their own display name and password under Settings → **Account**.
+
+**Using it without a server:** the sign-in page also has *Use on this device only*. That's local-only
+mode: no account, nothing leaves the browser. On the public website that's the main option, with
+*Sign in to your own server* underneath for people who run one.
+
+**Upgrading a server from before accounts?** Nothing breaks: the shared invite codes keep working,
+and an `admin` account is added (its password is in the logs and `data/admin_credentials.txt`, same
+as a new install). Once everyone has their own account, switch the codes off in Settings → Users.
+New servers don't use invite codes at all unless you turn them on.
+
+> **Use HTTPS if the server is reachable from outside your home.** A password is sent to the server
+> when you sign in, so over plain `http://` anyone on the network path can read it. On a trusted home
+> network that's a reasonable trade; across the internet put it behind HTTPS (a Cloudflare Tunnel, Caddy,
+> Traefik or nginx). The sign-in page warns when it's talking over plain HTTP.
 
 ### Choosing a release channel
 
@@ -145,6 +171,9 @@ bad value typed into a web form shouldn't be able to lock you out.
 | --- | --- | --- |
 | `DATA_DIR` | `/data` (in Docker) | Where the database, photos, and backups live. Map a volume here. |
 | `PUID` / `PGID` | `1000` / `1000` | Host user/group that owns the files in `./data`. Set to your own ids (`id -u` / `id -g`) so the data stays readable to you. The container starts as root only long enough to fix volume ownership, then drops to this unprivileged user. |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / generated | The first administrator, created only on an **empty** server. If the password is left out (or is too weak) one is generated and written to `data/admin_credentials.txt`; a password you set here isn't forced to change. |
+| `ALLOW_INVITE_CODES` | `false` | Whether the older shared invite-code sign-in works. Servers upgraded from before accounts have it switched on automatically; an admin can change it in Settings → Users, which overrides this. |
+| `LOGIN_MAX_ATTEMPTS` / `LOGIN_LOCKOUT_MINUTES` | `5` / `15` | Failed sign-ins allowed from one IP before it's locked out, and for how long. (One *account* tolerates four times as many from anywhere, so one attacker can't easily lock you out of your own.) |
 | `TRUST_PROXY_HEADERS` | unset | Set to `1` **only** behind a reverse proxy you control (e.g. Cloudflare Tunnel), so the login rate-limit sees real visitor IPs. See Security notes. |
 | `MAX_PHOTO_UPLOAD_MB` | `25` | Per-photo upload size cap. The app resizes photos before upload anyway; this is the server-side backstop. |
 | `BACKUPS_ENABLED` | `true` | Automatic rotating backups into `DATA_DIR/backups`. Turn off only if you snapshot the volume some other way. |
@@ -360,15 +389,24 @@ page.
 
 ## Security notes
 
-- Auth is invite-code based (server-wide, not per-coop), rate-limited with
-  a lockout after repeated failed attempts. An admin can generate any
-  number of codes from Settings → Connection, each tagged **admin** (full
-  access) or **read-only** (can see everything, can't add/edit/delete
-  anything) — give each person their own code rather than sharing one, so
-  any single code can be revoked without affecting anyone else. The
-  original code from first setup keeps working as an admin code
-  unchanged. Sessions can be reviewed and individually revoked from
-  Settings too.
+- Sign-in is by username and password. Passwords are never stored: each is kept as a salted
+  **scrypt** hash (N=2^15, r=8, p=3), so even someone holding a copy of the database or a backup
+  can't read them, and every guess costs real time. The cost is recorded inside each hash, so it
+  can be raised later; older hashes upgrade the next time their owner signs in. Passwords need
+  8-128 characters and can't be an obvious one (or the username); there's no "must contain a
+  symbol" rule, which mostly pushes people toward predictable substitutions.
+- Session tokens are random 256-bit values and only their SHA-256 is stored, so a copy of the
+  database can't be replayed as logins. Changing your password signs your *other* devices out; an
+  admin resetting a password, or disabling or deleting an account, ends that person's sessions at
+  once, and a role change takes effect without a sign-out.
+- Sign-in is rate-limited per IP and per account, and tells a wrong password and an unknown
+  username apart in neither wording nor timing. Failed attempts are logged (admins can see them)
+  with the username tried but **never** the password.
+- A new or reset account can't do anything except choose its own password until it has. That's
+  enforced on the server, not just by the page.
+- Read-only people can still change their own name and password; they just can't change data.
+- Servers from before accounts keep their shared invite codes until an admin turns them off
+  (which also ends any sessions that came in through a code).
 - Read-only enforcement lives on the server, not just hidden in the UI —
   every write request is checked centrally before it ever reaches an
   endpoint, so it doesn't depend on every screen correctly disabling its
@@ -388,11 +426,11 @@ page.
   second-guesses that.
 - Admin-only material is enforced per-endpoint on the server, not just by
   which pages the UI shows: backups (which contain the full database,
-  including every invite code and session token), the failed-login log
-  (attempted codes are exactly the material someone would need to guess a
-  real one), session management, and invite-code management all reject
-  non-admin sessions outright — including read-only sessions, which can
-  read everything else.
+  including every invite code and every account's password *hash*), the
+  failed-login log (attempted invite codes are exactly the material someone
+  would need to guess a real one), user and session management, and
+  invite-code management all reject non-admin sessions outright --
+  including read-only and member sessions.
 - The container runs the server as an unprivileged user; root is used
   only momentarily at startup to fix data-volume ownership (`PUID`/`PGID`
   above).

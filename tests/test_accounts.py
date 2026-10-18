@@ -188,6 +188,19 @@ def test_invite_codes_can_be_switched_off_and_on(client, admin, admin_code):
     assert client.post("/api/auth/login", json={"name": "Visitor", "code": admin_code}).status_code == 200
 
 
+def test_turning_invite_codes_off_ends_sessions_that_came_in_through_one(client, admin, admin_code):
+    via_code = client.post("/api/auth/login", json={"name": "Tablet", "code": admin_code})
+    via_account = login(client, "admin", ADMIN_PASSWORD)
+    assert client.get("/api/auth/me", headers=bearer(via_code)).status_code == 200
+    client.put("/api/admin/server-settings", json={"allow_invite_codes": False}, headers=admin)
+    try:
+        assert client.get("/api/auth/me", headers=bearer(via_code)).status_code == 401, "a shared way in must not linger"
+        assert client.get("/api/auth/me", headers=bearer(via_account)).status_code == 200, "people with accounts are untouched"
+        assert client.get("/api/auth/me", headers=admin).status_code == 200
+    finally:
+        client.put("/api/admin/server-settings", json={"allow_invite_codes": None}, headers=admin)
+
+
 def test_an_invite_code_session_has_no_account(client, admin_code):
     r = client.post("/api/auth/login", json={"name": "Guest", "code": admin_code})
     me = client.get("/api/auth/me", headers=bearer(r)).json()

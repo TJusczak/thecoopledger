@@ -155,6 +155,11 @@ async def update_server_settings(request: Request):
     # hourly maintenance tick -- shortening the session window should log out
     # stale sessions now, not up to an hour from now.
     prune_idle_sessions()
+    # Turning the shared invite codes off means "accounts only". Devices already in through a code would otherwise
+    # stay signed in indefinitely, so they are ended too (people with accounts are untouched).
+    if "allow_invite_codes" in body and not get_setting("allow_invite_codes"):
+        with get_db() as conn:
+            conn.execute("DELETE FROM sessions WHERE user_id IS NULL")
     return {"ok": True, "settings": get_server_settings(request)["settings"]}
 
 

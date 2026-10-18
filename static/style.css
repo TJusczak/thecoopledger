@@ -1432,3 +1432,63 @@ body.onboarding .tabs, body.onboarding .coop-switcher, body.onboarding .page-hea
 @media (prefers-reduced-motion: reduce) {
   .coop-switcher { transition: none; }
 }
+
+
+/* =====================================================================
+   Sign-in, accounts and users
+   ===================================================================== */
+.auth-wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+.auth-card { max-width: 400px; width: 100%; border: 2px solid var(--rust); box-shadow: 0 0 0 1px rgba(193,80,46,0.15), 0 12px 32px rgba(0,0,0,0.35); }
+.auth-title { font-size: 24px; margin: 2px 0 4px; }
+.auth-sub { font-size: 12px; margin-bottom: 16px; line-height: 1.5; }
+.auth-fine { font-size: 11px; margin-top: 8px; line-height: 1.5; }
+.auth-center { text-align: center; margin-top: 12px; }
+.auth-primary { width: 100%; justify-content: center; font-size: 15px; padding: 12px; margin-top: 8px; }
+.auth-secondary { width: 100%; justify-content: space-between; font-size: 13px; }
+.auth-error { color: var(--rust); font-size: 12px; margin: 10px 0 4px; min-height: 1.2em; }
+.auth-notice { background: color-mix(in srgb, var(--gold) 14%, transparent); border: 1px solid color-mix(in srgb, var(--gold) 45%, transparent); color: var(--text); border-radius: 8px; padding: 9px 12px; font-size: 12px; line-height: 1.5; margin: 0 0 14px; }
+.auth-divider { display: flex; align-items: center; gap: 12px; margin: 20px 0 14px; color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; }
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.link-btn { background: none; border: none; padding: 0; color: var(--gold); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.link-btn:hover, .link-btn:focus-visible { color: var(--text); outline: none; }
+.pw-row { position: relative; display: flex; }
+.pw-row input { padding-right: 62px; }
+.pw-toggle { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-dim); font: 600 11px 'Inter', sans-serif; text-transform: uppercase; letter-spacing: 0.06em; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.pw-toggle:hover, .pw-toggle:focus-visible { color: var(--gold); background: var(--surface-raised); outline: none; }
+[hidden] { display: none !important; }
+
+.acct-who { display: flex; align-items: center; gap: 14px; }
+.acct-avatar { flex: none; width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; background: var(--rust); color: #F2E9DC; font: 700 17px 'Roboto Slab', serif; }
+.acct-avatar.small { width: 36px; height: 36px; font-size: 13px; }
+.role-chip { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-dim); white-space: nowrap; }
+.role-chip.role-admin { color: var(--gold); border-color: color-mix(in srgb, var(--gold) 55%, transparent); }
+.role-chip.role-member { color: var(--sage); border-color: color-mix(in srgb, var(--sage) 55%, transparent); }
+.role-chip.role-readonly { color: var(--slate); border-color: color-mix(in srgb, var(--slate) 55%, transparent); }
+.chip { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 9px; background: var(--surface-raised); color: var(--text-dim); vertical-align: 1px; margin-left: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+.chip-warn { color: var(--gold); }
+.user-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.user-row:first-child { border-top: none; }
+.user-row.is-disabled .user-main, .user-row.is-disabled .acct-avatar { opacity: 0.5; }
+.user-main { flex: 1 1 200px; min-width: 0; }
+.user-name { font-weight: 700; }
+.user-actions { display: flex; gap: 6px; flex-wrap: wrap; flex: 0 0 auto; }
+.temp-password { font-family: 'JetBrains Mono', monospace; font-size: 22px; letter-spacing: 0.06em; text-align: center; padding: 16px; background: var(--bg); border: 1px dashed var(--gold); border-radius: 10px; user-select: all; word-break: break-all; }
+
+/* who is signed in -- the top bar, wide screens only (on a phone it's in Settings -> Account) */
+.user-chip { display: none; }
+@media (min-width: 900px) {
+  .user-chip:not([hidden]) {
+    display: inline-flex; align-items: center; gap: 8px; flex: none; max-width: 200px;
+    background: none; border: 1px solid var(--border); border-radius: 18px; padding: 3px 12px 3px 4px;
+    color: var(--text); font: 600 12px 'Inter', sans-serif; cursor: pointer;
+  }
+  .user-chip:hover, .user-chip:focus-visible { border-color: var(--gold); outline: none; }
+  .user-chip-initials { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--rust); color: #F2E9DC; font: 700 10px 'Roboto Slab', serif; }
+  .user-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+
+/* The sign-in page is just the brand and the card: no search, status or account chip until there's a session. */
+body.onboarding #globalSearchBtn, body.onboarding #todayDate, body.onboarding #connIndicator,
+body.onboarding #syncIndicator, body.onboarding #undoRedoSlot, body.onboarding #userChip { display: none !important; }
+.auth-beta { margin-left: 8px; font: 700 9px 'Inter', sans-serif; letter-spacing: 0.08em; padding: 2px 6px; border-radius: 6px; background: var(--rust); color: #F2E9DC; vertical-align: 1px; }
+#acct_name_save { white-space: nowrap; flex: none; }
